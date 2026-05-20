@@ -303,6 +303,15 @@ class GameLibraryDialog(QDialog):
 
         top_layout.addStretch()
 
+        # Search Box
+        search_label = QLabel("Search:")
+        top_layout.addWidget(search_label)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Filter games...")
+        self.search_input.setFixedWidth(150)
+        self.search_input.textChanged.connect(self._on_search_changed)
+        top_layout.addWidget(self.search_input)
+
         sort_label = QLabel("Sort by:")
         top_layout.addWidget(sort_label)
 
@@ -447,6 +456,9 @@ class GameLibraryDialog(QDialog):
     def _on_sort_changed(self) -> None:
         self._refresh_game_list()
 
+    def _on_search_changed(self) -> None:
+        self._refresh_game_list()
+
     @staticmethod
     def _get_sort_key(game, sort_option):
         """Helper for sorting keys."""
@@ -492,6 +504,13 @@ class GameLibraryDialog(QDialog):
             return
 
         games = self.game_manager.get_all_games()
+        
+        # Filter games by search term (case-insensitive)
+        if hasattr(self, "search_input"):
+            query = self.search_input.text().strip().lower()
+            if query:
+                games = [g for g in games if query in g.get("game_name", "").lower()]
+
         games = self._sort_games(games)
         total_size = 0
         accela_count = 0

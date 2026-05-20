@@ -354,7 +354,7 @@ class DownloadDepotsTask(QObject):
 
         # Get max downloads from settings
         settings = get_settings()
-        max_downloads = settings.value("max_downloads", 20, type=int)
+        max_downloads = settings.value("max_downloads", 4, type=int)
 
         commands = []
         skipped_depots = []

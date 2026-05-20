@@ -25,9 +25,9 @@ if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION
 fi
 
 # 3. Download the new ASSella.AppImage from GitHub Release
-echo -e "${YELLOW}[INFO] Downloading latest ASSella.AppImage...${NC}"
+echo -e "${YELLOW}[INFO] Downloading ASSella beta AppImage...${NC}"
 curl -L -o "$INSTALL_DESTINATION/ASSella.AppImage" \
-  "https://github.com/niwia/ASSella/releases/latest/download/ASSella.AppImage"
+  "https://github.com/niwia/ASSella/releases/download/v1.5-beta/ASSella.AppImage"
 
 # 4. Make ASSella executable
 chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"
@@ -61,7 +61,7 @@ fi
 echo -e "${YELLOW}[INFO] Applying new orange/navy application icon...${NC}"
 mkdir -p "$(dirname "$ICON_PATH")"
 curl -L -o "$ICON_PATH" \
-  "https://raw.githubusercontent.com/niwia/ASSella/main/src/res/logo/icon.png"
+  "https://raw.githubusercontent.com/niwia/ASSella/beta/src/res/logo/icon.png"
 
 # Update icon cache and desktop database
 if command -v update-desktop-database &>/dev/null; then

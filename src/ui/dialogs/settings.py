@@ -414,11 +414,13 @@ class SettingsDialog(QDialog):
         # Max Downloads
         max_dl_layout = QHBoxLayout()
         max_dl_label = QLabel("Maximum concurrent downloads")
-        max_dl_label.setToolTip("Set maximum concurrent downloads (0-255)")
+        max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network speed usage.")
 
         self.max_downloads_spinbox = QSpinBox()
-        self.max_downloads_spinbox.setRange(0, 255)
-        current_max = self.settings.value("max_downloads", 255, type=int)
+        self.max_downloads_spinbox.setRange(1, 30)
+        current_max = self.settings.value("max_downloads", 4, type=int)
+        if current_max < 1 or current_max > 30:
+            current_max = 4
         self.max_downloads_spinbox.setValue(current_max)
 
         max_dl_layout.addWidget(max_dl_label)
@@ -1018,10 +1020,10 @@ class SettingsDialog(QDialog):
                 self.application_shortcuts_checkbox.isChecked(),
             )
 
-        val = 255
+        val = 4
         if hasattr(self, "max_downloads_spinbox"):
             try:
-                val = max(0, min(255, int(self.max_downloads_spinbox.value())))
+                val = max(1, min(30, int(self.max_downloads_spinbox.value())))
             except (ValueError, TypeError):
                 pass
         self.settings.setValue("max_downloads", val)
