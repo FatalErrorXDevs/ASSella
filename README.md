@@ -6,8 +6,8 @@
 
 ## Features & Changes
 
-* **Workshop Downloader** bundled (`workshop_downloader_linux`)
-* **Steamless AIO** bundled (`steamless-aio.sh`)
+* **Workshop Downloader (beta)** bundled (`workshop_downloader_linux`)
+* **Steamless AIO (beta)** bundled (`steamless-aio.sh`)
 * **Removed showing installed Steam games** in the ACCELA library view
 
 ## Installation (Steam Deck / Linux)
