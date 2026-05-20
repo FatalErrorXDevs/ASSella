@@ -6,8 +6,8 @@
 
 ## Features & Changes
 
-* **Workshop Downloader** bundled (`workshop_downloader_linux`)
-* **Steamless AIO** bundled (`steamless-aio.sh`)
+* **Workshop Downloader (beta)** bundled (`workshop_downloader_linux`)
+* **Steamless AIO (beta)** bundled (`steamless-aio.sh`)
 * **Removed showing installed Steam games** in the ACCELA library view
 
 ## Installation (Steam Deck / Linux)
@@ -15,7 +15,7 @@
 You can install or patch an existing ACCELA installation to ASSella automatically with this one-liner command:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/niwia/ASSella/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 ```
 
 This script:
