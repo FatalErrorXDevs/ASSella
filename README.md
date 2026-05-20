@@ -2,7 +2,7 @@
 
 **ASSella** is a personal fork of ACCELA — a Steam game downloader / launcher for Linux & Steam Deck — bundling critical features.
 
-![ASSella Banner](./assela_banner.png)
+![ASSella Banner](./assela_banner_v2.png)
 
 ## Features & Changes
 
