@@ -8,6 +8,7 @@
 
 * **Workshop Downloader** bundled (`workshop_downloader_linux`)
 * **Steamless AIO** bundled (`steamless-aio.sh`)
+* **Removed showing installed Steam games** in the ACCELA library view
 
 ## Installation (Steam Deck / Linux)
 
@@ -24,4 +25,4 @@ This script:
 
 ---
 
-*ＧｏＤ_Ｉｓ_ｉＮ_ｔＨｅ_ＷｉＲｅＤ*
+*god is in the ass*

@@ -47,7 +47,7 @@ else
 [Desktop Entry]
 Version=2.0
 Name=ASSella
-Comment=ＧｏＤ_Ｉｓ_ｉＮ_ｔＨｅ_ＷｉＲｅＤ
+Comment=god is in the ass
 Exec=$INSTALL_DESTINATION/ACCELA.AppImage %u
 Icon=accela
 Terminal=false
