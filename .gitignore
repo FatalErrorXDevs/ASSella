@@ -1,0 +1,35 @@
+# ── AppImage binaries (too large for git; use GitHub Releases) ──────────────
+*.AppImage
+*.AppImage.bak
+
+# ── Personal config with API keys ───────────────────────────────────────────
+# The real config lives at ~/.config/Tachibana Labs/ACCELA.conf
+# Only config.example.conf (styling only, no keys) is tracked
+ACCELA.conf
+
+# ── Runtime / cache ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+.venv/
+*.log
+logs/
+
+# ── Temp/working dirs ────────────────────────────────────────────────────────
+backups/
+depots/
+manifests/
+morrenus_manifests/
+hubcap_manifests/
+*.db
+
+# ── Workshop keys (personal) ────────────────────────────────────────────────
+workshop_keys.txt
+
+# ── GIFs (large media) ──────────────────────────────────────────────────────
+gifs/
+
+# ── OS junk ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
