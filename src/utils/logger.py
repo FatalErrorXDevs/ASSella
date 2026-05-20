@@ -45,9 +45,13 @@ class QtLogHandler(QObject, logging.Handler):
         # No-op to avoid issues with deleted Qt objects
         pass
 
-    def close(self) -> None:
-        # No-op to avoid issues with deleted Qt objects
-        pass
+class QtLogFormatter(logging.Formatter):
+    """Custom formatter for GUI logs to keep it clean and minimal."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.levelno >= logging.WARNING:
+            return f"[{record.levelname}] {record.getMessage()}"
+        return record.getMessage()
 
 
 # Global handler instance
@@ -113,7 +117,7 @@ def setup_logging() -> logging.Logger:
 
     # Qt Handler
     qt_log_handler.setLevel(logging.INFO)
-    qt_log_handler.setFormatter(formatter)
+    qt_log_handler.setFormatter(QtLogFormatter())
     handlers.append(qt_log_handler)
 
     # Configure root logger
