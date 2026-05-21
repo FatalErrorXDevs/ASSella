@@ -118,11 +118,37 @@ class TaskManager(QObject):
     def last_installed_game(self):
         return self._last_installed_game
 
+    def _init_simplified_stages(self):
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            st = self.main_window.simplified_terminal
+            st.reset_stages()
+
+            # Check Steamless status
+            steamless_enabled = self.settings.value("use_steamless", False, type=bool)
+            steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+            if not (steamless_enabled or steamless_aio_enabled):
+                st.set_stage_status("steamless", "skipped")
+            else:
+                st.set_stage_status("steamless", "pending")
+
+            # Check Achievements status
+            achievements_enabled = self.settings.value("generate_achievements", False, type=bool)
+            if not achievements_enabled:
+                st.set_stage_status("achievements", "skipped")
+            else:
+                st.set_stage_status("achievements", "pending")
+
     def start_zip_processing(self, zip_path, metadata=None):
         self.is_processing = True
         self.current_job = zip_path
         self.current_job_metadata = metadata or {}
         self._job_steps_completed.clear()
+
+        self._init_simplified_stages()
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            game_name = (metadata or {}).get("game_name") or os.path.basename(zip_path)
+            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
+            self.main_window.simplified_terminal.show_active_job(game_name)
 
         if self.main_window:
             self.main_window.progress_bar.setVisible(True)
@@ -141,6 +167,9 @@ class TaskManager(QObject):
         worker.error.connect(self._handle_task_error)
 
     def _on_zip_processed(self, game_data):
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("download", "completed")
+
         self.main_window.progress_bar.setRange(0, 100)
         self.main_window.progress_bar.setValue(100)
         self.game_data = game_data
@@ -298,6 +327,12 @@ class TaskManager(QObject):
             f"Downloading: {self.game_data.get('game_name', '')}"
         )
 
+        self._init_simplified_stages()
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            game_name = self.game_data.get("game_name", "Game")
+            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
+            self.main_window.simplified_terminal.show_active_job(game_name)
+
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(0)
         self.main_window.speed_label.setVisible(True)
@@ -382,6 +417,9 @@ class TaskManager(QObject):
 
         self._stop_speed_monitor()
         self.main_window.progress_bar.setValue(100)
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("download", "completed")
 
         if not self.game_data:
             if self.is_processing:
@@ -695,6 +733,9 @@ class TaskManager(QObject):
 
         logger.info("\n" + "=" * 40)
         logger.info("Starting Steamless DRM Removal...")
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("steamless", "in_progress")
 
         steamless_task = self._create_steamless_task(logger.info)
         steamless_task.use_aio = use_aio
@@ -1198,6 +1239,9 @@ class TaskManager(QObject):
         else:
             logger.info("Steamless processing completed with warnings or no DRM found")
 
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("steamless", "completed" if success else "error")
+
         self._steamless_success = success
         self._last_steamless_success = success
 
@@ -1265,6 +1309,9 @@ class TaskManager(QObject):
         _, error_value, _ = error_info
         logger.error(f"Steamless processing failed: {error_value}")
         self._steamless_error = True
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("steamless", "error")
+
         if self.steamless_task:
             QTimer.singleShot(0, self._clear_steamless_task)
 
@@ -1284,6 +1331,9 @@ class TaskManager(QObject):
 
         logger.info("\n" + "=" * 40)
         logger.info("Starting Steam Achievement Generation...")
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
 
         self.achievement_task = GenerateAchievementsTask()
         self.achievement_task.progress.connect(logger.info)
@@ -1318,6 +1368,9 @@ class TaskManager(QObject):
         else:
             logger.info(f"Achievement generation failed: {message}")
 
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("achievements", "completed" if success else "error")
+
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
@@ -1327,6 +1380,9 @@ class TaskManager(QObject):
         logger.error(f"Achievement generation failed: {error_value}")
         self._last_slscheevo_success = False
         self._slscheevo_error = True
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("achievements", "error")
 
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
@@ -1589,6 +1645,9 @@ class TaskManager(QObject):
 
         if self.zip_task_runner is None:
             self.is_awaiting_zip_task_stop = False
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.show_idle()
 
         self.main_window.job_queue.check_if_safe_to_start_next_job()
 

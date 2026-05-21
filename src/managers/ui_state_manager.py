@@ -378,6 +378,10 @@ class UIStateManager:
         # Log output
         self.main_window.log_output.setStyleSheet(accent_style)
 
+        # Simplified terminal
+        if hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.update_style()
+
         # Bottom titlebar
         if hasattr(self.main_window, "bottom_titlebar"):
             self.main_window.bottom_titlebar.update_style()

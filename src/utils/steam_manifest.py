@@ -107,6 +107,7 @@ def build_acf_content(
     include_depots: bool,
     log_proton: bool = False,
     logger=None,
+    existing_fields: Optional[Dict[str, str]] = None,
 ) -> str:
     buildid = game_data.get("buildid", "0")
     selected_depots = game_data.get("selected_depots_list", [])
@@ -124,6 +125,17 @@ def build_acf_content(
         else '\t"InstalledDepots"\n\t{\n\t}'
     )
 
+    preserve_content = ""
+    if existing_fields:
+        ignored_keys = {
+            "appid", "Universe", "name", "StateFlags", "installdir",
+            "SizeOnDisk", "buildid", "InstalledDepots", "UserConfig",
+            "MountedConfig"
+        }
+        for k, v in existing_fields.items():
+            if k not in ignored_keys:
+                preserve_content += f'\t"{k}"\t\t"{v}"\n'
+
     acf_content = (
         f'"AppState"\n'
         f"{{\n"
@@ -134,8 +146,11 @@ def build_acf_content(
         f'\t"installdir"\t\t"{install_folder_name}"\n'
         f'\t"SizeOnDisk"\t\t"{size_on_disk}"\n'
         f'\t"buildid"\t\t"{buildid}"\n'
-        f"{installed_depots_str}"
     )
+    if preserve_content:
+        acf_content += preserve_content
+
+    acf_content += f"{installed_depots_str}"
 
     if platform_config:
         acf_content += f"\n{platform_config}"
@@ -161,6 +176,20 @@ def write_acf_file(
     )
     os.makedirs(os.path.dirname(acf_path), exist_ok=True)
 
+    existing_fields = {}
+    if os.path.exists(acf_path):
+        try:
+            with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            for line in content.splitlines():
+                match = re.match(r'^\s*"([^"]+)"\s*"([^"]*)"\s*$', line)
+                if match:
+                    k, v = match.groups()
+                    existing_fields[k] = v
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to read existing ACF file: {e}")
+
     acf_content = build_acf_content(
         game_data,
         size_on_disk,
@@ -168,6 +197,7 @@ def write_acf_file(
         include_depots=include_depots,
         log_proton=log_proton,
         logger=logger,
+        existing_fields=existing_fields,
     )
 
     with open(acf_path, "w", encoding="utf-8") as f:

@@ -12,6 +12,7 @@ from PyQt6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QShortcut,
+    QColor,
 )
 from PyQt6.QtWidgets import (
     QLabel,
@@ -23,6 +24,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
+    QStackedWidget,
+    QStackedLayout,
+    QFrame,
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
@@ -120,8 +124,230 @@ class ResizeHandle(QWidget):
         }
         return edge_map.get(self.edge_name, Qt.Edge.RightEdge)
 
+class SimplifiedTerminalWidget(QWidget):
+    """A simplified terminal widget that displays stats and quotes when idle, and a job progress checklist when active."""
+
+    def __init__(self, main_window: "MainWindow"):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.settings = main_window.settings
+
+        self.quotes = [
+            "The cake is a lie.",
+            "Would you kindly?",
+            "War. War never changes.",
+            "Praise the Sun! \\o/",
+            "It's dangerous to go alone! Take this.",
+            "A man chooses, a slave obeys.",
+            "Snake? Snake?! SNAAAAAAKE!!!",
+            "Thank you Mario! But our princess is in another castle!",
+            "All your base are belong to us.",
+            "Nothing is true, everything is permitted.",
+            "It's time to kick ass and chew bubble gum... and I'm all out of gum.",
+            "Wake up, Mister Freeman. Wake up and smell the ashes.",
+            "You Died.",
+            "Do you know the definition of insanity?",
+            "Protocol 3: Protect the Pilot.",
+            "A hunter must hunt.",
+            "Hey you, you're finally awake.",
+            "Determination."
+        ]
+
+        self.setStyleSheet("background: transparent;")
+        self.init_ui()
+
+        # Connect signals from GameManager to update stats
+        if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
+            self.main_window.game_manager.library_updated.connect(self.update_stats)
+            self.main_window.game_manager.game_update_status_changed.connect(
+                lambda appid, status: self.update_stats()
+            )
+
+        self.update_stats()
+        self.update_style()
+
+    def init_ui(self):
+        self.layout = QStackedLayout(self)
+        self.layout.setContentsMargins(10, 5, 10, 5)
+        self.layout.setSpacing(2)
+
+        # --- VIEW 0: IDLE STATE ---
+        self.idle_widget = QWidget()
+        idle_layout = QVBoxLayout(self.idle_widget)
+        idle_layout.setContentsMargins(0, 0, 0, 0)
+        idle_layout.setSpacing(3)
+
+        # Stats container (horizontal)
+        stats_layout = QHBoxLayout()
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.total_games_label = QLabel("Library Size: -- games")
+        self.total_games_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.updates_label = QLabel("Updates: -- available")
+        self.updates_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        stats_layout.addWidget(self.total_games_label)
+        stats_layout.addWidget(self.updates_label)
+
+        # Separator line
+        self.separator = QFrame()
+        self.separator.setFrameShape(QFrame.FrameShape.HLine)
+        self.separator.setFrameShadow(QFrame.FrameShadow.Sunken)
+        self.separator.setLineWidth(1)
+        self.separator.setFixedHeight(1)
+
+        # Rotating Quote Label
+        self.quote_label = QLabel(self.quotes[0])
+        self.quote_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.quote_label.setWordWrap(True)
+
+        idle_layout.addLayout(stats_layout)
+        idle_layout.addWidget(self.separator)
+        idle_layout.addWidget(self.quote_label, 1)
+
+        # QTimer for quotes rotation
+        self.quote_timer = QTimer(self)
+        self.quote_timer.timeout.connect(self.rotate_quote)
+        self.quote_timer.start(10000)
+
+        # --- VIEW 1: ACTIVE JOB STATE ---
+        self.active_widget = QWidget()
+        active_layout = QVBoxLayout(self.active_widget)
+        active_layout.setContentsMargins(0, 0, 0, 0)
+        active_layout.setSpacing(3)
+
+        self.game_title_label = QLabel("Installing Game...")
+        self.game_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        checklist_layout = QVBoxLayout()
+        checklist_layout.setSpacing(2)
+        checklist_layout.setContentsMargins(20, 0, 20, 0)
+
+        # Download Stage
+        self.dl_status_icon = QLabel("○")
+        self.dl_text = QLabel("Downloading Game Files")
+        dl_row = QHBoxLayout()
+        dl_row.addWidget(self.dl_status_icon)
+        dl_row.addWidget(self.dl_text, 1)
+        checklist_layout.addLayout(dl_row)
+
+        # Achievements Stage
+        self.ach_status_icon = QLabel("○")
+        self.ach_text = QLabel("Generating Steam Achievements")
+        ach_row = QHBoxLayout()
+        ach_row.addWidget(self.ach_status_icon)
+        ach_row.addWidget(self.ach_text, 1)
+        checklist_layout.addLayout(ach_row)
+
+        # Steamless Stage
+        self.steam_status_icon = QLabel("○")
+        self.steam_text = QLabel("Removing Steam DRM (Steamless)")
+        steam_row = QHBoxLayout()
+        steam_row.addWidget(self.steam_status_icon)
+        steam_row.addWidget(self.steam_text, 1)
+        checklist_layout.addLayout(steam_row)
+
+        active_layout.addWidget(self.game_title_label)
+        active_layout.addLayout(checklist_layout)
+
+        self.layout.addWidget(self.idle_widget)
+        self.layout.addWidget(self.active_widget)
+
+        # Set to Idle by default
+        self.layout.setCurrentIndex(0)
+
+    def rotate_quote(self):
+        import random
+        # Choose a quote different from the current one to ensure it changes
+        available_quotes = [q for q in self.quotes if q != self.quote_label.text()]
+        if available_quotes:
+            self.quote_label.setText(random.choice(available_quotes))
+
+    def update_stats(self):
+        if not hasattr(self.main_window, "game_manager") or not self.main_window.game_manager:
+            return
+
+        games = self.main_window.game_manager.games
+        total_games = len(games)
+        games_with_updates = sum(1 for g in games if g.get("update_status") == "update_available")
+
+        self.total_games_label.setText(f"Library Size: {total_games} games")
+        self.updates_label.setText(f"Updates: {games_with_updates} available")
+
+    def update_style(self):
+        accent = self.main_window.accent_color or "#C06C84"
+        accent_style = f"color: {accent};"
+
+        self.total_games_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
+        self.updates_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
+        self.separator.setStyleSheet(f"background-color: {accent};")
+        self.quote_label.setStyleSheet("font-style: italic; font-size: 10pt; color: #FFFFFF;")
+
+        self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
+
+        self.dl_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
+        self.ach_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
+        self.steam_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
+
+        # Reset current status icons to apply updated colors
+        self.update_stage_style(self.dl_status_icon, self.dl_status_icon.text())
+        self.update_stage_style(self.ach_status_icon, self.ach_status_icon.text())
+        self.update_stage_style(self.steam_status_icon, self.steam_status_icon.text())
+
+    def update_stage_style(self, icon_label: QLabel, status: str):
+        # Green for completed, yellow/orange for active, red for error, gray/accent for pending/skipped
+        if status == "✓":
+            color = "#2ECC71"  # Nice flat green
+        elif status == "▶":
+            color = "#F1C40F"  # Nice flat yellow
+        elif status == "✗":
+            color = "#E74C3C"  # Nice flat red
+        elif status == "~":
+            color = "#95A5A6"  # Dim gray
+        else:  # "○"
+            color = "#7F8C8D"  # Darker gray
+
+        icon_label.setText(status)
+        icon_label.setFixedWidth(25)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {color};")
+
+    def set_stage_status(self, stage: str, status: str):
+        # stage can be: "download", "achievements", "steamless"
+        # status can be: "pending" ("○"), "in_progress" ("▶"), "completed" ("✓"), "error" ("✗"), "skipped" ("~")
+        status_map = {
+            "pending": "○",
+            "in_progress": "▶",
+            "completed": "✓",
+            "error": "✗",
+            "skipped": "~"
+        }
+        symbol = status_map.get(status, status)
+
+        if stage == "download":
+            self.update_stage_style(self.dl_status_icon, symbol)
+        elif stage == "achievements":
+            self.update_stage_style(self.ach_status_icon, symbol)
+        elif stage == "steamless":
+            self.update_stage_style(self.steam_status_icon, symbol)
+
+    def reset_stages(self):
+        self.set_stage_status("download", "pending")
+        self.set_stage_status("achievements", "pending")
+        self.set_stage_status("steamless", "pending")
+
+    def show_idle(self):
+        self.layout.setCurrentIndex(0)
+        self.update_stats()
+
+    def show_active_job(self, game_name: str = "Installing Game..."):
+        self.game_title_label.setText(game_name)
+        self.layout.setCurrentIndex(1)
+
 
 class MainWindow(QMainWindow):
+
     """Main application window."""
 
     def __init__(self):
@@ -157,6 +383,8 @@ class MainWindow(QMainWindow):
         self.bottom_widget = None
         self.bottom_layout = None
         self.log_output = None
+        self.stacked_terminal_widget = None
+        self.simplified_terminal = None
 
         self.update_check_timer = None
 
@@ -166,6 +394,7 @@ class MainWindow(QMainWindow):
         self._setup_resize_handles()
         if self.ui_state:
             self.ui_state.apply_style_settings()
+        self.update_nerd_mode()
         self._setup_key_sequence_detector()
         self._setup_exit_shortcut()
         self._setup_update_timer()
@@ -442,10 +671,17 @@ class MainWindow(QMainWindow):
         self.ui_state.setup_queue_panel()
         self.bottom_layout.addWidget(self.ui_state.queue_widget, 1)
 
+        self.stacked_terminal_widget = QStackedWidget()
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         qt_log_handler.new_record.connect(self.log_output.append)
-        self.bottom_layout.addWidget(self.log_output, 1)
+        self.stacked_terminal_widget.addWidget(self.log_output)
+
+        self.simplified_terminal = SimplifiedTerminalWidget(self)
+        self.stacked_terminal_widget.addWidget(self.simplified_terminal)
+
+        self.bottom_layout.addWidget(self.stacked_terminal_widget, 1)
 
         self.layout.addWidget(self.bottom_widget, 1)
         self.ui_state.queue_widget.setVisible(False)
@@ -474,6 +710,16 @@ class MainWindow(QMainWindow):
 
         self.update()
         logger.info(f"GIF display updated: {'enabled' if enabled else 'disabled'}")
+
+    def update_nerd_mode(self, nerd: Optional[bool] = None) -> None:
+        """Update terminal widget display based on nerd mode setting."""
+        if nerd is None:
+            nerd = self.settings.value("nerd_mode", True, type=bool)
+        if self.stacked_terminal_widget:
+            if nerd:
+                self.stacked_terminal_widget.setCurrentIndex(0)
+            else:
+                self.stacked_terminal_widget.setCurrentIndex(1)
 
     def update_progress_bar_style(self) -> None:
         self._update_progress_bar_style()

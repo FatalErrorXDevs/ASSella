@@ -867,6 +867,15 @@ class SettingsDialog(QDialog):
         )
         disp_layout.addWidget(self.ignore_color_warnings_checkbox)
 
+        self.nerd_mode_checkbox = create_checkbox_setting(
+            "Nerd Mode",
+            "nerd_mode",
+            True,
+            self,
+            "Display verbose terminal output. Disable for a simplified checklist.",
+        )
+        disp_layout.addWidget(self.nerd_mode_checkbox)
+
         disp_group.setLayout(disp_layout)
         layout.addWidget(disp_group)
 
@@ -1079,6 +1088,11 @@ class SettingsDialog(QDialog):
 
         ignore = self.ignore_color_warnings_checkbox.isChecked()
         self.settings.setValue("ignore_color_warnings", ignore)
+
+        nerd = self.nerd_mode_checkbox.isChecked()
+        self.settings.setValue("nerd_mode", nerd)
+        if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
+            self.main_window.update_nerd_mode(nerd)
         if SettingsDialog._is_too_close(QColor(u_accent), QColor(u_bg)):
                 QMessageBox.warning(
                     self,
