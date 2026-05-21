@@ -192,8 +192,8 @@ class SimplifiedTerminalWidget(QWidget):
 
         # Separator line
         self.separator = QFrame()
-        self.separator.setFrameShape(QFrame.FrameShape.HLine)
-        self.separator.setFrameShadow(QFrame.FrameShadow.Sunken)
+        self.separator.setFrameShape(QFrame.Shape.HLine)
+        self.separator.setFrameShadow(QFrame.Shadow.Sunken)
         self.separator.setLineWidth(1)
         self.separator.setFixedHeight(1)
 
@@ -487,7 +487,19 @@ class MainWindow(QMainWindow):
         self.game_manager = GameManager(self)
 
         logger.info("Starting initial game library scan...")
+        self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
         self.game_manager.scan_steam_libraries_async()
+
+    def _on_initial_scan_complete(self, games_found: int) -> None:
+        """Slot triggered when the initial library scan completes."""
+        try:
+            self.game_manager.scan_complete.disconnect(self._on_initial_scan_complete)
+        except TypeError:
+            pass  # Already disconnected or not connected
+
+        logger.info(f"Initial game library scan completed ({games_found} games found). Triggering immediate game updates check.")
+        if self.game_manager:
+            self.game_manager.check_game_updates_async()
 
     def _setup_update_timer(self) -> None:
         """Setup a timer to check for game updates periodically."""

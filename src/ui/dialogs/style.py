@@ -41,6 +41,7 @@ class StyleDialog(QDialog):
         self.ignore_color_warnings_checkbox: Optional[QCheckBox] = None
         self.titlebar_position_checkbox: Optional[QCheckBox] = None
         self.gif_display_checkbox: Optional[QCheckBox] = None
+        self.nerd_mode_checkbox: Optional[QCheckBox] = None
 
         logger.debug("Opening StyleDialog.")
         self._setup_ui()
@@ -160,6 +161,17 @@ class StyleDialog(QDialog):
         self.gif_display_checkbox.stateChanged.connect(self.on_gif_display_changed)
         self.main_layout.addWidget(self.gif_display_checkbox)
 
+        # Nerd Mode
+        self.nerd_mode_checkbox = QCheckBox("Nerd Mode")
+        nerd_mode_enabled = self.settings.value("nerd_mode", True, type=bool)
+        self.nerd_mode_checkbox.setChecked(nerd_mode_enabled)
+        self.nerd_mode_checkbox.setToolTip(
+            "Display verbose terminal output. Disable for a simplified checklist."
+        )
+        # noinspection PyUnresolvedReferences
+        self.nerd_mode_checkbox.stateChanged.connect(self.on_nerd_mode_changed)
+        self.main_layout.addWidget(self.nerd_mode_checkbox)
+
     def _setup_dialog_buttons(self) -> None:
         """Setup standard Ok/Cancel buttons."""
         buttons = create_standard_buttons(self.accept, self.reject)
@@ -173,6 +185,15 @@ class StyleDialog(QDialog):
         if self.main_window and hasattr(self.main_window, "update_gif_display"):
             self.main_window.update_gif_display(gif_display_enabled)
             logger.info(f"GIF display set to: {gif_display_enabled}")
+
+    def on_nerd_mode_changed(self, state: int) -> None:
+        """Handle Nerd Mode setting change."""
+        nerd = state == 2
+        self.settings.setValue("nerd_mode", nerd)
+
+        if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
+            self.main_window.update_nerd_mode(nerd)
+            logger.info(f"Nerd Mode set to: {nerd}")
 
     def on_titlebar_position_changed(self, state: int) -> None:
         """Handle immediate titlebar position change."""
@@ -355,6 +376,12 @@ class StyleDialog(QDialog):
         if self.gif_display_checkbox:
             gif_enabled = self.gif_display_checkbox.isChecked()
             self.settings.setValue("gif_display_enabled", gif_enabled)
+
+        if self.nerd_mode_checkbox:
+            nerd = self.nerd_mode_checkbox.isChecked()
+            self.settings.setValue("nerd_mode", nerd)
+            if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
+                self.main_window.update_nerd_mode(nerd)
 
         logger.info("Style settings saved.")
         super().accept()
