@@ -547,10 +547,50 @@ class FetchManifestDialog(QDialog):
             return
 
         logger.info(f"Manifest downloaded: {filepath}")
+        
+        metadata = {}
+        if self.parent_window:
+            try:
+                from core.tasks.process_zip_task import ProcessZipTask
+                zip_task = ProcessZipTask()
+                parsed_data = zip_task.run(filepath)
+                
+                if parsed_data and parsed_data.get("depots"):
+                    from ui.dialogs.depotselection import DepotSelectionDialog
+                    from utils.settings import get_settings
+                    settings = get_settings()
+                    auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                    depots = parsed_data.get("depots")
+                    
+                    selected_depots = None
+                    if auto_skip and len(depots) == 1:
+                        selected_depots = list(depots.keys())
+                    else:
+                        depot_dialog = DepotSelectionDialog(
+                            parsed_data["appid"],
+                            parsed_data.get("game_name", ""),
+                            depots,
+                            parsed_data.get("header_url"),
+                            self.parent_window,
+                        )
+                        if depot_dialog.exec():
+                            selected_depots = depot_dialog.get_selected_depots()
+                    
+                    if selected_depots:
+                        metadata["selected_depots_list"] = selected_depots
+                    else:
+                        # User cancelled depot selection
+                        logger.info("User cancelled depot selection.")
+                        self._toggle_inputs(True)
+                        self.status_label.setText("Download cancelled.")
+                        return
+            except Exception as e:
+                logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+
         self.status_label.setText("Download complete! Adding to queue")
 
         if self.parent_window and hasattr(self.parent_window, "job_queue"):
-            self.parent_window.job_queue.add_job(filepath)
+            self.parent_window.job_queue.add_job(filepath, metadata)
 
         self.accept()
 

@@ -502,7 +502,30 @@ class SteamlessIntegration(QObject):
                 )
                 return False
 
-            # Exit code 0 - Steamless handles file operations internally
+            # Exit code 0 - Steamless was successful
+            try:
+                if getattr(self, "use_aio", False):
+                    # AIO creates a .original backup
+                    original_backup = exe_path + ".original"
+                    bak_file = exe_path + ".bak"
+                    if os.path.exists(original_backup):
+                        if os.path.exists(bak_file):
+                            os.remove(bak_file)
+                        os.rename(original_backup, bak_file)
+                        self.progress.emit(f"Backed up original executable to: {bak_file}")
+                else:
+                    # Steamless CLI creates an .unpacked.exe
+                    unpacked_exe = exe_path + ".unpacked.exe"
+                    bak_file = exe_path + ".bak"
+                    if os.path.exists(unpacked_exe):
+                        if os.path.exists(bak_file):
+                            os.remove(bak_file)
+                        os.rename(exe_path, bak_file)
+                        os.rename(unpacked_exe, exe_path)
+                        self.progress.emit(f"Backed up original executable to: {bak_file}")
+            except Exception as e:
+                self.progress.emit(f"Warning: Failed to rename backup files: {e}")
+
             self.finished.emit(True)
             return True
 

@@ -146,7 +146,12 @@ class TaskManager(QObject):
         self.game_data = game_data
 
         if self.game_data and self.game_data.get("depots"):
-            self._show_depot_selection_dialog()
+            pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
+            if pre_selected:
+                self.game_data["selected_depots_list"] = pre_selected
+                self._start_download_with_destination(pre_selected)
+            else:
+                self._show_depot_selection_dialog()
         else:
             QMessageBox.warning(
                 self.main_window,

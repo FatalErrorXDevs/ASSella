@@ -158,6 +158,8 @@ class MainWindow(QMainWindow):
         self.bottom_layout = None
         self.log_output = None
 
+        self.update_check_timer = None
+
         self._setup_window_properties()
         self._initialize_managers()
         self._setup_ui()
@@ -166,6 +168,7 @@ class MainWindow(QMainWindow):
             self.ui_state.apply_style_settings()
         self._setup_key_sequence_detector()
         self._setup_exit_shortcut()
+        self._setup_update_timer()
 
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
@@ -256,6 +259,27 @@ class MainWindow(QMainWindow):
 
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_steam_libraries_async()
+
+    def _setup_update_timer(self) -> None:
+        """Setup a timer to check for game updates periodically."""
+        self.update_check_timer = QTimer(self)
+        self.update_check_timer.timeout.connect(self._on_update_timer_timeout)
+        self.apply_update_timer_settings()
+
+    def apply_update_timer_settings(self) -> None:
+        """Apply the interval setting for the update check timer."""
+        interval_mins = self.settings.value("update_check_interval_minutes", 5, type=int)
+        if interval_mins > 0:
+            self.update_check_timer.start(interval_mins * 60 * 1000)
+            logger.info(f"Update check timer started with interval: {interval_mins} minutes")
+        else:
+            self.update_check_timer.stop()
+            logger.info("Update check timer disabled")
+
+    def _on_update_timer_timeout(self) -> None:
+        if self.game_manager:
+            logger.info("Running periodic game update check")
+            self.game_manager.check_game_updates_async()
 
     def _setup_ui(self) -> None:
         """Setup the main UI components."""

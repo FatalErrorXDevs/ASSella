@@ -427,6 +427,20 @@ class SettingsDialog(QDialog):
         max_dl_layout.addWidget(self.max_downloads_spinbox)
         dl_layout.addLayout(max_dl_layout)
 
+        # Update Check Interval
+        update_interval_layout = QHBoxLayout()
+        update_interval_label = QLabel("Auto-update check interval (minutes)")
+        update_interval_label.setToolTip("Set how often to check for game updates in minutes. Set to 0 to disable automatic checks.")
+
+        self.update_interval_spinbox = QSpinBox()
+        self.update_interval_spinbox.setRange(0, 1440)
+        current_interval = self.settings.value("update_check_interval_minutes", 5, type=int)
+        self.update_interval_spinbox.setValue(current_interval)
+
+        update_interval_layout.addWidget(update_interval_label)
+        update_interval_layout.addWidget(self.update_interval_spinbox)
+        dl_layout.addLayout(update_interval_layout)
+
         dl_group.setLayout(dl_layout)
         layout.addWidget(dl_group)
 
@@ -455,7 +469,7 @@ class SettingsDialog(QDialog):
         self.steamless_aio_checkbox = create_checkbox_setting(
             "Remove Steam DRM with Steamless-AIO",
             "use_steamless_aio",
-            False,
+            True,
             self,
             "Remove DRM from game executables after downloading (AIO Alternative).",
         )
@@ -1013,6 +1027,16 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "use_steamless", self.steamless_checkbox.isChecked()
         )
+        self.settings.setValue(
+            "use_steamless_aio", self.steamless_aio_checkbox.isChecked()
+        )
+        
+        if hasattr(self, "update_interval_spinbox"):
+            self.settings.setValue(
+                "update_check_interval_minutes", self.update_interval_spinbox.value()
+            )
+            if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
+                self.main_window.apply_update_timer_settings()
 
         if self.application_shortcuts_checkbox:
             self.settings.setValue(

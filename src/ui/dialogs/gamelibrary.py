@@ -1110,6 +1110,44 @@ class GameLibraryDialog(QDialog):
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
         }
+        
+        try:
+            from core.tasks.process_zip_task import ProcessZipTask
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(filepath)
+            
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                from utils.settings import get_settings
+                settings = get_settings()
+                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                depots = parsed_data.get("depots")
+                
+                selected_depots = None
+                if auto_skip and len(depots) == 1:
+                    selected_depots = list(depots.keys())
+                else:
+                    depot_dialog = DepotSelectionDialog(
+                        parsed_data["appid"],
+                        parsed_data.get("game_name", ""),
+                        depots,
+                        parsed_data.get("header_url"),
+                        self.main_window,
+                    )
+                    if depot_dialog.exec():
+                        selected_depots = depot_dialog.get_selected_depots()
+                
+                if selected_depots:
+                    metadata["selected_depots_list"] = selected_depots
+                else:
+                    # User cancelled depot selection, don't submit job
+                    logger.info("User cancelled depot selection.")
+                    dialog.accept()
+                    self.accept()
+                    return
+        except Exception as e:
+            logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+
         self.main_window.job_queue.add_job(filepath, metadata)
         dialog.accept()
         self.accept()

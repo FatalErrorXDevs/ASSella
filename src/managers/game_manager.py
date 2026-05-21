@@ -338,12 +338,10 @@ class GameManager(QObject):
 
         QTimer.singleShot(0, update_ui)
 
-        # Start async update checking for all collected games (called directly, not in QTimer)
-        # This ensures it always runs even if the UI signals are delayed
-        if games_found > 0:
-            logger.info("Starting async update check for collected games")
-            self.check_game_updates_async()
-
+        # Start async update checking ONLY if we aren't doing it on a timer
+        # Actually, we will let the 5-minute timer handle this in MainWindow/GameManager,
+        # or the user can manually check for updates.
+        
         return games_found
 
     def _scan_library(self, library_path, steam_install_path):
