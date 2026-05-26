@@ -49,6 +49,7 @@ class GameManager(QObject):
     game_selected = pyqtSignal(str)
     scan_complete = pyqtSignal(int)  # Emits number of games found
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
+    all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
 
     def __init__(self, main_window):
         super().__init__()
@@ -60,10 +61,15 @@ class GameManager(QObject):
         self.selected_game = None
         self.filtered_games = []
 
+        # O(1) lookup: appid -> game dict reference
+        self._games_by_appid: dict = {}
+
         # Manifest check task management
         self.manifest_check_task = None
         self.manifest_check_runner = None
         self._games_to_check = []
+        # Counter used by single-game checks (not the batch runner)
+        self._single_check_runners: list = []
 
         # Library scan task management
         self.scan_runner = None
@@ -78,7 +84,6 @@ class GameManager(QObject):
 
     def add_game(self, game_data):
         """Add a game to the library"""
-        # TODO: Implement game addition logic
         logger.info(f"Adding game to library: {game_data.get('game_name', 'Unknown')}")
         self.games.append(game_data)
         # Sort the main games list
@@ -88,7 +93,6 @@ class GameManager(QObject):
 
     def remove_game(self, game_id):
         """Remove a game from the library"""
-        # TODO: Implement game removal logic
         logger.info(f"Removing game from library: {game_id}")
         self.games = [g for g in self.games if g.get("appid") != game_id]
         # Sort the main games list
@@ -122,7 +126,6 @@ class GameManager(QObject):
 
     def update_game(self, game_id, game_data):
         """Update game information"""
-        # TODO: Implement game update logic
         logger.info(f"Updating game: {game_id}")
         for i, game in enumerate(self.games):
             if game.get("appid") == game_id:
@@ -137,12 +140,10 @@ class GameManager(QObject):
 
     def _apply_filters(self):
         """Apply current filters to the game list"""
-        # TODO: Implement filtering logic
         self.filtered_games = self._get_sorted_games(self.games)
 
     def search_games(self, query):
         """Search games by name or other criteria"""
-        # TODO: Implement search functionality
         if not query:
             self.filtered_games = []
             self._apply_filters()
@@ -162,12 +163,32 @@ class GameManager(QObject):
         self._apply_filters()
         self.library_updated.emit()
 
+    def reset_up_to_date_for_recheck(self) -> None:
+        """
+        Reset 'up_to_date' games back to 'checking' so the next batch check
+        re-validates them. Called exclusively by the periodic update timer.
+        Games with 'update_available' are left untouched.
+        """
+        reset_count = 0
+        for game in self.games:
+            if game.get("update_status") == UPDATE_STATUS["UP_TO_DATE"]:
+                game["update_status"] = UPDATE_STATUS["CHECKING"]
+                reset_count += 1
+        if reset_count:
+            logger.info(f"Periodic recheck: reset {reset_count} 'up_to_date' game(s) to 'checking'")
+
     def check_game_updates_async(self):
         """
-        Start async update checking for all games in the library.
-        Games appear with 'checking' status initially, then update individually.
+        Start async update checking for games that still need a check.
+
+        Smart skip logic:
+        - 'update_available' → never re-check until user downloads the update
+        - 'up_to_date'       → only re-check on the periodic timer (not startup)
+        - 'checking' / 'cannot_determine' → always re-check
+
+        This drastically reduces Steam API calls on repeat runs.
         """
-        # Cancel any existing task by stopping it and waiting for cleanup
+        # Cancel any existing batch task before starting a new one
         if (
             self.manifest_check_task is not None
             or self.manifest_check_runner is not None
@@ -175,17 +196,22 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
-        # Get games with valid appids
+        # Smart filter: skip games whose status is already conclusively known
+        SKIP_STATUSES = ("update_available", "up_to_date")
         self._games_to_check = [
-            g for g in self.games if g.get("appid") not in ("0", "N/A", "unknown")
+            g for g in self.games
+            if g.get("appid") not in ("0", "N/A", "unknown")
+            and g.get("update_status") not in SKIP_STATUSES
         ]
 
         if not self._games_to_check:
-            logger.info("No games with valid appids to check")
+            logger.info("All games already have a known update status — skipping batch check")
+            self.all_updates_checked.emit()
             return
 
         logger.info(
-            f"Starting async update check for {len(self._games_to_check)} games"
+            f"Starting async update check for {len(self._games_to_check)} game(s) "
+            f"(skipped {len(self.games) - len(self._games_to_check)} with known status)"
         )
 
         # Create new task
@@ -207,28 +233,66 @@ class GameManager(QObject):
         )
         self.manifest_check_runner.run(self.manifest_check_task.run)
 
-    def _on_game_update_checked(self, appid, update_status):
-        """Handle individual game update check result"""
-        # Find and update the game
-        for game in self.games:
-            if game.get("appid") == appid:
-                game["update_status"] = update_status
-                logger.debug(f"Updated status for game {appid}: {update_status}")
-                # Emit specific signal for individual game update (UI can choose to update just that item)
-                self.game_update_status_changed.emit(appid, update_status)
-                break
+    def check_single_game_update(self, appid: str) -> None:
+        """
+        Trigger an update check for a single game by appid.
+        Resets its status to 'checking', then runs ManifestCheckTask for just that game.
+        Called from the per-game 'Check for Updates' button in the library UI.
+        """
+        game = self._games_by_appid.get(appid) or self.get_game(appid)
+        if not game:
+            logger.warning(f"check_single_game_update: appid {appid} not found")
+            return
+
+        # Reset status so the UI shows spinner
+        game["update_status"] = UPDATE_STATUS["CHECKING"]
+        self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
+
+        task = ManifestCheckTask([game])
+        runner = TaskRunner()
+
+        def _on_checked(checked_appid, status):
+            self._on_game_update_checked(checked_appid, status)
+
+        def _on_done():
+            # Clean up this runner from the list
+            self._single_check_runners[:] = [
+                r for r in self._single_check_runners if r is not runner
+            ]
+
+        task.game_update_checked.connect(_on_checked)
+        task.completed.connect(_on_done)
+        task.error.connect(self._on_update_check_error)
+
+        self._single_check_runners.append(runner)
+        runner.run(task.run)
+        logger.info(f"Single update check started for appid {appid}")
+
+    def _on_game_update_checked(self, appid: str, update_status: str) -> None:
+        """Handle individual game update check result — O(1) via _games_by_appid dict."""
+        game = self._games_by_appid.get(appid)
+        if game is None:
+            # Fallback to linear search for safety (e.g. dict not yet populated)
+            for g in self.games:
+                if g.get("appid") == appid:
+                    game = g
+                    break
+
+        if game is not None:
+            game["update_status"] = update_status
+            logger.debug(f"Updated status for game {appid}: {update_status}")
+            self.game_update_status_changed.emit(appid, update_status)
 
     @staticmethod
     def _on_update_check_progress(current, total):
         """Handle update check progress"""
         logger.debug(f"Update check progress: {current}/{total}")
 
-    @staticmethod
-    def _on_update_check_completed():
+    def _on_update_check_completed(self):
         """Handle update check completion"""
         logger.info("All game updates checked")
-        # Note: We don't clear references here
-        # They will be cleared by _on_manifest_check_runner_cleanup when thread finishes
+        self.all_updates_checked.emit()
+        # Note: references cleared by _on_manifest_check_runner_cleanup when thread finishes
 
     @staticmethod
     def _on_update_check_error(error_info):
@@ -238,8 +302,6 @@ class GameManager(QObject):
             f"Error during update check: {exc_msg}",
             exc_info=(exc_type, exc_msg, exc_traceback),
         )
-        # Note: We don't clear references here
-        # They will be cleared by _on_manifest_check_runner_cleanup when thread finishes
 
     def _on_manifest_check_runner_cleanup(self):
         """Handle TaskRunner cleanup completion - called when thread finishes"""
@@ -322,6 +384,12 @@ class GameManager(QObject):
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
 
+        # Rebuild O(1) appid lookup dict after scan
+        self._games_by_appid = {
+            g["appid"]: g for g in self.games if g.get("appid") not in ("0", "N/A", "unknown", None)
+        }
+        logger.debug(f"Rebuilt _games_by_appid with {len(self._games_by_appid)} entries")
+
         # Fix SLSsteam config indentation if needed (before syncing)
         self._fix_slssteam_config()
 
@@ -338,10 +406,6 @@ class GameManager(QObject):
 
         QTimer.singleShot(0, update_ui)
 
-        # Start async update checking ONLY if we aren't doing it on a timer
-        # Actually, we will let the 5-minute timer handle this in MainWindow/GameManager,
-        # or the user can manually check for updates.
-        
         return games_found
 
     def _scan_library(self, library_path, steam_install_path):
@@ -817,6 +881,7 @@ class GameManager(QObject):
         logger.info("Clearing entire game library")
         self.games.clear()
         self.filtered_games.clear()
+        self._games_by_appid.clear()
         self.selected_game = None
         self.library_updated.emit()
 
@@ -856,6 +921,7 @@ class GameManager(QObject):
 
         self.games.clear()
         self.filtered_games.clear()
+        self._games_by_appid.clear()
         self.selected_game = None
         self._games_to_check = []
 

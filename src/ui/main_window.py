@@ -1,5 +1,6 @@
 import atexit
 import logging
+import random
 import sys
 from collections import deque
 from typing import Dict, Optional
@@ -132,25 +133,33 @@ class SimplifiedTerminalWidget(QWidget):
         self.main_window = main_window
         self.settings = main_window.settings
 
+        # (quote text, game/source title) tuples
         self.quotes = [
-            "The cake is a lie.",
-            "Would you kindly?",
-            "War. War never changes.",
-            "Praise the Sun! \\o/",
-            "It's dangerous to go alone! Take this.",
-            "A man chooses, a slave obeys.",
-            "Snake? Snake?! SNAAAAAAKE!!!",
-            "Thank you Mario! But our princess is in another castle!",
-            "All your base are belong to us.",
-            "Nothing is true, everything is permitted.",
-            "It's time to kick ass and chew bubble gum... and I'm all out of gum.",
-            "Wake up, Mister Freeman. Wake up and smell the ashes.",
-            "You Died.",
-            "Do you know the definition of insanity?",
-            "Protocol 3: Protect the Pilot.",
-            "A hunter must hunt.",
-            "Hey you, you're finally awake.",
-            "Determination."
+            ("The cake is a lie.", "Portal"),
+            ("Would you kindly?", "BioShock"),
+            ("War. War never changes.", "Fallout"),
+            ("Praise the Sun! \\o/", "Dark Souls"),
+            ("It's dangerous to go alone! Take this.", "The Legend of Zelda"),
+            ("A man chooses, a slave obeys.", "BioShock"),
+            ("Snake? Snake?! SNAAAAAAKE!!!", "Metal Gear Solid"),
+            ("Thank you Mario! But our princess is in another castle!", "Super Mario Bros."),
+            ("All your base are belong to us.", "Zero Wing"),
+            ("Nothing is true, everything is permitted.", "Assassin's Creed"),
+            ("It's time to kick ass and chew bubblegum... and I'm all outta gum.", "Duke Nukem 3D"),
+            ("Wake up, Mister Freeman. Wake up and smell the ashes.", "Half-Life 2"),
+            ("You Died.", "Dark Souls"),
+            ("Do you know the definition of insanity?", "Far Cry 3"),
+            ("Protocol 3: Protect the Pilot.", "Titanfall 2"),
+            ("A hunter must hunt.", "The Witcher 3"),
+            ("Hey, you. You're finally awake.", "The Elder Scrolls V: Skyrim"),
+            ("Determination.", "Undertale"),
+            ("The world fears the inevitable plummet into the abyss.", "NieR: Automata"),
+            ("Stay a while and listen.", "Diablo II"),
+            ("It's not about the money, it's about sending a message.", "Batman: Arkham City"),
+            ("What is a man? A miserable little pile of secrets!", "Castlevania: Symphony of the Night"),
+            ("A famous explorer once said that the extraordinary is in what we do, not who we are.", "Tomb Raider"),
+            ("I used to be an adventurer like you. Then I took an arrow in the knee.", "The Elder Scrolls V: Skyrim"),
+            ("The right man in the wrong place can make all the difference in the world.", "Half-Life 2"),
         ]
 
         self.setStyleSheet("background: transparent;")
@@ -198,13 +207,17 @@ class SimplifiedTerminalWidget(QWidget):
         self.separator.setFixedHeight(1)
 
         # Rotating Quote Label
-        self.quote_label = QLabel(self.quotes[0])
+        self.quote_label = QLabel(self.quotes[0][0])
         self.quote_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.quote_label.setWordWrap(True)
+
+        self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
+        self.quote_source_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         idle_layout.addLayout(stats_layout)
         idle_layout.addWidget(self.separator)
         idle_layout.addWidget(self.quote_label, 1)
+        idle_layout.addWidget(self.quote_source_label)
 
         # QTimer for quotes rotation
         self.quote_timer = QTimer(self)
@@ -258,11 +271,13 @@ class SimplifiedTerminalWidget(QWidget):
         self.layout.setCurrentIndex(0)
 
     def rotate_quote(self):
-        import random
-        # Choose a quote different from the current one to ensure it changes
-        available_quotes = [q for q in self.quotes if q != self.quote_label.text()]
+        # Choose a quote tuple different from the current one
+        current_text = self.quote_label.text()
+        available_quotes = [q for q in self.quotes if q[0] != current_text]
         if available_quotes:
-            self.quote_label.setText(random.choice(available_quotes))
+            quote, source = random.choice(available_quotes)
+            self.quote_label.setText(quote)
+            self.quote_source_label.setText(f"— {source}")
 
     def update_stats(self):
         if not hasattr(self.main_window, "game_manager") or not self.main_window.game_manager:
@@ -283,6 +298,7 @@ class SimplifiedTerminalWidget(QWidget):
         self.updates_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
         self.separator.setStyleSheet(f"background-color: {accent};")
         self.quote_label.setStyleSheet("font-style: italic; font-size: 10pt; color: #FFFFFF;")
+        self.quote_source_label.setStyleSheet("font-size: 9pt; color: #888888;")
 
         self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
 
@@ -520,6 +536,9 @@ class MainWindow(QMainWindow):
     def _on_update_timer_timeout(self) -> None:
         if self.game_manager:
             logger.info("Running periodic game update check")
+            # On a periodic check, reset 'up_to_date' games so they get re-verified.
+            # 'update_available' games are left as-is (status won't change until downloaded).
+            self.game_manager.reset_up_to_date_for_recheck()
             self.game_manager.check_game_updates_async()
 
     def _setup_ui(self) -> None:

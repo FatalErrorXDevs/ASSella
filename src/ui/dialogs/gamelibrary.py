@@ -351,6 +351,9 @@ class GameLibraryDialog(QDialog):
         self.game_manager.game_update_status_changed.connect(
             self._on_game_update_status_changed, Qt.ConnectionType.UniqueConnection
         )
+        self.game_manager.all_updates_checked.connect(
+            self._on_all_updates_checked, Qt.ConnectionType.UniqueConnection
+        )
 
         self.games_list.itemClicked.connect(self._on_item_selected)
         self.goldberg_check_complete.connect(self._on_goldberg_check_complete)
@@ -377,32 +380,21 @@ class GameLibraryDialog(QDialog):
         self.scan_button.setText("Scan Libraries")
 
         if count > 0:
+            # Update checks are triggered separately; wait for all_updates_checked signal
             self._checking_updates = True
-            QTimer.singleShot(100, self._check_if_updates_complete)
+            self.info_label.setText(
+                f"Found {count} game(s) — checking for updates..."
+            )
             return
 
         self.info_label.setText(f"Scan complete: Found {count} installed Steam game(s).")
         self._scanning = False
-        # Force refresh to clear "Scanning..." state if 0 found
         self._refresh_game_list()
 
-    def _check_if_updates_complete(self) -> None:
+    def _on_all_updates_checked(self) -> None:
+        """Called when the full batch update check finishes (replaces the 500ms polling loop)."""
         if not self._checking_updates:
             return
-
-        # Check if any items are still in "checking" state
-        checking = False
-        for i in range(self.games_list.count()):
-            item = self.games_list.item(i)
-            game_data = item.data(Qt.ItemDataRole.UserRole)
-            if game_data and game_data.get("update_status") == "checking":
-                checking = True
-                break
-
-        if checking:
-            QTimer.singleShot(500, self._check_if_updates_complete)
-            return
-
         self._checking_updates = False
         self._scanning = False
         self._refresh_game_list()
@@ -791,15 +783,52 @@ class GameLibraryDialog(QDialog):
         )
         layout.addWidget(name_lbl)
 
-        status_text = {
-            "update_available": "New version available",
-            "up_to_date": "Up to date",
-            "checking": "Checking for updates...",
-        }.get(game_data.get("update_status"), "Unknown")
+        def _status_text(status):
+            return {
+                "update_available": "⬆  New version available",
+                "up_to_date": "✓  Up to date",
+                "checking": "⟳  Checking for updates...",
+                "cannot_determine": "?  Status unknown",
+            }.get(status, "?  Unknown")
 
-        status_lbl = QLabel(status_text)
+        status_lbl = QLabel(_status_text(game_data.get("update_status")))
         status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
-        layout.addWidget(status_lbl)
+
+        # "Check for Updates" button - only shown for games with valid appids
+        appid = game_data.get("appid", "0")
+        check_btn = QPushButton("Check for Updates")
+        check_btn.setToolTip("Manually re-check for an update for this game")
+
+        def _on_check_clicked():
+            if self.game_manager:
+                check_btn.setEnabled(False)
+                check_btn.setText("Checking...")
+                self.game_manager.check_single_game_update(appid)
+
+        def _on_status_changed(changed_appid, new_status):
+            if changed_appid != appid:
+                return
+            status_lbl.setText(_status_text(new_status))
+            check_btn.setEnabled(True)
+            check_btn.setText("Check for Updates")
+            is_update = new_status == "update_available"
+            validate_btn.setText("Download Update" if is_update else "Validate Files")
+
+        check_btn.clicked.connect(_on_check_clicked)
+
+        if self.game_manager:
+            self.game_manager.game_update_status_changed.connect(_on_status_changed)
+            # Disconnect when dialog closes to avoid dangling connection
+            dialog.finished.connect(
+                lambda: self.game_manager.game_update_status_changed.disconnect(_on_status_changed)
+                if self.game_manager else None
+            )
+
+        status_row = QHBoxLayout()
+        status_row.addWidget(status_lbl, 1)
+        if appid not in ("0", "N/A", "unknown"):
+            status_row.addWidget(check_btn)
+        layout.addLayout(status_row)
 
         # Info Grid
         form = QFormLayout()
