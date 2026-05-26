@@ -27,7 +27,7 @@ fi
 # 3. Download the new ASSella.AppImage from GitHub Release
 echo -e "${YELLOW}[INFO] Downloading ASSella beta AppImage...${NC}"
 curl -L -o "$INSTALL_DESTINATION/ASSella.AppImage" \
-  "https://github.com/niwia/ASSella/releases/download/v1.7.1b/ASSella.AppImage"
+  "https://github.com/niwia/ASSella/releases/download/v1.7d/ASSella.AppImage"
 
 # 4. Make ASSella executable
 chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"

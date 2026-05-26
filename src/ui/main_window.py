@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QStackedLayout,
     QFrame,
+    QScrollArea,
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
@@ -132,6 +133,7 @@ class SimplifiedTerminalWidget(QWidget):
         super().__init__(main_window)
         self.main_window = main_window
         self.settings = main_window.settings
+        self.installation_history = []
 
         # (quote text, game/source title) tuples
         self.quotes = [
@@ -173,6 +175,7 @@ class SimplifiedTerminalWidget(QWidget):
             )
 
         self.update_stats()
+        self.update_history_display()
         self.update_style()
 
     def init_ui(self):
@@ -180,24 +183,56 @@ class SimplifiedTerminalWidget(QWidget):
         self.layout.setContentsMargins(10, 5, 10, 5)
         self.layout.setSpacing(2)
 
-        # --- VIEW 0: IDLE STATE ---
+        # --- VIEW 0: IDLE STATE (3-Column Dashboard) ---
         self.idle_widget = QWidget()
-        idle_layout = QVBoxLayout(self.idle_widget)
+        idle_layout = QHBoxLayout(self.idle_widget)
         idle_layout.setContentsMargins(0, 0, 0, 0)
-        idle_layout.setSpacing(3)
+        idle_layout.setSpacing(8)
 
-        # Stats container (horizontal)
-        stats_layout = QHBoxLayout()
-        stats_layout.setContentsMargins(0, 0, 0, 0)
+        panel_style = """
+            QFrame {
+                background-color: rgba(30, 30, 30, 100);
+                border: 1px solid rgba(255, 255, 255, 12);
+                border-radius: 6px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
+            }
+        """
 
+        scrollbar_style = """
+            QScrollBar:vertical {
+                border: none;
+                background: rgba(0, 0, 0, 10);
+                width: 4px;
+                margin: 0px;
+                border-radius: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 30);
+                min-height: 20px;
+                border-radius: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(255, 255, 255, 60);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """
+
+        # Column 1: System Status & Quotes
+        self.panel_left = QFrame()
+        self.panel_left.setFrameShape(QFrame.Shape.StyledPanel)
+        self.panel_left.setStyleSheet(panel_style)
+        left_layout = QVBoxLayout(self.panel_left)
+        left_layout.setContentsMargins(8, 6, 8, 6)
+        left_layout.setSpacing(4)
+
+        self.stats_title = QLabel("SYSTEM STATUS")
         self.total_games_label = QLabel("Library Size: -- games")
-        self.total_games_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.updates_label = QLabel("Updates: -- available")
-        self.updates_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        stats_layout.addWidget(self.total_games_label)
-        stats_layout.addWidget(self.updates_label)
 
         # Separator line
         self.separator = QFrame()
@@ -206,18 +241,72 @@ class SimplifiedTerminalWidget(QWidget):
         self.separator.setLineWidth(1)
         self.separator.setFixedHeight(1)
 
-        # Rotating Quote Label
         self.quote_label = QLabel(self.quotes[0][0])
-        self.quote_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.quote_label.setWordWrap(True)
-
         self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
         self.quote_source_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
-        idle_layout.addLayout(stats_layout)
-        idle_layout.addWidget(self.separator)
-        idle_layout.addWidget(self.quote_label, 1)
-        idle_layout.addWidget(self.quote_source_label)
+        left_layout.addWidget(self.stats_title)
+        left_layout.addWidget(self.total_games_label)
+        left_layout.addWidget(self.updates_label)
+        left_layout.addWidget(self.separator)
+        left_layout.addWidget(self.quote_label, 1)
+        left_layout.addWidget(self.quote_source_label)
+
+        # Column 2: Available Updates
+        self.panel_mid = QFrame()
+        self.panel_mid.setFrameShape(QFrame.Shape.StyledPanel)
+        self.panel_mid.setStyleSheet(panel_style)
+        mid_layout = QVBoxLayout(self.panel_mid)
+        mid_layout.setContentsMargins(8, 6, 8, 6)
+        mid_layout.setSpacing(4)
+
+        self.updates_title = QLabel("PENDING UPDATES")
+        self.updates_scroll = QScrollArea()
+        self.updates_scroll.setWidgetResizable(True)
+        self.updates_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.updates_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.updates_scroll.verticalScrollBar().setStyleSheet(scrollbar_style)
+
+        self.updates_scroll_widget = QWidget()
+        self.updates_scroll_widget.setStyleSheet("background: transparent;")
+        self.updates_scroll_layout = QVBoxLayout(self.updates_scroll_widget)
+        self.updates_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.updates_scroll_layout.setSpacing(2)
+        self.updates_scroll.setWidget(self.updates_scroll_widget)
+
+        mid_layout.addWidget(self.updates_title)
+        mid_layout.addWidget(self.updates_scroll, 1)
+
+        # Column 3: Session Activity Log
+        self.panel_right = QFrame()
+        self.panel_right.setFrameShape(QFrame.Shape.StyledPanel)
+        self.panel_right.setStyleSheet(panel_style)
+        right_layout = QVBoxLayout(self.panel_right)
+        right_layout.setContentsMargins(8, 6, 8, 6)
+        right_layout.setSpacing(4)
+
+        self.history_title = QLabel("SESSION ACTIVITY")
+        self.history_scroll = QScrollArea()
+        self.history_scroll.setWidgetResizable(True)
+        self.history_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history_scroll.verticalScrollBar().setStyleSheet(scrollbar_style)
+
+        self.history_scroll_widget = QWidget()
+        self.history_scroll_widget.setStyleSheet("background: transparent;")
+        self.history_scroll_layout = QVBoxLayout(self.history_scroll_widget)
+        self.history_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.history_scroll_layout.setSpacing(4)
+        self.history_scroll.setWidget(self.history_scroll_widget)
+
+        right_layout.addWidget(self.history_title)
+        right_layout.addWidget(self.history_scroll, 1)
+
+        # Add panels to idle layout
+        idle_layout.addWidget(self.panel_left, 1)
+        idle_layout.addWidget(self.panel_mid, 1)
+        idle_layout.addWidget(self.panel_right, 1)
 
         # QTimer for quotes rotation
         self.quote_timer = QTimer(self)
@@ -285,20 +374,142 @@ class SimplifiedTerminalWidget(QWidget):
 
         games = self.main_window.game_manager.games
         total_games = len(games)
-        games_with_updates = sum(1 for g in games if g.get("update_status") == "update_available")
+        games_with_updates = [g for g in games if g.get("update_status") == "update_available"]
+        total_updates = len(games_with_updates)
 
         self.total_games_label.setText(f"Library Size: {total_games} games")
-        self.updates_label.setText(f"Updates: {games_with_updates} available")
+        self.updates_label.setText(f"Updates: {total_updates} available")
+
+        # Clear existing updates list
+        while self.updates_scroll_layout.count():
+            child = self.updates_scroll_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if total_updates == 0:
+            lbl = QLabel("All games up-to-date")
+            lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.updates_scroll_layout.addWidget(lbl)
+        else:
+            for g in games_with_updates:
+                name = g.get("game_name", "Unknown Game")
+                lbl = QLabel(f"• {name}")
+                lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt;")
+                lbl.setWordWrap(True)
+                self.updates_scroll_layout.addWidget(lbl)
+        self.updates_scroll_layout.addStretch()
+
+    def add_history_entry(self, entry):
+        if not hasattr(self, "installation_history"):
+            self.installation_history = []
+        self.installation_history.insert(0, entry)
+        if len(self.installation_history) > 5:
+            self.installation_history = self.installation_history[:5]
+        self.update_history_display()
+
+    def update_history_display(self):
+        if not hasattr(self, "installation_history"):
+            self.installation_history = []
+
+        while self.history_scroll_layout.count():
+            child = self.history_scroll_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if not self.installation_history:
+            lbl = QLabel("No active installs in session")
+            lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.history_scroll_layout.addWidget(lbl)
+        else:
+            for entry in self.installation_history:
+                t = entry.get("timestamp", 0)
+                from datetime import datetime
+                time_str = datetime.fromtimestamp(t).strftime('%H:%M')
+
+                success = entry.get("success", True)
+                if not success:
+                    stat_text = "<span style='color: #E74C3C;'>Installation Failed</span>"
+                else:
+                    dl_size = entry.get("download_size", 0)
+                    if dl_size > 0:
+                        size_str = self._format_size(dl_size)
+                        dur_str = self._format_duration(entry.get("download_duration", 0))
+                        speed_str = self._format_speed(entry.get("avg_speed", 0))
+                        stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
+                    else:
+                        stat_text = "<span style='color: #2ECC71;'>Success</span> • Zip file"
+
+                ach_status = entry.get("ach_status", "Skipped")
+                steamless_status = entry.get("steamless_status", "Skipped")
+
+                html = f"""
+                <div style="margin-bottom: 2px;">
+                    <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{entry.get('game_name')}</span>
+                    <span style="color: #888888; font-size: 8pt; float: right;">[{time_str}]</span>
+                    <br/>
+                    <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
+                    <br/>
+                    <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>
+                </div>
+                """
+                lbl = QLabel()
+                lbl.setTextFormat(Qt.TextFormat.RichText)
+                lbl.setText(html)
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet("border: none; background: transparent;")
+
+                line = QFrame()
+                line.setFrameShape(QFrame.Shape.HLine)
+                line.setFrameShadow(QFrame.Shadow.Sunken)
+                line.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border: none; height: 1px;")
+
+                self.history_scroll_layout.addWidget(lbl)
+                self.history_scroll_layout.addWidget(line)
+        self.history_scroll_layout.addStretch()
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        if size_bytes <= 0:
+            return "0 B"
+        size_name = ("B", "KB", "MB", "GB", "TB")
+        import math
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_name[i]}"
+
+    @staticmethod
+    def _format_duration(duration_seconds: float) -> str:
+        if duration_seconds < 60:
+            return f"{int(duration_seconds)}s"
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        return f"{minutes}m {seconds}s"
+
+    @staticmethod
+    def _format_speed(speed_bps: float) -> str:
+        if speed_bps < 1024:
+            return f"{speed_bps:.2f} B/s"
+        if speed_bps < 1024**2:
+            return f"{(speed_bps / 1024):.2f} KB/s"
+        return f"{(speed_bps / 1024**2):.2f} MB/s"
 
     def update_style(self):
         accent = self.main_window.accent_color or "#C06C84"
         accent_style = f"color: {accent};"
 
-        self.total_games_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
-        self.updates_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
-        self.separator.setStyleSheet(f"background-color: {accent};")
-        self.quote_label.setStyleSheet("font-style: italic; font-size: 10pt; color: #FFFFFF;")
-        self.quote_source_label.setStyleSheet("font-size: 9pt; color: #888888;")
+        title_style = f"font-weight: bold; font-size: 8pt; {accent_style} border: none; background: transparent;"
+        self.stats_title.setStyleSheet(title_style)
+        self.updates_title.setStyleSheet(title_style)
+        self.history_title.setStyleSheet(title_style)
+
+        self.total_games_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
+        self.updates_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
+        self.separator.setStyleSheet(f"background-color: {accent}; border: none;")
+        self.quote_label.setStyleSheet("font-style: italic; font-size: 9pt; color: #FFFFFF;")
+        self.quote_source_label.setStyleSheet("font-size: 8pt; color: #888888;")
 
         self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
 
@@ -310,6 +521,7 @@ class SimplifiedTerminalWidget(QWidget):
         self.update_stage_style(self.dl_status_icon, self.dl_status_icon.text())
         self.update_stage_style(self.ach_status_icon, self.ach_status_icon.text())
         self.update_stage_style(self.steam_status_icon, self.steam_status_icon.text())
+
 
     def update_stage_style(self, icon_label: QLabel, status: str):
         # Green for completed, yellow/orange for active, red for error, gray/accent for pending/skipped

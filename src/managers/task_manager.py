@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import tempfile
 import threading
 import subprocess
@@ -95,6 +96,7 @@ class TaskManager(QObject):
         self._steamless_ran = False
         self._steamless_error = False
         self._last_slscheevo_success = None
+        self._last_slscheevo_message = ""
         self._slscheevo_ran = False
         self._slscheevo_error = False
 
@@ -105,6 +107,13 @@ class TaskManager(QObject):
         self._last_steamless_status = "not_run"
         self._last_steamless_status_text = "N/A"
         self._last_installed_game = None
+
+        # Download metrics and timing
+        self._download_start_time = 0.0
+        self._download_end_time = 0.0
+        self._last_download_duration = 0.0
+        self._last_download_size = 0
+        self._last_download_avg_speed = 0.0
 
         self._delete_files_on_cancel: Optional[bool] = None
 
@@ -310,10 +319,17 @@ class TaskManager(QObject):
 
         self._last_steamless_success = None
         self._last_slscheevo_success = None
+        self._last_slscheevo_message = ""
         self._steamless_ran = False
         self._steamless_error = False
         self._slscheevo_ran = False
         self._slscheevo_error = False
+
+        self._download_start_time = time.time()
+        self._download_end_time = 0.0
+        self._last_download_duration = 0.0
+        self._last_download_size = 0
+        self._last_download_avg_speed = 0.0
         self._last_ddm_status = "in_progress"
         self._last_ddm_status_text = "Downloading..."
         self._last_slscheevo_status = "not_run"
@@ -417,6 +433,20 @@ class TaskManager(QObject):
 
         self._stop_speed_monitor()
         self.main_window.progress_bar.setValue(100)
+
+        # Record download completion time and metrics
+        self._download_end_time = time.time()
+        duration = self._download_end_time - self._download_start_time
+        if duration <= 0:
+            duration = 0.1
+
+        total_size = 0
+        if self.download_task:
+            total_size = self.download_task.total_download_size_for_this_job
+
+        self._last_download_duration = duration
+        self._last_download_size = total_size
+        self._last_download_avg_speed = total_size / duration
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("download", "completed")
@@ -737,7 +767,7 @@ class TaskManager(QObject):
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("steamless", "in_progress")
 
-        steamless_task = self._create_steamless_task(logger.info)
+        steamless_task = self._create_steamless_task(self._on_steamless_progress)
         steamless_task.use_aio = use_aio
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
@@ -1363,6 +1393,7 @@ class TaskManager(QObject):
             message = result.get("message", "Unknown status")
 
         self._last_slscheevo_success = success
+        self._last_slscheevo_message = message
         if success:
             logger.info(f"Achievement generation completed: {message}")
         else:
@@ -1380,6 +1411,7 @@ class TaskManager(QObject):
         logger.error(f"Achievement generation failed: {error_value}")
         self._last_slscheevo_success = False
         self._slscheevo_error = True
+        self._last_slscheevo_message = str(error_value)
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("achievements", "error")
@@ -1613,6 +1645,50 @@ class TaskManager(QObject):
             slscheevo_ok=slscheevo_ok,
             steamless_ok=steamless_ok,
         )
+
+        # Record installation log entry for SimplifiedTerminalWidget
+        if self.game_data:
+            game_name = self.game_data.get("game_name", "Unknown")
+            appid = self.game_data.get("appid", "N/A")
+
+            # Format download duration
+            download_duration = getattr(self, "_last_download_duration", 0)
+            download_size = getattr(self, "_last_download_size", 0)
+            avg_speed_bps = getattr(self, "_last_download_avg_speed", 0)
+
+            # Reset these variables for the next job
+            self._last_download_duration = 0.0
+            self._last_download_size = 0
+            self._last_download_avg_speed = 0.0
+
+            # Format achievements
+            if not self._slscheevo_ran:
+                ach_status = "Skipped"
+            else:
+                ach_status = "Generated" if self._last_slscheevo_success else "Failed"
+                # Check for "no missing stats files"
+                sl_msg = getattr(self, "_last_slscheevo_message", "")
+                if "no missing stats" in sl_msg.lower() or "already exist" in sl_msg.lower():
+                    ach_status = "Up-to-date"
+
+            # Format steamless
+            steamless_status = self.parse_steamless_result()
+
+            history_entry = {
+                "game_name": game_name,
+                "appid": appid,
+                "download_size": download_size,
+                "download_duration": download_duration,
+                "avg_speed": avg_speed_bps,
+                "ach_status": ach_status,
+                "steamless_status": steamless_status,
+                "timestamp": time.time(),
+                "success": ddm_ok
+            }
+
+            # Add to simplified terminal
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.add_history_entry(history_entry)
 
         self.main_window.ui_state.show_main_gif()
         self.main_window.progress_bar.setVisible(False)
@@ -1964,6 +2040,27 @@ class TaskManager(QObject):
             return "Success"
         else:
             return "Completed (no DRM found)"
+
+    def parse_steamless_result(self) -> str:
+        """Parse the steamless logs to determine what it did."""
+        if not self._steamless_ran:
+            return "Skipped"
+
+        # Check if there was an error
+        if self._steamless_error or not self._last_steamless_success:
+            log_text = "\n".join(self._steamless_progress_log).lower()
+            if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text:
+                return "No SteamStub DRM found"
+            return "Failed / Error"
+
+        # If successful, find the variant/version
+        log_text = "\n".join(self._steamless_progress_log)
+        match = re.search(r'[Vv]ariant[\s:]+([\d\.]+)', log_text)
+        if match:
+            version = match.group(1)
+            return f"Removed SteamStub v{version}"
+
+        return "Removed DRM"
 
     def _update_status_for_job(self, ddm_ok=True, slscheevo_ok=None, steamless_ok=None):
         self._last_ddm_status = "ok" if ddm_ok else "error"
