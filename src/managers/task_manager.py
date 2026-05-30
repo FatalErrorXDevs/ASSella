@@ -645,6 +645,14 @@ class TaskManager(QObject):
         logger.info("All post-processing steps complete. Finishing job.")
         self.main_window.job_queue.jobs_completed_count += 1
         if not self.is_cancelling:
+            # Clear the cached update status for this game so it gets re-checked
+            # (it may have gone from "update_available" to "up_to_date")
+            if self.game_data:
+                from utils.update_status_cache import get_update_cache
+                appid = self.game_data.get("appid", "")
+                if appid and appid not in ("0", "N/A", "unknown"):
+                    get_update_cache().clear_status(appid)
+                    logger.debug(f"Cleared update cache for freshly installed appid={appid}")
             self.main_window.game_manager.scan_steam_libraries_async()
 
         self.job_finished()

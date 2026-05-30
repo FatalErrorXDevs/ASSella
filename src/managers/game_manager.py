@@ -14,6 +14,7 @@ from core.steam_helpers import (
 from core.tasks.manifest_check_task import ManifestCheckTask
 from utils.helpers import get_base_path
 from utils.task_runner import TaskRunner
+from utils.update_status_cache import get_update_cache
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_additional_app,
@@ -282,6 +283,10 @@ class GameManager(QObject):
             game["update_status"] = update_status
             logger.debug(f"Updated status for game {appid}: {update_status}")
             self.game_update_status_changed.emit(appid, update_status)
+
+            # Persist to disk cache so the result survives a restart
+            get_update_cache().set_status(appid, update_status)
+            get_update_cache().save_async()
 
     @staticmethod
     def _on_update_check_progress(current, total):
@@ -756,10 +761,18 @@ class GameManager(QObject):
             # Update the size in game_data
             game_data["size_on_disk"] = size_on_disk
 
-            # Set default update status to "checking" - will be checked asynchronously
-            # Only if appid is valid
+            # Set update status — restore from disk cache if available
             if appid and appid not in ("0", "N/A", "unknown"):
-                game_data["update_status"] = UPDATE_STATUS["CHECKING"]
+                cached_status = get_update_cache().get_status(appid)
+                if cached_status is not None:
+                    # We have a fresh (non-expired) cached status — use it directly
+                    game_data["update_status"] = cached_status
+                    logger.debug(
+                        f"Restored cached update status for {game_name} ({appid}): {cached_status}"
+                    )
+                else:
+                    # No usable cache — needs a live check
+                    game_data["update_status"] = UPDATE_STATUS["CHECKING"]
             else:
                 game_data["update_status"] = UPDATE_STATUS["CANNOT_DETERMINE"]
 
@@ -906,6 +919,12 @@ class GameManager(QObject):
     def cleanup(self):
         """Clean up GameManager resources"""
         logger.info("Cleaning up GameManager")
+
+        # Flush any unsaved cache entries to disk before exit
+        try:
+            get_update_cache().save()
+        except Exception as e:
+            logger.warning(f"Failed to save update status cache on cleanup: {e}")
 
         # Stop any running manifest check task
         self.cancel_update_checks()

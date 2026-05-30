@@ -9,6 +9,7 @@ from PyQt6.QtCore import QMutex, QObject, QThread, pyqtSignal
 
 from utils.helpers import ensure_dotnet_availability, get_dotnet_path
 from utils.paths import Paths
+from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -368,9 +369,55 @@ class SteamlessIntegration(QObject):
             target_path = exe_path
 
             if getattr(self, "use_aio", False):
-                cmd = ["/home/deck/Downloads/steamless-aio.sh", target_path]
+                # Resolve AIO script path: prefer user-configured path, then common defaults
+                settings = get_settings()
+                aio_path = settings.value(
+                    "steamless_aio_path",
+                    "/home/deck/Downloads/steamless-aio.sh",
+                    type=str,
+                )
+                # Expand ~ in case user typed ~/... in settings
+                aio_path = os.path.expanduser(aio_path.strip()) if aio_path else ""
+
+                # Validate the script exists
+                if not aio_path or not os.path.exists(aio_path):
+                    # Try common fallback paths
+                    fallback_paths = [
+                        os.path.expanduser("~/Downloads/steamless-aio.sh"),
+                        os.path.expanduser("~/steamless-aio.sh"),
+                        "/usr/local/bin/steamless-aio.sh",
+                    ]
+                    resolved = next(
+                        (p for p in fallback_paths if os.path.exists(p)), None
+                    )
+                    if resolved:
+                        aio_path = resolved
+                        self.progress.emit(
+                            f"Steamless AIO script found at fallback path: {aio_path}"
+                        )
+                    else:
+                        msg = (
+                            f"Steamless AIO script not found. "
+                            f"Configured path: '{aio_path}'. "
+                            f"Please set the correct path in Settings → Downloads → Steamless AIO Script Path."
+                        )
+                        self.error.emit(msg)
+                        return False
+
+                # Ensure the script is executable
+                if not os.access(aio_path, os.X_OK):
+                    try:
+                        os.chmod(aio_path, 0o755)
+                        self.progress.emit(f"Made Steamless AIO script executable: {aio_path}")
+                    except OSError as e:
+                        self.error.emit(
+                            f"Steamless AIO script is not executable and chmod failed: {aio_path} ({e})"
+                        )
+                        return False
+
+                cmd = [aio_path, target_path]
                 self.progress.emit(f"Running Steamless AIO: {' '.join(cmd)}")
-                
+
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
