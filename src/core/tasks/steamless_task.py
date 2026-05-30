@@ -315,20 +315,21 @@ class SteamlessIntegration(QObject):
         Returns True if successful, False otherwise.
         """
         try:
-            if not self.dotnet_available:
-                self.error.emit(
-                    ".NET 9 runtime is not available. Please install .NET 9 runtime."
-                )
-                return False
+            if not getattr(self, "use_aio", False):
+                if not self.dotnet_available:
+                    self.error.emit(
+                        ".NET 9 runtime is not available. Please install .NET 9 runtime."
+                    )
+                    return False
 
-            if not os.path.exists(self.steamless_path):
-                self.error.emit(f"Steamless directory not found: {self.steamless_path}")
-                return False
+                if not os.path.exists(self.steamless_path):
+                    self.error.emit(f"Steamless directory not found: {self.steamless_path}")
+                    return False
 
-            steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
-            if not os.path.exists(steamless_dll):
-                self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
-                return False
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                if not os.path.exists(steamless_dll):
+                    self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
+                    return False
 
             # Validate game_directory is actually a directory
             if not os.path.isdir(game_directory):
