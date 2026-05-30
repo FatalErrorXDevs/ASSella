@@ -467,42 +467,14 @@ class SettingsDialog(QDialog):
         pp_layout.addWidget(self.steamless_checkbox)
 
         self.steamless_aio_checkbox = create_checkbox_setting(
-            "Remove Steam DRM with Steamless-AIO",
+            "Remove Steam DRM with Steamless-AIO (built-in)",
             "use_steamless_aio",
             True,
             self,
-            "Remove DRM from game executables after downloading (AIO Alternative).",
+            "Remove DRM from game executables after downloading using the built-in Python Steamless AIO.",
         )
         pp_layout.addWidget(self.steamless_aio_checkbox)
 
-        # Steamless AIO script path row
-        aio_path_row = QWidget()
-        aio_path_layout = QHBoxLayout(aio_path_row)
-        aio_path_layout.setContentsMargins(0, 0, 0, 0)
-        aio_path_layout.setSpacing(4)
-        aio_path_label = QLabel("AIO Script Path:")
-        aio_path_label.setToolTip(
-            "Full path to the steamless-aio.sh script (e.g. /home/deck/Downloads/steamless-aio.sh)"
-        )
-        self.steamless_aio_path_edit = QLineEdit()
-        self.steamless_aio_path_edit.setPlaceholderText(
-            "/home/deck/Downloads/steamless-aio.sh"
-        )
-        settings_obj = get_settings()
-        stored_aio_path = settings_obj.value(
-            "steamless_aio_path", "/home/deck/Downloads/steamless-aio.sh", type=str
-        )
-        self.steamless_aio_path_edit.setText(stored_aio_path)
-        self.steamless_aio_path_edit.textChanged.connect(
-            lambda text: get_settings().setValue("steamless_aio_path", text)
-        )
-        aio_browse_btn = QPushButton("Browse")
-        aio_browse_btn.setFixedWidth(70)
-        aio_browse_btn.clicked.connect(self._browse_aio_script)
-        aio_path_layout.addWidget(aio_path_label)
-        aio_path_layout.addWidget(self.steamless_aio_path_edit, 1)
-        aio_path_layout.addWidget(aio_browse_btn)
-        pp_layout.addWidget(aio_path_row)
 
         if sys.platform == "linux":
             self.application_shortcuts_checkbox = create_checkbox_setting(

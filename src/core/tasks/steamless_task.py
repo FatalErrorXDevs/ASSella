@@ -167,6 +167,38 @@ class SteamlessIntegration(QObject):
             logger.error(f"Critical error in find_game_executables: {e}", exc_info=True)
             return []
 
+    def _ensure_aio_deps(self, python_exe: str) -> None:
+        """
+        Install pycryptodome and capstone into the tool's venv if missing.
+        Silent on success; logs warnings on failure (AIO will still attempt to run).
+        """
+        deps = [
+            ("Crypto", "pycryptodome"),
+            ("capstone", "capstone"),
+        ]
+        for import_name, pip_name in deps:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", f"import {import_name}"],
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    self.progress.emit(f"Installing {pip_name} for Steamless AIO (one-time setup)...")
+                    install = subprocess.run(
+                        [python_exe, "-m", "pip", "install", "--quiet", pip_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    if install.returncode == 0:
+                        self.progress.emit(f"Installed {pip_name} OK")
+                    else:
+                        logger.warning(
+                            f"pip install {pip_name} failed: {install.stderr.strip()}"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to ensure AIO dep {pip_name}: {e}")
+
     @staticmethod
     def _should_skip_exe(filename: str, file_path: Optional[str] = None) -> bool:
         """Check if an executable should be skipped based on name patterns."""
@@ -369,54 +401,31 @@ class SteamlessIntegration(QObject):
             target_path = exe_path
 
             if getattr(self, "use_aio", False):
-                # Resolve AIO script path: prefer user-configured path, then common defaults
-                settings = get_settings()
-                aio_path = settings.value(
-                    "steamless_aio_path",
-                    "/home/deck/Downloads/steamless-aio.sh",
-                    type=str,
-                )
-                # Expand ~ in case user typed ~/... in settings
-                aio_path = os.path.expanduser(aio_path.strip()) if aio_path else ""
-
-                # Validate the script exists
-                if not aio_path or not os.path.exists(aio_path):
-                    # Try common fallback paths
-                    fallback_paths = [
-                        os.path.expanduser("~/Downloads/steamless-aio.sh"),
-                        os.path.expanduser("~/steamless-aio.sh"),
-                        "/usr/local/bin/steamless-aio.sh",
-                    ]
-                    resolved = next(
-                        (p for p in fallback_paths if os.path.exists(p)), None
+                # ── Self-contained AIO path ──────────────────────────────────────
+                # steamless.py is bundled in deps/ — no external script needed.
+                steamless_py = str(Paths.deps("steamless.py"))
+                if not os.path.exists(steamless_py):
+                    self.error.emit(
+                        f"Bundled steamless.py not found at: {steamless_py}. "
+                        f"The AppImage may be corrupted — please reinstall."
                     )
-                    if resolved:
-                        aio_path = resolved
-                        self.progress.emit(
-                            f"Steamless AIO script found at fallback path: {aio_path}"
-                        )
-                    else:
-                        msg = (
-                            f"Steamless AIO script not found. "
-                            f"Configured path: '{aio_path}'. "
-                            f"Please set the correct path in Settings → Downloads → Steamless AIO Script Path."
-                        )
-                        self.error.emit(msg)
-                        return False
+                    return False
 
-                # Ensure the script is executable
-                if not os.access(aio_path, os.X_OK):
-                    try:
-                        os.chmod(aio_path, 0o755)
-                        self.progress.emit(f"Made Steamless AIO script executable: {aio_path}")
-                    except OSError as e:
-                        self.error.emit(
-                            f"Steamless AIO script is not executable and chmod failed: {aio_path} ({e})"
-                        )
-                        return False
+                # Use the tool's own venv Python
+                from utils.helpers import get_venv_python
+                python_exe = get_venv_python()
+                if not python_exe or not os.path.exists(python_exe):
+                    self.error.emit(
+                        "Cannot find the tool's Python interpreter. "
+                        "Please reinstall ASSella."
+                    )
+                    return False
 
-                cmd = [aio_path, target_path]
-                self.progress.emit(f"Running Steamless AIO: {' '.join(cmd)}")
+                # Ensure pycryptodome and capstone are installed (first-run only)
+                self._ensure_aio_deps(python_exe)
+
+                cmd = [python_exe, steamless_py, target_path]
+                self.progress.emit(f"Running Steamless AIO (built-in): {os.path.basename(target_path)}")
 
                 process = subprocess.Popen(
                     cmd,
