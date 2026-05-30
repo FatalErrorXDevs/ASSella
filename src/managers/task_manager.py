@@ -2063,6 +2063,14 @@ class TaskManager(QObject):
 
         # If successful, find the variant/version
         log_text = "\n".join(self._steamless_progress_log)
+        
+        # Try AIO log format first: "[+] Unpacked with V3.0 ->"
+        match = re.search(r'Unpacked with\s+V?([\d\.]+x?)', log_text)
+        if match:
+            version = match.group(1)
+            return f"Removed SteamStub v{version}"
+
+        # Fallback to older C# CLI format
         match = re.search(r'[Vv]ariant[\s:]+([\d\.]+)', log_text)
         if match:
             version = match.group(1)

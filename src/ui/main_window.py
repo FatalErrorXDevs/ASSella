@@ -286,7 +286,7 @@ class SimplifiedTerminalWidget(QWidget):
         right_layout.setContentsMargins(8, 6, 8, 6)
         right_layout.setSpacing(4)
 
-        self.history_title = QLabel("SESSION ACTIVITY")
+        self.history_title = QLabel("RECENT ACTIVITY")
         self.history_scroll = QScrollArea()
         self.history_scroll.setWidgetResizable(True)
         self.history_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
@@ -302,6 +302,8 @@ class SimplifiedTerminalWidget(QWidget):
 
         right_layout.addWidget(self.history_title)
         right_layout.addWidget(self.history_scroll, 1)
+        
+        self.update_history_display()
 
         # Add panels to idle layout
         idle_layout.addWidget(self.panel_left, 1)
@@ -394,39 +396,59 @@ class SimplifiedTerminalWidget(QWidget):
         else:
             for g in games_with_updates:
                 name = g.get("game_name", "Unknown Game")
-                lbl = QLabel(f"• {name}")
-                lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt;")
+                
+                # Make it look like a little card/row
+                row = QFrame()
+                row.setStyleSheet("""
+                    QFrame {
+                        background-color: rgba(255, 255, 255, 5);
+                        border-radius: 4px;
+                    }
+                    QFrame:hover {
+                        background-color: rgba(255, 255, 255, 15);
+                    }
+                """)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(6, 4, 6, 4)
+                
+                icon = QLabel("📦")
+                icon.setStyleSheet("background: transparent; border: none;")
+                
+                lbl = QLabel(name)
+                lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; background: transparent; border: none;")
                 lbl.setWordWrap(True)
-                self.updates_scroll_layout.addWidget(lbl)
+                
+                row_layout.addWidget(icon)
+                row_layout.addWidget(lbl, 1)
+                
+                self.updates_scroll_layout.addWidget(row)
         self.updates_scroll_layout.addStretch()
 
     def add_history_entry(self, entry):
-        if not hasattr(self, "installation_history"):
-            self.installation_history = []
-        self.installation_history.insert(0, entry)
-        if len(self.installation_history) > 5:
-            self.installation_history = self.installation_history[:5]
+        from utils.history_cache import get_history_cache
+        get_history_cache().add_entry(entry)
         self.update_history_display()
 
     def update_history_display(self):
-        if not hasattr(self, "installation_history"):
-            self.installation_history = []
+        from utils.history_cache import get_history_cache
+        history = get_history_cache().get_history()
 
         while self.history_scroll_layout.count():
             child = self.history_scroll_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
 
-        if not self.installation_history:
-            lbl = QLabel("No active installs in session")
+        if not history:
+            lbl = QLabel("No recent installation activity")
             lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_scroll_layout.addWidget(lbl)
         else:
-            for entry in self.installation_history:
+            for entry in history:
                 t = entry.get("timestamp", 0)
                 from datetime import datetime
                 time_str = datetime.fromtimestamp(t).strftime('%H:%M')
+
 
                 success = entry.get("success", True)
                 if not success:
