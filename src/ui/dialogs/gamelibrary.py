@@ -110,16 +110,25 @@ def format_game_display_name(game_data: dict) -> str:
 class GameItemWidget(QWidget):
     """
     Custom widget for displaying a game item in the library list.
-    Layout: [ Image ] [ Name/Size/Status ]
+    Layout: [ Checkbox (select mode) ] [ Image ] [ Name/Size/Status ]
     """
 
     def __init__(
-        self, game_data: dict, size_str: str, accent_color: str, background_color: str
+        self,
+        game_data: dict,
+        size_str: str,
+        accent_color: str,
+        background_color: str,
+        select_mode: bool = False,
+        is_selected: bool = False,
     ):
         super().__init__()
         self.game_data = game_data
         self.accent_color = accent_color
         self.background_color = background_color
+        self._select_mode = select_mode
+        self._is_selected = is_selected
+        self.checkbox = None
         self._init_ui(size_str)
 
     def _init_ui(self, size_str: str) -> None:
@@ -127,6 +136,14 @@ class GameItemWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
+
+        # --- Checkbox (select mode only) ---
+        if self._select_mode:
+            self.checkbox = QCheckBox()
+            self.checkbox.setChecked(self._is_selected)
+            self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self.checkbox.setStyleSheet("QCheckBox::indicator { width: 18px; height: 18px; }")
+            layout.addWidget(self.checkbox)
 
         # --- Image Section ---
         self.image_label = QLabel()
@@ -199,6 +216,12 @@ class GameItemWidget(QWidget):
         )
         self.image_label.setPixmap(scaled)
 
+    def set_selected(self, selected: bool) -> None:
+        """Update the checkbox checked state visually."""
+        self._is_selected = selected
+        if self.checkbox is not None:
+            self.checkbox.setChecked(selected)
+
     def sizeHint(self) -> QSize:
         """Return size hint that matches the desired row height."""
         return QSize(400, 118)
@@ -240,6 +263,10 @@ class GameLibraryDialog(QDialog):
         self._download_progress_dialog = None
         self._uninstall_progress_dialog = None
         self._details_dialog = None
+
+        # Multi-select state
+        self._select_mode = False
+        self._selected_appids: set = set()
 
         self._setup_window()
         self._setup_ui()
@@ -317,6 +344,7 @@ class GameLibraryDialog(QDialog):
 
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Recently Installed", "recently_installed")
+        self.sort_combo.addItem("Has Update First", "update_first")
         self.sort_combo.addItem("Name (A-Z)", "name_asc")
         self.sort_combo.addItem("Name (Z-A)", "name_desc")
         self.sort_combo.addItem("Size (Smallest)", "size_asc")
@@ -324,6 +352,12 @@ class GameLibraryDialog(QDialog):
         self.sort_combo.addItem("AppID", "appid")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         top_layout.addWidget(self.sort_combo)
+
+        self.select_mode_button = QPushButton("☑ Select")
+        self.select_mode_button.setCheckable(True)
+        self.select_mode_button.setFixedWidth(80)
+        self.select_mode_button.clicked.connect(self._toggle_select_mode)
+        top_layout.addWidget(self.select_mode_button)
 
         layout.addLayout(top_layout)
 
@@ -333,7 +367,33 @@ class GameLibraryDialog(QDialog):
         self.games_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         layout.addWidget(self.games_list)
 
-        # --- Footer ---
+        # --- Selection Footer (hidden by default) ---
+        self.selection_footer = QWidget()
+        selection_layout = QHBoxLayout(self.selection_footer)
+        selection_layout.setContentsMargins(4, 4, 4, 4)
+
+        self.selection_count_label = QLabel("0 games selected")
+        self.selection_count_label.setStyleSheet(f"color: {self.accent_color};")
+        selection_layout.addWidget(self.selection_count_label)
+
+        selection_layout.addStretch()
+
+        clear_sel_btn = QPushButton("Clear Selection")
+        clear_sel_btn.clicked.connect(self._clear_selection)
+        selection_layout.addWidget(clear_sel_btn)
+
+        self.queue_selected_btn = QPushButton("⬇ Queue Selected")
+        self.queue_selected_btn.clicked.connect(self._on_queue_selected)
+        self.queue_selected_btn.setEnabled(False)
+        self.queue_selected_btn.setStyleSheet(
+            f"background-color: {self.accent_color}; color: #000; font-weight: bold;"
+        )
+        selection_layout.addWidget(self.queue_selected_btn)
+
+        self.selection_footer.setVisible(False)
+        layout.addWidget(self.selection_footer)
+
+        # --- Status Footer ---
         self.info_label = QLabel("Found 0 installed Steam games")
         layout.addWidget(self.info_label)
 
@@ -473,6 +533,10 @@ class GameLibraryDialog(QDialog):
             if path and os.path.exists(path):
                 return os.path.getmtime(path)
             return 0
+        if sort_option == "update_first":
+            # Games with an update available sort first (0), then everything else (1)
+            has_update = game.get("update_status") == "update_available"
+            return (0 if has_update else 1, game.get("game_name", "").lower())
         return game.get("game_name", "").lower()
 
     def _sort_games(self, games: list) -> list:
@@ -521,11 +585,15 @@ class GameLibraryDialog(QDialog):
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
         size = game.get("size_on_disk", 0)
+        appid = str(game.get("appid", "0"))
+        is_selected = appid in self._selected_appids
         widget = GameItemWidget(
             game,
             GameLibraryDialog._format_size(size),
             self.accent_color,
             self.background_color,
+            select_mode=self._select_mode,
+            is_selected=is_selected,
         )
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, game)
@@ -581,7 +649,7 @@ class GameLibraryDialog(QDialog):
 
     def _on_item_selected(self, item: QListWidgetItem) -> None:
         """Handle click on list item."""
-        if self._dialog_open or self._refreshing:
+        if self._refreshing:
             return
 
         if not item:
@@ -591,11 +659,86 @@ class GameLibraryDialog(QDialog):
         if not game_data:
             return
 
+        # In select mode: toggle selection, don't open dialog
+        if self._select_mode:
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                self._selected_appids.discard(appid)
+            else:
+                self._selected_appids.add(appid)
+            # Update checkbox visual on the widget
+            widget = self.games_list.itemWidget(item)
+            if isinstance(widget, GameItemWidget):
+                widget.set_selected(appid in self._selected_appids)
+            self._update_selection_footer()
+            return
+
+        if self._dialog_open:
+            return
+
         # Debounce
         self._dialog_open = True
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
 
         self._show_game_details_dialog(game_data)
+
+    # --- Select Mode ---
+
+    def _toggle_select_mode(self) -> None:
+        """Enable or disable multi-select mode."""
+        self._select_mode = self.select_mode_button.isChecked()
+        if not self._select_mode:
+            self._selected_appids.clear()
+
+        self.selection_footer.setVisible(self._select_mode)
+        self._update_selection_footer()
+        self._refresh_game_list()
+
+    def _update_selection_footer(self) -> None:
+        """Update the selection count label and button state."""
+        count = len(self._selected_appids)
+        self.selection_count_label.setText(
+            f"{count} game{'s' if count != 1 else ''} selected"
+        )
+        self.queue_selected_btn.setEnabled(count > 0)
+
+    def _clear_selection(self) -> None:
+        """Clear all selections and refresh visual state."""
+        self._selected_appids.clear()
+        self._update_selection_footer()
+        # Update all visible checkboxes
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            widget = self.games_list.itemWidget(item)
+            if isinstance(widget, GameItemWidget):
+                widget.set_selected(False)
+
+    def _on_queue_selected(self) -> None:
+        """Open the batch queue dialog for selected games."""
+        if not self._selected_appids:
+            return
+
+        # Gather game data for selected appids
+        selected_games = []
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                selected_games.append(game_data)
+
+        if not selected_games:
+            return
+
+        dialog = BatchQueueDialog(selected_games, self.main_window, self)
+        if dialog.exec():
+            # Exit select mode after queuing
+            self.select_mode_button.setChecked(False)
+            self._toggle_select_mode()
 
     # --- Image Handling ---
 
@@ -1307,3 +1450,220 @@ class GameLibraryDialog(QDialog):
         self._active_fetchers.clear()
         self.executor.shutdown(wait=False)
         super().closeEvent(event)
+
+
+class BatchQueueDialog(QDialog):
+    """
+    Dialog shown after clicking 'Queue Selected' in the library.
+    Lets the user choose which actions to apply to all selected games,
+    then enqueues each one through the normal per-game depot selection flow.
+    """
+
+    def __init__(self, selected_games: list, main_window, parent=None):
+        super().__init__(parent)
+        self.selected_games = selected_games
+        self.main_window = main_window
+        self._library_dialog = parent  # GameLibraryDialog reference
+
+        accent = "#C06C84"
+        bg = "#000000"
+        if hasattr(main_window, "settings") and main_window.settings:
+            accent = main_window.settings.value("accent_color", accent)
+            bg = main_window.settings.value("background_color", bg)
+
+        self.setWindowTitle("Queue Selected Games")
+        self.setMinimumWidth(480)
+        self.setModal(True)
+        self.setStyleSheet(
+            f"""
+            QDialog {{ background-color: {bg}; color: {accent}; }}
+            QLabel {{ color: {accent}; }}
+            QCheckBox {{ color: {accent}; spacing: 6px; }}
+            QCheckBox::indicator {{ width: 16px; height: 16px; }}
+            QPushButton {{
+                background-color: {bg};
+                color: {accent};
+                border: 1px solid {accent};
+                border-radius: 4px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,10); }}
+            QListWidget {{
+                background-color: {bg};
+                border: 1px solid rgba(255,255,255,15);
+                border-radius: 4px;
+                color: {accent};
+            }}
+        """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Header
+        header = QLabel(f"Queue {len(selected_games)} game(s) for processing:")
+        header.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {accent};")
+        layout.addWidget(header)
+
+        # Game list preview
+        games_list = QListWidget()
+        games_list.setMaximumHeight(140)
+        for g in selected_games:
+            games_list.addItem(g.get("game_name", "Unknown"))
+        layout.addWidget(games_list)
+
+        # Action checkboxes
+        actions_label = QLabel("Actions to perform on each game:")
+        layout.addWidget(actions_label)
+
+        self.chk_download = QCheckBox("Download / Update")
+        self.chk_download.setChecked(True)
+        layout.addWidget(self.chk_download)
+
+        self.chk_goldberg = QCheckBox("Apply Goldberg Emulator")
+        layout.addWidget(self.chk_goldberg)
+
+        self.chk_steamless = QCheckBox("Remove Steam DRM (Steamless AIO)")
+        layout.addWidget(self.chk_steamless)
+
+        self.chk_achievements = QCheckBox("Generate Achievements (SLScheevo)")
+        layout.addWidget(self.chk_achievements)
+
+        layout.addStretch()
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        self.confirm_btn = QPushButton("⬇ Add All to Queue")
+        self.confirm_btn.setStyleSheet(
+            f"background-color: {accent}; color: #000; font-weight: bold;"
+        )
+        self.confirm_btn.clicked.connect(self._enqueue_all)
+        btn_row.addWidget(self.confirm_btn)
+        layout.addLayout(btn_row)
+
+    def _enqueue_all(self) -> None:
+        """Enqueue each selected game through the normal download+depot flow."""
+        do_download = self.chk_download.isChecked()
+        do_goldberg = self.chk_goldberg.isChecked()
+        do_steamless = self.chk_steamless.isChecked()
+        do_achievements = self.chk_achievements.isChecked()
+
+        # Temporarily override settings for this batch if needed
+        settings = getattr(self.main_window, "settings", None)
+
+        queued_count = 0
+        for game_data in self.selected_games:
+            appid = str(game_data.get("appid", "0"))
+            if appid in ("0", "N/A", "unknown"):
+                logger.warning(f"Skipping batch queue for game with invalid appid: {game_data.get('game_name')}")
+                continue
+
+            if do_download:
+                success = self._enqueue_single_game(game_data)
+                if success:
+                    queued_count += 1
+            else:
+                # No download — just run tools directly if game is installed
+                game_dir = game_data.get("install_path")
+                name = game_data.get("game_name", "Unknown")
+                if game_dir:
+                    from managers.task_manager import TaskManager
+                    tm = getattr(self.main_window, "task_manager", None)
+                    if tm:
+                        if do_goldberg:
+                            tm.apply_goldberg_to_game(game_dir, appid, name, show_dialog=False)
+                        if do_steamless:
+                            tm.run_steamless_aio_for_game(game_data)
+                        if do_achievements:
+                            tm.run_slscheevo_for_game(game_data)
+                    queued_count += 1
+
+        if queued_count > 0:
+            QMessageBox.information(
+                self,
+                "Queued",
+                f"Successfully queued {queued_count} game(s).\n"
+                "Check the queue in the main window.",
+            )
+        else:
+            QMessageBox.warning(
+                self, "Nothing Queued", "No games could be queued. Check that App IDs are valid."
+            )
+
+        self.accept()
+
+    def _enqueue_single_game(self, game_data: dict) -> bool:
+        """Enqueue a single game through the manifest fetch + depot selection flow."""
+        try:
+            appid = str(game_data.get("appid", "0"))
+            name = game_data.get("game_name", "Unknown")
+            update_status = game_data.get("update_status")
+
+            from utils.helpers import get_base_path
+            from core import morrenus_api as _api
+
+            # Check local cache first
+            local_path = None
+            if update_status != "update_available":
+                fpath = get_base_path() / "morrenus_manifests" / f"accela_fetch_{appid}.zip"
+                if fpath.exists():
+                    local_path = str(fpath)
+
+            if not local_path:
+                # Download manifest (blocking in dialog context)
+                fpath, error = _api.download_manifest(appid)
+                if error or not fpath:
+                    logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
+                    return False
+                local_path = str(fpath)
+
+            # Parse for depots
+            from core.tasks.process_zip_task import ProcessZipTask
+            from utils.settings import get_settings
+
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(local_path)
+
+            metadata = {
+                "appid": appid,
+                "library_path": game_data.get("library_path"),
+                "install_path": game_data.get("install_path"),
+            }
+
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                settings = get_settings()
+                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                depots = parsed_data.get("depots")
+
+                selected_depots = None
+                if auto_skip and len(depots) == 1:
+                    selected_depots = list(depots.keys())
+                else:
+                    depot_dialog = DepotSelectionDialog(
+                        parsed_data["appid"],
+                        parsed_data.get("game_name", name),
+                        depots,
+                        parsed_data.get("header_url"),
+                        self.main_window,
+                    )
+                    if depot_dialog.exec():
+                        selected_depots = depot_dialog.get_selected_depots()
+
+                if not selected_depots:
+                    logger.info(f"Batch queue: user cancelled depot selection for {name}")
+                    return False
+
+                metadata["selected_depots_list"] = selected_depots
+
+            self.main_window.job_queue.add_job(local_path, metadata)
+            logger.info(f"Batch queued: {name} (appid={appid})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
+            return False

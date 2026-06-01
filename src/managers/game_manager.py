@@ -1144,15 +1144,12 @@ class GameManager(QObject):
                 if remove_shortcuts:
                     self._remove_linux_shortcuts_and_icons(appid)
 
-                # Remove from SLSsteam config.yaml AdditionalApps list
-                if (
-                    remove_from_library
-                    and appid
-                    and appid not in ("0", "N/A", "unknown")
-                ):
+                # Always clean up this game's AppID from SLSsteam config.yaml
+                if appid and appid not in ("0", "N/A", "unknown"):
                     config_path = get_user_config_path()
                     if config_path.exists():
                         remove_additional_app(config_path, str(appid))
+                        logger.info(f"Removed appid {appid} from SLS config")
             elif platform.system() == "Windows":
                 self._remove_windows_game_data(appid, game_data)
 
