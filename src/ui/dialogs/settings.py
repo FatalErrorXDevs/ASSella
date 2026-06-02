@@ -207,6 +207,8 @@ class SettingsDialog(QDialog):
         self.tab_widget = None
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
+        self.smart_depot_selection_checkbox = None
+        self.autofetch_manifests_checkbox = None
         self.max_downloads_spinbox = None
         self.steamless_checkbox = None
         self.achievements_checkbox = None
@@ -410,6 +412,24 @@ class SettingsDialog(QDialog):
             "Automatically skip selection when only one option exists.",
         )
         dl_layout.addWidget(self.auto_skip_single_choice_checkbox)
+
+        self.smart_depot_selection_checkbox = create_checkbox_setting(
+            "Smart Selection",
+            "smart_depot_selection",
+            False,
+            self,
+            "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
+        )
+        dl_layout.addWidget(self.smart_depot_selection_checkbox)
+
+        self.autofetch_manifests_checkbox = create_checkbox_setting(
+            "Auto-fetch update manifests on boot",
+            "autofetch_manifests_on_boot",
+            False,
+            self,
+            "Pre-download manifest zip files in the background on startup for all games needing updates.",
+        )
+        dl_layout.addWidget(self.autofetch_manifests_checkbox)
 
         # Max Downloads
         max_dl_layout = QHBoxLayout()
@@ -1025,6 +1045,14 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "auto_skip_single_choice",
             self.auto_skip_single_choice_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "smart_depot_selection",
+            self.smart_depot_selection_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "autofetch_manifests_on_boot",
+            self.autofetch_manifests_checkbox.isChecked(),
         )
         self.settings.setValue(
             "prompt_steam_restart",

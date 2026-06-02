@@ -280,6 +280,7 @@ class GameManager(QObject):
                     break
 
         if game is not None:
+            old_status = game.get("update_status")
             game["update_status"] = update_status
             logger.debug(f"Updated status for game {appid}: {update_status}")
             self.game_update_status_changed.emit(appid, update_status)
@@ -287,6 +288,10 @@ class GameManager(QObject):
             # Persist to disk cache so the result survives a restart
             get_update_cache().set_status(appid, update_status)
             get_update_cache().save_async()
+
+            # If a new update is detected, invalidate the manifest freshness cache
+            if update_status == UPDATE_STATUS["UPDATE_AVAILABLE"] and old_status != UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                self.settings.setValue(f"manifest_is_fresh/{appid}", False)
 
     @staticmethod
     def _on_update_check_progress(current, total):
@@ -575,9 +580,9 @@ class GameManager(QObject):
             logger.debug("SLSsteam config.yaml not found, skipping token sync")
             return
 
-        manifests_dir = Path(get_base_path()) / "morrenus_manifests"
+        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
         if not manifests_dir.exists():
-            logger.debug("morrenus_manifests directory not found")
+            logger.debug("hubcap_manifests directory not found")
             return
 
         # Get existing tokens from config
@@ -1490,7 +1495,7 @@ class GameManager(QObject):
         if not appid_str.isdigit():
             return []
 
-        manifests_dir = Path(get_base_path()) / "morrenus_manifests"
+        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
         manifest_zip = manifests_dir / f"accela_fetch_{appid_str}.zip"
         if not manifest_zip.exists():
             return []

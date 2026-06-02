@@ -1215,11 +1215,33 @@ class GameLibraryDialog(QDialog):
 
         # Determine if we can use local cache
         local_path = None
-        if status != "update_available":
-            fpath = (
-                get_base_path() / "morrenus_manifests" / f"accela_fetch_{app_id}.zip"
-            )
-            if fpath.exists():
+        fpath = (
+            get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
+        )
+        is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
+
+        if fpath.exists() and (status != "update_available" or is_fresh):
+            if status == "update_available" and is_fresh:
+                # Prompt the user with option to use cached manifest
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("Manifest Options")
+                msg_box.setText(f"A fresh cached manifest for '{name}' is already available.")
+                msg_box.setInformativeText("Using the cached manifest will save your Hubcap API quota.")
+                
+                use_cached_btn = msg_box.addButton("Use Cached (Saves Quota)", QMessageBox.ButtonRole.YesRole)
+                download_new_btn = msg_box.addButton("Download New", QMessageBox.ButtonRole.NoRole)
+                cancel_btn = msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                
+                msg_box.exec()
+                clicked = msg_box.clickedButton()
+                
+                if clicked == use_cached_btn:
+                    local_path = str(fpath)
+                elif clicked == download_new_btn:
+                    local_path = None
+                else:
+                    return  # Cancelled
+            else:
                 local_path = str(fpath)
 
         if not local_path:
@@ -1267,6 +1289,10 @@ class GameLibraryDialog(QDialog):
             self._download_progress_dialog = None
 
         if fpath:
+            # Mark manifest as fresh now
+            appid = str(game_data.get("appid"))
+            self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+            
             # If we have a valid path, submit the job
             # We need to access the dialog passed to _fetch_game_manifest, but it's not stored.
             # However, we stored _details_dialog in _show_game_details_dialog.
@@ -1294,23 +1320,57 @@ class GameLibraryDialog(QDialog):
                 settings = get_settings()
                 auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
                 depots = parsed_data.get("depots")
+                appid = str(parsed_data["appid"])
                 
                 selected_depots = None
-                if auto_skip and len(depots) == 1:
-                    selected_depots = list(depots.keys())
-                else:
-                    depot_dialog = DepotSelectionDialog(
-                        parsed_data["appid"],
-                        parsed_data.get("game_name", ""),
-                        depots,
-                        parsed_data.get("header_url"),
-                        self.main_window,
-                    )
-                    if depot_dialog.exec():
-                        selected_depots = depot_dialog.get_selected_depots()
+                
+                # Smart selection logic
+                import json
+                smart_active = settings.value("smart_depot_selection", False, type=bool)
+                val = settings.value(f"depot_selection/{appid}", "", type=str)
+                should_prompt = True
+                
+                if smart_active and val:
+                    try:
+                        data = json.loads(val)
+                        cached_selected = data.get("selected", [])
+                        cached_all = data.get("all_available", [])
+                        current_depots = list(depots.keys())
+                        has_new_depot = any(d not in cached_all for d in current_depots)
+                        if not has_new_depot:
+                            selected_depots = [d for d in cached_selected if d in depots]
+                            should_prompt = False
+                            logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
+                    except Exception as e:
+                        logger.warning(f"Error parsing cached depot selection: {e}")
+                
+                if should_prompt:
+                    if auto_skip and len(depots) == 1:
+                        selected_depots = list(depots.keys())
+                    else:
+                        depot_dialog = DepotSelectionDialog(
+                            parsed_data["appid"],
+                            parsed_data.get("game_name", ""),
+                            depots,
+                            parsed_data.get("header_url"),
+                            self.main_window,
+                        )
+                        if depot_dialog.exec():
+                            selected_depots = depot_dialog.get_selected_depots()
                 
                 if selected_depots:
                     metadata["selected_depots_list"] = selected_depots
+                    # Cache the choice
+                    try:
+                        settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": selected_depots,
+                                "all_available": list(depots.keys())
+                            })
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to cache depot selection: {e}")
                 else:
                     # User cancelled depot selection, don't submit job
                     logger.info("User cancelled depot selection.")
@@ -1605,13 +1665,16 @@ class BatchQueueDialog(QDialog):
 
             from utils.helpers import get_base_path
             from core import morrenus_api as _api
+            from utils.settings import get_settings
+            settings = get_settings()
 
             # Check local cache first
             local_path = None
-            if update_status != "update_available":
-                fpath = get_base_path() / "morrenus_manifests" / f"accela_fetch_{appid}.zip"
-                if fpath.exists():
-                    local_path = str(fpath)
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
+
+            if fpath.exists() and (update_status != "update_available" or is_fresh):
+                local_path = str(fpath)
 
             if not local_path:
                 # Download manifest (blocking in dialog context)
@@ -1620,10 +1683,11 @@ class BatchQueueDialog(QDialog):
                     logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
                     return False
                 local_path = str(fpath)
+                # Manifest is fresh now
+                settings.setValue(f"manifest_is_fresh/{appid}", True)
 
             # Parse for depots
             from core.tasks.process_zip_task import ProcessZipTask
-            from utils.settings import get_settings
 
             zip_task = ProcessZipTask()
             parsed_data = zip_task.run(local_path)
@@ -1636,29 +1700,61 @@ class BatchQueueDialog(QDialog):
 
             if parsed_data and parsed_data.get("depots"):
                 from ui.dialogs.depotselection import DepotSelectionDialog
-                settings = get_settings()
                 auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
                 depots = parsed_data.get("depots")
 
                 selected_depots = None
-                if auto_skip and len(depots) == 1:
-                    selected_depots = list(depots.keys())
-                else:
-                    depot_dialog = DepotSelectionDialog(
-                        parsed_data["appid"],
-                        parsed_data.get("game_name", name),
-                        depots,
-                        parsed_data.get("header_url"),
-                        self.main_window,
-                    )
-                    if depot_dialog.exec():
-                        selected_depots = depot_dialog.get_selected_depots()
+                
+                # Smart selection logic
+                import json
+                smart_active = settings.value("smart_depot_selection", False, type=bool)
+                val = settings.value(f"depot_selection/{appid}", "", type=str)
+                should_prompt = True
+                
+                if smart_active and val:
+                    try:
+                        data = json.loads(val)
+                        cached_selected = data.get("selected", [])
+                        cached_all = data.get("all_available", [])
+                        current_depots = list(depots.keys())
+                        has_new_depot = any(d not in cached_all for d in current_depots)
+                        if not has_new_depot:
+                            selected_depots = [d for d in cached_selected if d in depots]
+                            should_prompt = False
+                            logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
+                    except Exception as e:
+                        logger.warning(f"Error parsing cached depot selection: {e}")
+
+                if should_prompt:
+                    if auto_skip and len(depots) == 1:
+                        selected_depots = list(depots.keys())
+                    else:
+                        depot_dialog = DepotSelectionDialog(
+                            parsed_data["appid"],
+                            parsed_data.get("game_name", name),
+                            depots,
+                            parsed_data.get("header_url"),
+                            self.main_window,
+                        )
+                        if depot_dialog.exec():
+                            selected_depots = depot_dialog.get_selected_depots()
 
                 if not selected_depots:
                     logger.info(f"Batch queue: user cancelled depot selection for {name}")
                     return False
 
                 metadata["selected_depots_list"] = selected_depots
+                # Cache the choice
+                try:
+                    settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys())
+                        })
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
 
             self.main_window.job_queue.add_job(local_path, metadata)
             logger.info(f"Batch queued: {name} (appid={appid})")

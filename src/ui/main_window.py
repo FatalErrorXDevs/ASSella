@@ -646,6 +646,8 @@ class MainWindow(QMainWindow):
         self.stacked_terminal_widget = None
         self.simplified_terminal = None
         self.stats_task_runner = None
+        self._autofetch_on_boot_done = False
+        self._autofetch_runner = None
 
         self.update_check_timer = None
 
@@ -757,6 +759,7 @@ class MainWindow(QMainWindow):
         )
         self.game_manager.all_updates_checked.connect(self.update_dashboard_elements)
         self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
+        self.game_manager.all_updates_checked.connect(self._on_boot_autofetch_manifests)
 
         # Initial stats fetch
         self.refresh_hubcap_stats()
@@ -773,6 +776,52 @@ class MainWindow(QMainWindow):
         logger.info(f"Initial game library scan completed ({games_found} games found). Triggering immediate game updates check.")
         if self.game_manager:
             self.game_manager.check_game_updates_async()
+
+    def _on_boot_autofetch_manifests(self) -> None:
+        """Sequential background fetch of update manifests on startup."""
+        if self._autofetch_on_boot_done:
+            return
+        self._autofetch_on_boot_done = True
+
+        if not self.settings.value("autofetch_manifests_on_boot", False, type=bool):
+            return
+
+        from utils.helpers import get_base_path
+        games_to_fetch = []
+        for game in self.game_manager.games:
+            appid = game.get("appid")
+            status = game.get("update_status")
+            if appid and appid not in ("0", "N/A", "unknown") and status == "update_available":
+                # Check if we already have a fresh manifest
+                fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                is_fresh = self.settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
+                if not (fpath.exists() and is_fresh):
+                    games_to_fetch.append((appid, game.get("game_name", "Unknown")))
+
+        if not games_to_fetch:
+            logger.info("Auto-fetch on boot: no update manifests need downloading.")
+            return
+
+        logger.info(f"Auto-fetch on boot: starting background fetch for {len(games_to_fetch)} games.")
+
+        from utils.task_runner import TaskRunner
+        self._autofetch_runner = TaskRunner(self)
+
+        def run_downloads():
+            from core import morrenus_api
+            for appid, name in games_to_fetch:
+                logger.info(f"Auto-fetch background: downloading manifest for {name} ({appid})")
+                try:
+                    fpath, error = morrenus_api.download_manifest(appid)
+                    if fpath and not error:
+                        self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                        logger.info(f"Auto-fetch background: successfully downloaded manifest for {name} ({appid})")
+                    else:
+                        logger.warning(f"Auto-fetch background: failed for {name} ({appid}): {error}")
+                except Exception as ex:
+                    logger.error(f"Auto-fetch background error for {name} ({appid}): {ex}", exc_info=True)
+
+        self._autofetch_runner.run(run_downloads)
 
     def _setup_update_timer(self) -> None:
         """Setup a timer to check for game updates periodically."""

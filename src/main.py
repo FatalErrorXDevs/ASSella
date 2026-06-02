@@ -45,8 +45,34 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+def migrate_manifests(logger):
+    """Migrate all cached manifest ZIP files from morrenus_manifests to hubcap_manifests."""
+    try:
+        from utils.helpers import get_base_path
+        import shutil
+        base = get_base_path()
+        morrenus_dir = base / "morrenus_manifests"
+        hubcap_dir = base / "hubcap_manifests"
+        if morrenus_dir.exists():
+            hubcap_dir.mkdir(parents=True, exist_ok=True)
+            copied = 0
+            for f in morrenus_dir.glob("accela_fetch_*.zip"):
+                dest = hubcap_dir / f.name
+                if not dest.exists():
+                    try:
+                        shutil.copy2(f, dest)
+                        copied += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to copy manifest {f.name}: {e}")
+            if copied > 0:
+                logger.info(f"Migrated {copied} manifest(s) from morrenus_manifests to hubcap_manifests")
+    except Exception as e:
+        logger.warning(f"Error during manifest migration: {e}")
+
+
 def main():
     logger = setup_logging()
+    migrate_manifests(logger)
 
     logger.info("========================================")
     logger.info(f"ASSELA {app_version} starting...")
