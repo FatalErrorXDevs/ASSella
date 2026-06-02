@@ -386,6 +386,36 @@ class UIStateManager:
         if hasattr(self.main_window, "bottom_titlebar"):
             self.main_window.bottom_titlebar.update_style()
 
+        # Dashboard elements styling
+        if hasattr(self.main_window, "usage_value") and self.main_window.usage_value:
+            self.main_window.usage_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 13px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "expiry_value") and self.main_window.expiry_value:
+            self.main_window.expiry_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 13px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "update_all_btn") and self.main_window.update_all_btn:
+            self.main_window.update_all_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.main_window.accent_color};
+                    color: #000000;
+                    font-weight: bold;
+                    font-size: 12px;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 4px 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.main_window.accent_color}dd;
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(60, 60, 60, 120);
+                    color: rgba(255, 255, 255, 60);
+                    border: 1px solid rgba(255, 255, 255, 10);
+                }}
+            """)
+
     def update_queue_visibility(self, is_processing, has_jobs):
         """Update queue visibility based on current state"""
         if not is_processing and not has_jobs:

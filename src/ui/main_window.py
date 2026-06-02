@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QStackedLayout,
     QFrame,
     QScrollArea,
+    QPushButton,
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
@@ -48,6 +49,9 @@ from ui.dialogs.status import StatusDialog
 from utils.logger import qt_log_handler
 from utils.paths import Paths
 from utils.settings import get_settings
+from utils.task_runner import TaskRunner
+from core.morrenus_api import get_user_stats
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +630,10 @@ class MainWindow(QMainWindow):
         self.drop_zone_layout = None
         self.drop_zone_gif = None
         self.drop_text_label = None
+        self.dashboard_widget = None
+        self.usage_value = None
+        self.expiry_value = None
+        self.update_all_btn = None
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -635,6 +643,7 @@ class MainWindow(QMainWindow):
         self.log_output = None
         self.stacked_terminal_widget = None
         self.simplified_terminal = None
+        self.stats_task_runner = None
 
         self.update_check_timer = None
 
@@ -738,6 +747,18 @@ class MainWindow(QMainWindow):
 
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
+        
+        # Connect game manager signals to update the dashboard's elements
+        self.game_manager.library_updated.connect(self.update_dashboard_elements)
+        self.game_manager.game_update_status_changed.connect(
+            lambda appid, status: self.update_dashboard_elements()
+        )
+        self.game_manager.all_updates_checked.connect(self.update_dashboard_elements)
+        self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
+
+        # Initial stats fetch
+        self.refresh_hubcap_stats()
+
         self.game_manager.scan_steam_libraries_async()
 
     def _on_initial_scan_complete(self, games_found: int) -> None:
@@ -881,7 +902,7 @@ class MainWindow(QMainWindow):
         self._create_progress_section()
 
     def _create_drop_zone(self) -> None:
-        """Create the drag and drop area."""
+        """Create the drag and drop area and stats dashboard."""
         self.drop_zone_container = QWidget()
         self.drop_zone_container.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -897,16 +918,94 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
 
+        # Smaller drag status label for backward compatibility and status updates
         self.drop_text_label = ScaledFontLabel("Drag and Drop Zip here")
         self.drop_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_text_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.drop_text_label.setMinimumHeight(32)
-        self.drop_text_label.setMaximumHeight(48)
+        self.drop_text_label.setMinimumHeight(16)
+        self.drop_text_label.setMaximumHeight(20)
 
+        # Dashboard container widget
+        self.dashboard_widget = QWidget()
+        self.dashboard_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.dashboard_widget.setMinimumHeight(70)
+        self.dashboard_widget.setMaximumHeight(85)
+        
+        dash_layout = QHBoxLayout(self.dashboard_widget)
+        dash_layout.setContentsMargins(15, 5, 15, 5)
+        dash_layout.setSpacing(10)
+        
+        card_style = """
+            QWidget {
+                background-color: rgba(30, 30, 30, 120);
+                border: 1px solid rgba(255, 255, 255, 12);
+                border-radius: 6px;
+            }
+        """
+        
+        # Daily Usage Card
+        self.stat_usage_card = QWidget()
+        self.stat_usage_card.setStyleSheet(card_style)
+        usage_layout = QVBoxLayout(self.stat_usage_card)
+        usage_layout.setContentsMargins(10, 4, 10, 4)
+        usage_layout.setSpacing(1)
+        
+        self.usage_title = QLabel("DAILY USAGE")
+        self.usage_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 9px; font-weight: bold; border: none; background: transparent;")
+        self.usage_value = QLabel("-- / --")
+        self.usage_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 13px; font-weight: bold; border: none; background: transparent;")
+        usage_layout.addWidget(self.usage_title)
+        usage_layout.addWidget(self.usage_value)
+        
+        # Key Expiry Card
+        self.stat_expiry_card = QWidget()
+        self.stat_expiry_card.setStyleSheet(card_style)
+        expiry_layout = QVBoxLayout(self.stat_expiry_card)
+        expiry_layout.setContentsMargins(10, 4, 10, 4)
+        expiry_layout.setSpacing(1)
+        
+        self.expiry_title = QLabel("KEY EXPIRY")
+        self.expiry_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 9px; font-weight: bold; border: none; background: transparent;")
+        self.expiry_value = QLabel("-- days")
+        self.expiry_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 13px; font-weight: bold; border: none; background: transparent;")
+        expiry_layout.addWidget(self.expiry_title)
+        expiry_layout.addWidget(self.expiry_value)
+        
+        # Update All button
+        self.update_all_btn = QPushButton("🔄 Update All")
+        self.update_all_btn.setMinimumHeight(38)
+        self.update_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color or '#C06C84'};
+                color: #000000;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+                border-radius: 6px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.accent_color or '#C06C84'}dd;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(60, 60, 60, 120);
+                color: rgba(255, 255, 255, 60);
+                border: 1px solid rgba(255, 255, 255, 10);
+            }}
+        """)
+        self.update_all_btn.clicked.connect(self.run_update_all_flow)
+        
+        dash_layout.addWidget(self.stat_usage_card, 1)
+        dash_layout.addWidget(self.stat_expiry_card, 1)
+        dash_layout.addWidget(self.update_all_btn, 1)
+        
         self.drop_zone_layout.addWidget(self.drop_zone_gif, 9)
         self.drop_zone_layout.addWidget(self.drop_text_label, 1)
+        self.drop_zone_layout.addWidget(self.dashboard_widget, 2)
         self.main_layout.addWidget(self.drop_zone_container, 10)
 
     def _create_progress_section(self) -> None:
@@ -1032,6 +1131,110 @@ class MainWindow(QMainWindow):
     def open_credits_dialog(self) -> None:
         dialog = CreditsDialog(self)
         dialog.exec()
+
+    def refresh_hubcap_stats(self) -> None:
+        """Fetch user statistics from Hubcap API asynchronously."""
+        if not self.stats_task_runner:
+            self.stats_task_runner = TaskRunner(self)
+        
+        # Set stats text to loading
+        if self.usage_value:
+            self.usage_value.setText("Loading...")
+        if self.expiry_value:
+            self.expiry_value.setText("Loading...")
+
+        worker = self.stats_task_runner.run(get_user_stats)
+        worker.finished.connect(self._on_user_stats_loaded)
+        worker.error.connect(self._on_user_stats_error)
+
+    def _on_user_stats_loaded(self, stats: dict) -> None:
+        """Handle async hubcap stats load success."""
+        if not isinstance(stats, dict) or "error" in stats:
+            err_msg = stats.get("error", "Unknown error") if isinstance(stats, dict) else "Invalid response"
+            logger.warning(f"Failed to load Hubcap user stats: {err_msg}")
+            val = "No Key" if "key is not set" in err_msg.lower() else "Error"
+            if self.usage_value:
+                self.usage_value.setText(val)
+            if self.expiry_value:
+                self.expiry_value.setText(val)
+            return
+
+        # Daily usage
+        usage = stats.get("daily_usage", 0)
+        limit = stats.get("daily_limit", 45)
+        if self.usage_value:
+            self.usage_value.setText(f"{usage} / {limit}")
+
+        # Key Expiry
+        expires_str = stats.get("api_key_expires_at")
+        if expires_str:
+            if expires_str.endswith('Z'):
+                expires_str = expires_str[:-1] + '+00:00'
+            try:
+                expires_at = datetime.fromisoformat(expires_str)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                delta = expires_at - now
+                days = delta.days
+                if days < 0:
+                    expiry_text = "Expired"
+                elif days == 0:
+                    expiry_text = "Expires today"
+                else:
+                    expiry_text = f"{days} day(s)"
+            except Exception as e:
+                logger.error(f"Failed to parse expiry date '{expires_str}': {e}")
+                expiry_text = "Unknown"
+        else:
+            expiry_text = "Never"
+
+        if self.expiry_value:
+            self.expiry_value.setText(expiry_text)
+
+    def _on_user_stats_error(self, err_tuple: tuple) -> None:
+        """Handle async hubcap stats load error."""
+        logger.error(f"Async user stats load failed: {err_tuple[1]}")
+        if self.usage_value:
+            self.usage_value.setText("Error")
+        if self.expiry_value:
+            self.expiry_value.setText("Error")
+
+    def run_update_all_flow(self) -> None:
+        """Flow for updating all games that have update_available status."""
+        if not self.game_manager:
+            return
+
+        games = self.game_manager.get_all_games()
+        updateable_games = [g for g in games if g.get("update_status") == "update_available"]
+
+        if not updateable_games:
+            QMessageBox.information(
+                self,
+                "No Updates Available",
+                "All games in your library are up to date!",
+            )
+            return
+
+        from ui.dialogs.gamelibrary import BatchQueueDialog
+        dialog = BatchQueueDialog(updateable_games, self)
+        dialog.exec()
+
+    def update_dashboard_elements(self) -> None:
+        """Dynamically update "Update All" button text based on pending updates count."""
+        if not self.game_manager or not self.update_all_btn:
+            return
+
+        games = self.game_manager.get_all_games()
+        updateable_games = [g for g in games if g.get("update_status") == "update_available"]
+        count = len(updateable_games)
+
+        if count > 0:
+            self.update_all_btn.setText(f"🔄 Update All ({count})")
+            self.update_all_btn.setEnabled(True)
+        else:
+            self.update_all_btn.setText("🔄 Update All")
+            self.update_all_btn.setEnabled(True)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if not event.mimeData().hasUrls():
