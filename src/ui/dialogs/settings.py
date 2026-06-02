@@ -209,6 +209,7 @@ class SettingsDialog(QDialog):
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
+        self.download_screen_2_0_beta_checkbox = None
         self.max_downloads_spinbox = None
         self.steamless_checkbox = None
         self.achievements_checkbox = None
@@ -307,6 +308,7 @@ class SettingsDialog(QDialog):
 
     def _setup_tabs(self) -> None:
         """Initialize and add all settings tabs."""
+        self._create_assela_tab()
         self._create_downloads_tab()
         self._create_morrenus_tab()
         self._create_steam_tab()
@@ -379,6 +381,48 @@ class SettingsDialog(QDialog):
             input_field.setEchoMode(QLineEdit.EchoMode.Password)
             toggle_btn.setText("Show")
 
+    def _create_assela_tab(self) -> None:
+        """Create the ASSella settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        group = QGroupBox("ASSella Core Settings")
+        group_layout = QVBoxLayout()
+
+        self.smart_depot_selection_checkbox = create_checkbox_setting(
+            "Smart Selection",
+            "smart_depot_selection",
+            False,
+            self,
+            "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
+        )
+        group_layout.addWidget(self.smart_depot_selection_checkbox)
+
+        self.autofetch_manifests_checkbox = create_checkbox_setting(
+            "Auto-fetch update manifests on boot",
+            "autofetch_manifests_on_boot",
+            False,
+            self,
+            "Pre-download manifest zip files in the background on startup for all games needing updates.",
+        )
+        group_layout.addWidget(self.autofetch_manifests_checkbox)
+
+        self.download_screen_2_0_beta_checkbox = create_checkbox_setting(
+            "Download Screen 2.0 Beta",
+            "download_screen_2_0_beta",
+            False,
+            self,
+            "Enable the modern, redesigned Download Screen 2.0 interface.",
+        )
+        group_layout.addWidget(self.download_screen_2_0_beta_checkbox)
+
+        group.setLayout(group_layout)
+        layout.addWidget(group)
+        layout.addStretch()
+
+        self.tab_widget.addTab(tab, "ASSella")
+
     def _create_downloads_tab(self) -> None:
         """Create the Downloads settings tab."""
         tab = QWidget()
@@ -412,24 +456,6 @@ class SettingsDialog(QDialog):
             "Automatically skip selection when only one option exists.",
         )
         dl_layout.addWidget(self.auto_skip_single_choice_checkbox)
-
-        self.smart_depot_selection_checkbox = create_checkbox_setting(
-            "Smart Selection",
-            "smart_depot_selection",
-            False,
-            self,
-            "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
-        )
-        dl_layout.addWidget(self.smart_depot_selection_checkbox)
-
-        self.autofetch_manifests_checkbox = create_checkbox_setting(
-            "Auto-fetch update manifests on boot",
-            "autofetch_manifests_on_boot",
-            False,
-            self,
-            "Pre-download manifest zip files in the background on startup for all games needing updates.",
-        )
-        dl_layout.addWidget(self.autofetch_manifests_checkbox)
 
         # Max Downloads
         max_dl_layout = QHBoxLayout()
@@ -1053,6 +1079,10 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "autofetch_manifests_on_boot",
             self.autofetch_manifests_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "download_screen_2_0_beta",
+            self.download_screen_2_0_beta_checkbox.isChecked(),
         )
         self.settings.setValue(
             "prompt_steam_restart",

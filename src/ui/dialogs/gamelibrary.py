@@ -1214,35 +1214,15 @@ class GameLibraryDialog(QDialog):
         status = game_data.get("update_status")
 
         # Determine if we can use local cache
-        local_path = None
         fpath = (
             get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
         )
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
         if fpath.exists() and (status != "update_available" or is_fresh):
-            if status == "update_available" and is_fresh:
-                # Prompt the user with option to use cached manifest
-                msg_box = QMessageBox(self)
-                msg_box.setWindowTitle("Manifest Options")
-                msg_box.setText(f"A fresh cached manifest for '{name}' is already available.")
-                msg_box.setInformativeText("Using the cached manifest will save your Hubcap API quota.")
-                
-                use_cached_btn = msg_box.addButton("Use Cached (Saves Quota)", QMessageBox.ButtonRole.YesRole)
-                download_new_btn = msg_box.addButton("Download New", QMessageBox.ButtonRole.NoRole)
-                cancel_btn = msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                
-                msg_box.exec()
-                clicked = msg_box.clickedButton()
-                
-                if clicked == use_cached_btn:
-                    local_path = str(fpath)
-                elif clicked == download_new_btn:
-                    local_path = None
-                else:
-                    return  # Cancelled
-            else:
-                local_path = str(fpath)
+            local_path = str(fpath)
+        else:
+            local_path = None
 
         if not local_path:
             self._handle_download_manifest(app_id, name, game_data, dialog)
@@ -1251,12 +1231,6 @@ class GameLibraryDialog(QDialog):
 
     def _handle_download_manifest(self, app_id, name, game_data, dialog):
         """Logic separated to flatten nesting in fetch_game_manifest."""
-        if not self._confirm_action(
-            "Confirm Download",
-            f"Download manifest for '{name}'?\nThis will use your API quota.",
-        ):
-            return
-
         if not morrenus_api:
             QMessageBox.critical(self, "Error", "API module missing.")
             return
@@ -1307,6 +1281,7 @@ class GameLibraryDialog(QDialog):
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
+            "game_name": game_data.get("game_name", "Unknown"),
         }
         
         try:
@@ -1696,6 +1671,7 @@ class BatchQueueDialog(QDialog):
                 "appid": appid,
                 "library_path": game_data.get("library_path"),
                 "install_path": game_data.get("install_path"),
+                "game_name": name,
             }
 
             if parsed_data and parsed_data.get("depots"):

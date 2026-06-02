@@ -322,6 +322,7 @@ class TaskManager(QObject):
         self._last_slscheevo_message = ""
         self._steamless_ran = False
         self._steamless_error = False
+        self._steamless_progress_log = []
         self._slscheevo_ran = False
         self._slscheevo_error = False
 
@@ -371,9 +372,8 @@ class TaskManager(QObject):
 
         self._start_speed_monitor()
         self.is_download_paused = False
-        self.main_window.ui_state.pause_button.setText("Pause")
-        self.main_window.ui_state.pause_button.setVisible(True)
-        self.main_window.ui_state.cancel_button.setVisible(True)
+        self.main_window.ui_state.set_pause_button_text("Pause")
+        self.main_window.ui_state.set_download_controls_visible(True)
 
         if not self.slssteam_mode_was_active:
             app_token = self.game_data.get("app_token")
@@ -1345,10 +1345,20 @@ class TaskManager(QObject):
 
     def _handle_steamless_task_error(self, error_info):
         _, error_value, _ = error_info
-        logger.error(f"Steamless processing failed: {error_value}")
-        self._steamless_error = True
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("steamless", "error")
+        error_str = str(error_value)
+        logger.error(f"Steamless processing failed: {error_str}")
+
+        is_linux_no_drm = "no suitable game executables found" in error_str.lower()
+        if is_linux_no_drm:
+            self._steamless_progress_log.append("no suitable game executables found")
+            self._steamless_error = False
+            self._last_steamless_success = False
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.set_stage_status("steamless", "completed")
+        else:
+            self._steamless_error = True
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.set_stage_status("steamless", "error")
 
         if self.steamless_task:
             QTimer.singleShot(0, self._clear_steamless_task)
@@ -1712,8 +1722,7 @@ class TaskManager(QObject):
         self.current_job = None
 
         self.is_download_paused = False
-        self.main_window.ui_state.pause_button.setVisible(False)
-        self.main_window.ui_state.cancel_button.setVisible(False)
+        self.main_window.ui_state.set_download_controls_visible(False)
         self.download_task = None
         self.is_cancelling = False
         self._delete_files_on_cancel = None
@@ -1775,13 +1784,13 @@ class TaskManager(QObject):
         try:
             self.download_task.toggle_pause(self.is_download_paused)
             if self.is_download_paused:
-                self.main_window.ui_state.pause_button.setText("Resume")
+                self.main_window.ui_state.set_pause_button_text("Resume")
                 self.main_window.drop_text_label.setText(
                     f"Paused: {os.path.basename(self.current_job)}"
                 )
                 self._stop_speed_monitor()
             else:
-                self.main_window.ui_state.pause_button.setText("Pause")
+                self.main_window.ui_state.set_pause_button_text("Pause")
                 self.main_window.drop_text_label.setText(
                     f"Downloading: {os.path.basename(self.current_job)}"
                 )
@@ -2042,6 +2051,9 @@ class TaskManager(QObject):
         }
 
     def _get_steamless_status_text(self):
+        log_text = "\n".join(self._steamless_progress_log).lower()
+        if "no suitable game executables found" in log_text:
+            return "No DRM (Linux)"
         if self._last_steamless_success is None:
             return "Ready"
         elif self._last_steamless_success:
@@ -2054,9 +2066,12 @@ class TaskManager(QObject):
         if not self._steamless_ran:
             return "Skipped"
 
+        log_text = "\n".join(self._steamless_progress_log).lower()
+        if "no suitable game executables found" in log_text:
+            return "No DRM (Linux)"
+
         # Check if there was an error
         if self._steamless_error or not self._last_steamless_success:
-            log_text = "\n".join(self._steamless_progress_log).lower()
             if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text:
                 return "No SteamStub DRM found"
             return "Failed / Error"
@@ -2093,5 +2108,7 @@ class TaskManager(QObject):
             self._last_steamless_status = "not_run"
             self._last_steamless_status_text = "N/A"
         else:
-            self._last_steamless_status = "ok" if steamless_ok else "error"
+            log_text = "\n".join(self._steamless_progress_log).lower()
+            is_linux_no_drm = "no suitable game executables found" in log_text
+            self._last_steamless_status = "ok" if (steamless_ok or is_linux_no_drm) else "error"
             self._last_steamless_status_text = self._get_steamless_status_text()

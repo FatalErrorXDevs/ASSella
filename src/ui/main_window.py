@@ -323,7 +323,15 @@ class SimplifiedTerminalWidget(QWidget):
         self.active_widget = QWidget()
         active_layout = QVBoxLayout(self.active_widget)
         active_layout.setContentsMargins(0, 0, 0, 0)
-        active_layout.setSpacing(3)
+        active_layout.setSpacing(0)
+
+        self.active_checklist_stack = QStackedWidget()
+
+        # --- CLASSIC ACTIVE LAYOUT ---
+        self.active_classic_widget = QWidget()
+        classic_layout = QVBoxLayout(self.active_classic_widget)
+        classic_layout.setContentsMargins(0, 0, 0, 0)
+        classic_layout.setSpacing(3)
 
         self.game_title_label = QLabel("Installing Game...")
         self.game_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -356,8 +364,72 @@ class SimplifiedTerminalWidget(QWidget):
         steam_row.addWidget(self.steam_text, 1)
         checklist_layout.addLayout(steam_row)
 
-        active_layout.addWidget(self.game_title_label)
-        active_layout.addLayout(checklist_layout)
+        classic_layout.addWidget(self.game_title_label)
+        classic_layout.addLayout(checklist_layout)
+
+        self.active_checklist_stack.addWidget(self.active_classic_widget)
+
+        # --- VIEW 1.2: ACTIVE 2.0 BETA LAYOUT ---
+        self.active_2_0_widget = QWidget()
+        active_2_0_layout = QVBoxLayout(self.active_2_0_widget)
+        active_2_0_layout.setContentsMargins(5, 5, 5, 5)
+        active_2_0_layout.setSpacing(6)
+
+        # Header card/frame for game info
+        self.game_info_card = QFrame()
+        game_info_layout = QVBoxLayout(self.game_info_card)
+        game_info_layout.setContentsMargins(10, 8, 10, 8)
+        game_info_layout.setSpacing(2)
+
+        self.game_title_label_2_0 = QLabel("Installing Game...")
+        self.game_title_label_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.game_title_label_2_0.setWordWrap(True)
+        game_info_layout.addWidget(self.game_title_label_2_0)
+
+        active_2_0_layout.addWidget(self.game_info_card)
+
+        # Stage cards
+        # 1. Download Card
+        self.dl_card = QFrame()
+        dl_card_layout = QHBoxLayout(self.dl_card)
+        dl_card_layout.setContentsMargins(12, 6, 12, 6)
+        self.dl_text_2_0 = QLabel("Downloading Game Files")
+        self.dl_badge_2_0 = QLabel("Pending")
+        self.dl_badge_2_0.setFixedWidth(80)
+        self.dl_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dl_card_layout.addWidget(self.dl_text_2_0, 1)
+        dl_card_layout.addWidget(self.dl_badge_2_0)
+        active_2_0_layout.addWidget(self.dl_card)
+
+        # 2. Achievements Card
+        self.ach_card = QFrame()
+        ach_card_layout = QHBoxLayout(self.ach_card)
+        ach_card_layout.setContentsMargins(12, 6, 12, 6)
+        self.ach_text_2_0 = QLabel("Generating Achievements")
+        self.ach_badge_2_0 = QLabel("Pending")
+        self.ach_badge_2_0.setFixedWidth(80)
+        self.ach_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ach_card_layout.addWidget(self.ach_text_2_0, 1)
+        ach_card_layout.addWidget(self.ach_badge_2_0)
+        active_2_0_layout.addWidget(self.ach_card)
+
+        # 3. DRM Card
+        self.drm_card = QFrame()
+        drm_card_layout = QHBoxLayout(self.drm_card)
+        drm_card_layout.setContentsMargins(12, 6, 12, 6)
+        self.drm_text_2_0 = QLabel("Removing Steam DRM")
+        self.drm_badge_2_0 = QLabel("Pending")
+        self.drm_badge_2_0.setFixedWidth(80)
+        self.drm_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drm_card_layout.addWidget(self.drm_text_2_0, 1)
+        drm_card_layout.addWidget(self.drm_badge_2_0)
+        active_2_0_layout.addWidget(self.drm_card)
+
+        active_2_0_layout.addStretch()
+
+        self.active_checklist_stack.addWidget(self.active_2_0_widget)
+
+        active_layout.addWidget(self.active_checklist_stack)
 
         self.layout.addWidget(self.idle_widget)
         self.layout.addWidget(self.active_widget)
@@ -537,17 +609,38 @@ class SimplifiedTerminalWidget(QWidget):
         self.quote_label.setStyleSheet("font-style: italic; font-size: 9pt; color: #FFFFFF;")
         self.quote_source_label.setStyleSheet("font-size: 8pt; color: #888888;")
 
-        self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style}")
+        self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
+        self.dl_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
+        self.ach_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
+        self.steam_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
 
-        self.dl_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
-        self.ach_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
-        self.steam_text.setStyleSheet("color: #FFFFFF; font-size: 10pt;")
+        # 2.0 active layout styling
+        if hasattr(self, "game_title_label_2_0") and self.game_title_label_2_0:
+            self.game_title_label_2_0.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
+        if hasattr(self, "game_info_card") and self.game_info_card:
+            self.game_info_card.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(30, 30, 30, 120);
+                    border: 1px solid rgba(255, 255, 255, 12);
+                    border-radius: 6px;
+                }
+            """)
+        if hasattr(self, "dl_text_2_0") and self.dl_text_2_0:
+            self.dl_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
+        if hasattr(self, "ach_text_2_0") and self.ach_text_2_0:
+            self.ach_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
+        if hasattr(self, "drm_text_2_0") and self.drm_text_2_0:
+            self.drm_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
 
         # Reset current status icons to apply updated colors
         self.update_stage_style(self.dl_status_icon, self.dl_status_icon.text())
         self.update_stage_style(self.ach_status_icon, self.ach_status_icon.text())
         self.update_stage_style(self.steam_status_icon, self.steam_status_icon.text())
 
+        # Re-apply 2.0 stages style if statuses exist
+        if hasattr(self, "_stage_statuses"):
+            for stage, status in self._stage_statuses.items():
+                self.set_stage_status(stage, status)
 
     def update_stage_style(self, icon_label: QLabel, status: str):
         # Green for completed, yellow/orange for active, red for error, gray/accent for pending/skipped
@@ -567,9 +660,53 @@ class SimplifiedTerminalWidget(QWidget):
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {color};")
 
+    def update_2_0_stage_style(self, card_widget: QFrame, badge_widget: QLabel, status: str):
+        accent = self.main_window.accent_color or "#C06C84"
+        
+        def hex_to_rgba(hex_color, alpha):
+            hex_color = hex_color.lstrip('#')
+            if len(hex_color) == 3:
+                hex_color = ''.join([c*2 for c in hex_color])
+            try:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                return f"rgba({r}, {g}, {b}, {alpha})"
+            except Exception:
+                return f"rgba(255, 255, 255, {alpha})"
+
+        accent_alpha = hex_to_rgba(accent, 20)
+
+        if status == "completed":
+            badge_text = "Completed"
+            badge_style = "background-color: #2ECC71; color: #FFFFFF; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(46, 204, 113, 15); border: 1px solid rgba(46, 204, 113, 40); border-radius: 6px;"
+        elif status == "in_progress":
+            badge_text = "Active"
+            badge_style = f"background-color: {accent}; color: #000000; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = f"background-color: {accent_alpha}; border: 1px solid {accent}; border-radius: 6px;"
+        elif status == "error":
+            badge_text = "Failed"
+            badge_style = "background-color: #E74C3C; color: #FFFFFF; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(231, 76, 60, 15); border: 1px solid rgba(231, 76, 60, 40); border-radius: 6px;"
+        elif status == "skipped":
+            badge_text = "Skipped"
+            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
+        else:  # "pending"
+            badge_text = "Queued"
+            badge_style = "background-color: rgba(255, 255, 255, 20); color: #BBBBBB; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(255, 255, 255, 5); border: 1px solid rgba(255, 255, 255, 10); border-radius: 6px;"
+
+        badge_widget.setText(badge_text)
+        badge_widget.setStyleSheet(badge_style)
+        card_widget.setStyleSheet(card_style)
+
     def set_stage_status(self, stage: str, status: str):
-        # stage can be: "download", "achievements", "steamless"
-        # status can be: "pending" ("○"), "in_progress" ("▶"), "completed" ("✓"), "error" ("✗"), "skipped" ("~")
+        if not hasattr(self, "_stage_statuses"):
+            self._stage_statuses = {}
+        self._stage_statuses[stage] = status
+
         status_map = {
             "pending": "○",
             "in_progress": "▶",
@@ -581,10 +718,16 @@ class SimplifiedTerminalWidget(QWidget):
 
         if stage == "download":
             self.update_stage_style(self.dl_status_icon, symbol)
+            if hasattr(self, "dl_card") and self.dl_card:
+                self.update_2_0_stage_style(self.dl_card, self.dl_badge_2_0, status)
         elif stage == "achievements":
             self.update_stage_style(self.ach_status_icon, symbol)
+            if hasattr(self, "ach_card") and self.ach_card:
+                self.update_2_0_stage_style(self.ach_card, self.ach_badge_2_0, status)
         elif stage == "steamless":
             self.update_stage_style(self.steam_status_icon, symbol)
+            if hasattr(self, "drm_card") and self.drm_card:
+                self.update_2_0_stage_style(self.drm_card, self.drm_badge_2_0, status)
 
     def reset_stages(self):
         self.set_stage_status("download", "pending")
@@ -597,6 +740,15 @@ class SimplifiedTerminalWidget(QWidget):
 
     def show_active_job(self, game_name: str = "Installing Game..."):
         self.game_title_label.setText(game_name)
+        if hasattr(self, "game_title_label_2_0") and self.game_title_label_2_0:
+            self.game_title_label_2_0.setText(game_name)
+        
+        beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
+        if beta:
+            self.active_checklist_stack.setCurrentIndex(1)
+        else:
+            self.active_checklist_stack.setCurrentIndex(0)
+
         self.layout.setCurrentIndex(1)
 
 
@@ -640,6 +792,9 @@ class MainWindow(QMainWindow):
         self.progress_layout = None
         self.progress_bar = None
         self.speed_label = None
+        self.progress_controls_widget = None
+        self.media_pause_button = None
+        self.media_cancel_button = None
         self.bottom_widget = None
         self.bottom_layout = None
         self.log_output = None
@@ -1114,7 +1269,7 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.drop_zone_container, 10)
 
     def _create_progress_section(self) -> None:
-        """Create the progress bar and speed label."""
+        """Create the progress bar, controls and speed label."""
         self.progress_container = QWidget()
         self.progress_layout = QVBoxLayout(self.progress_container)
         self.progress_layout.setContentsMargins(20, 5, 20, 5)
@@ -1124,11 +1279,34 @@ class MainWindow(QMainWindow):
         self._update_progress_bar_style()
         self.progress_layout.addWidget(self.progress_bar)
 
-        self.speed_label = QLabel("")
-        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.speed_label.setVisible(False)
-        self.progress_layout.addWidget(self.speed_label)
+        # Horizontal layout for media buttons and speed label
+        self.progress_controls_widget = QWidget()
+        self.progress_controls_layout = QHBoxLayout(self.progress_controls_widget)
+        self.progress_controls_layout.setContentsMargins(0, 2, 0, 2)
+        self.progress_controls_layout.setSpacing(10)
 
+        self.media_pause_button = QPushButton("⏸")
+        self.media_cancel_button = QPushButton("⏹")
+        
+        self.media_pause_button.clicked.connect(self.task_manager.toggle_pause)
+        self.media_cancel_button.clicked.connect(self.task_manager.cancel_current_job)
+        
+        self.media_pause_button.setVisible(False)
+        self.media_cancel_button.setVisible(False)
+
+        # Left spacer to center media buttons
+        self.progress_controls_layout.addStretch(2)
+        self.progress_controls_layout.addWidget(self.media_pause_button)
+        self.progress_controls_layout.addWidget(self.media_cancel_button)
+        # Right spacer
+        self.progress_controls_layout.addStretch(1)
+
+        self.speed_label = QLabel("")
+        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.speed_label.setVisible(False)
+        self.progress_controls_layout.addWidget(self.speed_label)
+
+        self.progress_layout.addWidget(self.progress_controls_widget)
         self.main_layout.addWidget(self.progress_container, 1)
 
     def _create_bottom_section(self) -> None:
@@ -1192,6 +1370,35 @@ class MainWindow(QMainWindow):
 
     def update_progress_bar_style(self) -> None:
         self._update_progress_bar_style()
+        self.update_media_buttons_style()
+
+    def update_media_buttons_style(self) -> None:
+        accent = self.accent_color or "#C06C84"
+        style = """
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid rgba(255, 255, 255, 30);
+                border-radius: 14px;
+                min-width: 28px;
+                max-width: 28px;
+                min-height: 28px;
+                max-height: 28px;
+                font-size: 9pt;
+                color: #FFFFFF;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 20);
+                border: 1px solid %ACCENT%;
+                color: %ACCENT%;
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 255, 255, 40);
+            }
+        """.replace("%ACCENT%", accent)
+        if self.media_pause_button:
+            self.media_pause_button.setStyleSheet(style)
+        if self.media_cancel_button:
+            self.media_cancel_button.setStyleSheet(style)
 
     def _update_progress_bar_style(self) -> None:
         """Update progress bar styling."""

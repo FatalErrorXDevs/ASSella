@@ -578,6 +578,7 @@ class FetchManifestDialog(QDialog):
                     
                     if selected_depots:
                         metadata["selected_depots_list"] = selected_depots
+                        metadata["game_name"] = parsed_data.get("game_name", "")
                     else:
                         # User cancelled depot selection
                         logger.info("User cancelled depot selection.")

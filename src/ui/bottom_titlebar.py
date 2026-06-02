@@ -100,7 +100,7 @@ class BottomTitleBar(QFrame):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._setup_navi_animation(layout)
+        # Navi GIF removed per user request
 
         version_label = ClickableLabel(
             app_version,

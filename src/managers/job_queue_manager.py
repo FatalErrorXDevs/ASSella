@@ -161,9 +161,21 @@ class JobQueueManager(QObject):
     def _update_queue_display(self):
         """Update the queue list widget"""
         self.main_window.ui_state.queue_list_widget.clear()
-        self.main_window.ui_state.queue_list_widget.addItems(
-            [os.path.basename(job["path"]) for job in self.job_queue]
-        )
+        display_names = []
+        for job in self.job_queue:
+            game_name = job.get("metadata", {}).get("game_name")
+            if not game_name:
+                filename = os.path.basename(job["path"])
+                if filename.startswith("accela_fetch_") and filename.endswith(".zip"):
+                    appid = filename[13:-4]
+                    if self.main_window.game_manager:
+                        game = self.main_window.game_manager.get_game(appid)
+                        if game:
+                            game_name = game.get("game_name")
+            if not game_name:
+                game_name = os.path.basename(job["path"])
+            display_names.append(game_name)
+        self.main_window.ui_state.queue_list_widget.addItems(display_names)
 
     def _check_if_safe_to_start_next_job(self):
         """Check if it's safe to start the next job"""
