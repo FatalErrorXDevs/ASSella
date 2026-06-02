@@ -634,6 +634,8 @@ class MainWindow(QMainWindow):
         self.usage_value = None
         self.expiry_value = None
         self.update_all_btn = None
+        self.steam_updates_value = None
+        self.sls_status_value = None
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -947,61 +949,115 @@ class MainWindow(QMainWindow):
             }
         """
         
-        # Daily Usage Card
-        self.stat_usage_card = QWidget()
-        self.stat_usage_card.setStyleSheet(card_style)
-        usage_layout = QVBoxLayout(self.stat_usage_card)
-        usage_layout.setContentsMargins(10, 4, 10, 4)
-        usage_layout.setSpacing(1)
+        # Hubcap API Stats Card (Left)
+        self.hubcap_stats_card = QWidget()
+        self.hubcap_stats_card.setStyleSheet(card_style)
+        hubcap_layout = QVBoxLayout(self.hubcap_stats_card)
+        hubcap_layout.setContentsMargins(10, 4, 10, 4)
+        hubcap_layout.setSpacing(1)
         
-        self.usage_title = QLabel("DAILY USAGE")
-        self.usage_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 9px; font-weight: bold; border: none; background: transparent;")
+        self.hubcap_title = QLabel("HUBCAP API STATS")
+        self.hubcap_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
+        
+        usage_row = QHBoxLayout()
+        usage_row.setSpacing(4)
+        usage_lbl = QLabel("Usage:")
+        usage_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
         self.usage_value = QLabel("-- / --")
-        self.usage_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 13px; font-weight: bold; border: none; background: transparent;")
-        usage_layout.addWidget(self.usage_title)
-        usage_layout.addWidget(self.usage_value)
+        self.usage_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        reset_lbl = QLabel("(Resets Daily)")
+        reset_lbl.setStyleSheet("color: rgba(255, 255, 255, 80); font-size: 8px; border: none; background: transparent;")
+        usage_row.addWidget(usage_lbl)
+        usage_row.addWidget(self.usage_value)
+        usage_row.addWidget(reset_lbl)
+        usage_row.addStretch()
         
-        # Key Expiry Card
-        self.stat_expiry_card = QWidget()
-        self.stat_expiry_card.setStyleSheet(card_style)
-        expiry_layout = QVBoxLayout(self.stat_expiry_card)
-        expiry_layout.setContentsMargins(10, 4, 10, 4)
-        expiry_layout.setSpacing(1)
-        
-        self.expiry_title = QLabel("KEY EXPIRY")
-        self.expiry_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 9px; font-weight: bold; border: none; background: transparent;")
+        expiry_row = QHBoxLayout()
+        expiry_row.setSpacing(4)
+        expiry_lbl = QLabel("Expiry:")
+        expiry_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
         self.expiry_value = QLabel("-- days")
-        self.expiry_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 13px; font-weight: bold; border: none; background: transparent;")
-        expiry_layout.addWidget(self.expiry_title)
-        expiry_layout.addWidget(self.expiry_value)
+        self.expiry_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        expiry_row.addWidget(expiry_lbl)
+        expiry_row.addWidget(self.expiry_value)
+        expiry_row.addStretch()
         
-        # Update All button
-        self.update_all_btn = QPushButton("🔄 Update All")
-        self.update_all_btn.setMinimumHeight(38)
+        hubcap_layout.addWidget(self.hubcap_title)
+        hubcap_layout.addLayout(usage_row)
+        hubcap_layout.addLayout(expiry_row)
+        
+        # Update Action Card (Middle)
+        self.update_action_card = QWidget()
+        self.update_action_card.setStyleSheet(card_style)
+        action_layout = QVBoxLayout(self.update_action_card)
+        action_layout.setContentsMargins(10, 4, 10, 4)
+        action_layout.setSpacing(4)
+        
+        self.action_title = QLabel("LIBRARY UPDATE")
+        self.action_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
+        
+        self.update_all_btn = QPushButton("Update All")
+        self.update_all_btn.setMinimumHeight(28)
         self.update_all_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {self.accent_color or '#C06C84'};
-                color: #000000;
+                background-color: transparent;
+                color: {self.accent_color or '#C06C84'};
+                border: 1px solid {self.accent_color or '#C06C84'};
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
                 font-weight: bold;
-                font-size: 12px;
-                border: none;
-                border-radius: 6px;
-                padding: 4px 12px;
             }}
             QPushButton:hover {{
-                background-color: {self.accent_color or '#C06C84'}dd;
+                background-color: rgba(255, 255, 255, 15);
             }}
             QPushButton:disabled {{
-                background-color: rgba(60, 60, 60, 120);
+                border: 1px solid rgba(255, 255, 255, 15);
                 color: rgba(255, 255, 255, 60);
-                border: 1px solid rgba(255, 255, 255, 10);
             }}
         """)
         self.update_all_btn.clicked.connect(self.run_update_all_flow)
         
-        dash_layout.addWidget(self.stat_usage_card, 1)
-        dash_layout.addWidget(self.stat_expiry_card, 1)
-        dash_layout.addWidget(self.update_all_btn, 1)
+        action_layout.addWidget(self.action_title)
+        action_layout.addWidget(self.update_all_btn)
+        
+        # Steam / SLS Status Card (Right)
+        self.steam_sls_status_card = QWidget()
+        self.steam_sls_status_card.setStyleSheet(card_style)
+        status_layout = QVBoxLayout(self.steam_sls_status_card)
+        status_layout.setContentsMargins(10, 4, 10, 4)
+        status_layout.setSpacing(1)
+        
+        self.status_card_title = QLabel("STEAM / SLS STATUS")
+        self.status_card_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
+        
+        steam_row = QHBoxLayout()
+        steam_row.setSpacing(4)
+        steam_lbl = QLabel("Steam Updates:")
+        steam_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
+        self.steam_updates_value = QLabel("Checking...")
+        self.steam_updates_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        steam_row.addWidget(steam_lbl)
+        steam_row.addWidget(self.steam_updates_value)
+        steam_row.addStretch()
+        
+        sls_row = QHBoxLayout()
+        sls_row.setSpacing(4)
+        sls_lbl = QLabel("SLS Config:")
+        sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
+        self.sls_status_value = QLabel("Healthy")
+        self.sls_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        sls_row.addWidget(sls_lbl)
+        sls_row.addWidget(self.sls_status_value)
+        sls_row.addStretch()
+        
+        status_layout.addWidget(self.status_card_title)
+        status_layout.addLayout(steam_row)
+        status_layout.addLayout(sls_row)
+        
+        dash_layout.addWidget(self.hubcap_stats_card, 1)
+        dash_layout.addWidget(self.update_action_card, 1)
+        dash_layout.addWidget(self.steam_sls_status_card, 1)
         
         self.drop_zone_layout.addWidget(self.drop_zone_gif, 9)
         self.drop_zone_layout.addWidget(self.drop_text_label, 1)
@@ -1132,8 +1188,55 @@ class MainWindow(QMainWindow):
         dialog = CreditsDialog(self)
         dialog.exec()
 
+    def check_steam_updates_blocked(self) -> bool:
+        """Check if steam updates are blocked via steam.cfg."""
+        from pathlib import Path
+        path = Path("/home/deck/.steam/steam/steam.cfg")
+        if not path.exists():
+            return False
+        try:
+            lines = path.read_text().splitlines()
+            inhibit = False
+            force_disable = False
+            for line in lines:
+                # strip comments
+                line = line.split('#')[0].split(';')[0].strip()
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    k = k.strip().lower()
+                    v = v.strip().lower()
+                    if k == "bootstrapperinhibitall" and v in ("enable", "enabled", "true", "1"):
+                        inhibit = True
+                    if k == "bootstrapperforceselfupdate" and v in ("disable", "disabled", "false", "0"):
+                        force_disable = True
+            return inhibit and force_disable
+        except Exception as e:
+            logger.error(f"Error reading steam.cfg: {e}")
+            return False
+
+    def refresh_system_status(self) -> None:
+        """Refresh local Steam updates and SLS status labels."""
+        if not self.steam_updates_value or not self.sls_status_value:
+            return
+            
+        blocked = self.check_steam_updates_blocked()
+        if blocked:
+            self.steam_updates_value.setText("Blocked")
+            self.steam_updates_value.setStyleSheet(f"color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        else:
+            self.steam_updates_value.setText("Allowed")
+            self.steam_updates_value.setStyleSheet(f"color: #33ff33; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            
+        # Placeholder for SLS Status
+        self.sls_status_value.setText("Healthy")
+        if hasattr(self, "accent_color") and self.accent_color:
+            self.sls_status_value.setStyleSheet(f"color: {self.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
     def refresh_hubcap_stats(self) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""
+        # Also refresh Steam and SLS status locally
+        self.refresh_system_status()
+
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
         

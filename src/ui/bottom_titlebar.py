@@ -154,7 +154,7 @@ class BottomTitleBar(QFrame):
             getattr(parent, "open_status_dialog", None),
             "Download Status",
         )
-        layout.addWidget(self.status_button)
+        self.status_button.setVisible(False)
 
         self.search_button = self._create_svg_button(
             SEARCH_SVG, getattr(parent, "open_fetch_dialog", None), "Download Game"

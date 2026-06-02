@@ -389,30 +389,33 @@ class UIStateManager:
         # Dashboard elements styling
         if hasattr(self.main_window, "usage_value") and self.main_window.usage_value:
             self.main_window.usage_value.setStyleSheet(
-                f"color: {self.main_window.accent_color}; font-size: 13px; font-weight: bold; border: none; background: transparent;"
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
             )
         if hasattr(self.main_window, "expiry_value") and self.main_window.expiry_value:
             self.main_window.expiry_value.setStyleSheet(
-                f"color: {self.main_window.accent_color}; font-size: 13px; font-weight: bold; border: none; background: transparent;"
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "sls_status_value") and self.main_window.sls_status_value:
+            self.main_window.sls_status_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
             )
         if hasattr(self.main_window, "update_all_btn") and self.main_window.update_all_btn:
             self.main_window.update_all_btn.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {self.main_window.accent_color};
-                    color: #000000;
+                    background-color: transparent;
+                    color: {self.main_window.accent_color};
+                    border: 1px solid {self.main_window.accent_color};
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 11px;
                     font-weight: bold;
-                    font-size: 12px;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 4px 12px;
                 }}
                 QPushButton:hover {{
-                    background-color: {self.main_window.accent_color}dd;
+                    background-color: rgba(255, 255, 255, 15);
                 }}
                 QPushButton:disabled {{
-                    background-color: rgba(60, 60, 60, 120);
+                    border: 1px solid rgba(255, 255, 255, 15);
                     color: rgba(255, 255, 255, 60);
-                    border: 1px solid rgba(255, 255, 255, 10);
                 }}
             """)
 
