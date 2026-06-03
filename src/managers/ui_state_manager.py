@@ -298,31 +298,37 @@ class UIStateManager:
                 self.pause_button.setVisible(False)
             if self.cancel_button:
                 self.cancel_button.setVisible(False)
-            # Show/hide media-player buttons on main window
-            if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
-                self.main_window.media_pause_button.setVisible(visible)
-            if hasattr(self.main_window, "media_cancel_button") and self.main_window.media_cancel_button:
-                self.main_window.media_cancel_button.setVisible(visible)
+            # Show/hide inline text controls on main window
+            mw = self.main_window
+            if hasattr(mw, "media_pause_button") and mw.media_pause_button:
+                mw.media_pause_button.setVisible(visible)
+            if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
+                mw.media_cancel_button.setVisible(visible)
+            if hasattr(mw, "_sep_label") and mw._sep_label:
+                mw._sep_label.setVisible(visible)
         else:
             # Show/hide traditional queue buttons
             if self.pause_button:
                 self.pause_button.setVisible(visible)
             if self.cancel_button:
                 self.cancel_button.setVisible(visible)
-            # Hide media-player buttons on main window
-            if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
-                self.main_window.media_pause_button.setVisible(False)
-            if hasattr(self.main_window, "media_cancel_button") and self.main_window.media_cancel_button:
-                self.main_window.media_cancel_button.setVisible(False)
+            # Hide inline text controls on main window
+            mw = self.main_window
+            if hasattr(mw, "media_pause_button") and mw.media_pause_button:
+                mw.media_pause_button.setVisible(False)
+            if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
+                mw.media_cancel_button.setVisible(False)
+            if hasattr(mw, "_sep_label") and mw._sep_label:
+                mw._sep_label.setVisible(False)
 
     def set_pause_button_text(self, text: str) -> None:
-        """Set text/icon for pause button based on state."""
+        """Set text for pause button based on state."""
         beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
         if beta:
-            symbol = "▶" if text == "Resume" else "⏸"
+            # Use plain text (Pause / Resume) — no emoji
             if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
-                self.main_window.media_pause_button.setText(symbol)
-                self.main_window.media_pause_button.setToolTip(text)
+                self.main_window.media_pause_button.setText(text)
+                self.main_window.media_pause_button.setToolTip("")
         else:
             if self.pause_button:
                 self.pause_button.setText(text)

@@ -1279,32 +1279,35 @@ class MainWindow(QMainWindow):
         self._update_progress_bar_style()
         self.progress_layout.addWidget(self.progress_bar)
 
-        # Horizontal layout for media buttons and speed label
+        # Inline text controls row: speed label (left) · Pause · Stop (right)
         self.progress_controls_widget = QWidget()
         self.progress_controls_layout = QHBoxLayout(self.progress_controls_widget)
-        self.progress_controls_layout.setContentsMargins(0, 2, 0, 2)
-        self.progress_controls_layout.setSpacing(10)
+        self.progress_controls_layout.setContentsMargins(2, 1, 2, 1)
+        self.progress_controls_layout.setSpacing(6)
 
-        self.media_pause_button = QPushButton("⏸")
-        self.media_cancel_button = QPushButton("⏹")
-        
+        self.speed_label = QLabel("")
+        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.speed_label.setVisible(False)
+        self.progress_controls_layout.addWidget(self.speed_label)
+
+        self.progress_controls_layout.addStretch()
+
+        # Separator dot between controls
+        self._sep_label = QLabel("·")
+        self._sep_label.setVisible(False)
+
+        self.media_pause_button = QPushButton("Pause")
+        self.media_cancel_button = QPushButton("Stop")
+
         self.media_pause_button.clicked.connect(self.task_manager.toggle_pause)
         self.media_cancel_button.clicked.connect(self.task_manager.cancel_current_job)
-        
+
         self.media_pause_button.setVisible(False)
         self.media_cancel_button.setVisible(False)
 
-        # Left spacer to center media buttons
-        self.progress_controls_layout.addStretch(2)
         self.progress_controls_layout.addWidget(self.media_pause_button)
+        self.progress_controls_layout.addWidget(self._sep_label)
         self.progress_controls_layout.addWidget(self.media_cancel_button)
-        # Right spacer
-        self.progress_controls_layout.addStretch(1)
-
-        self.speed_label = QLabel("")
-        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.speed_label.setVisible(False)
-        self.progress_controls_layout.addWidget(self.speed_label)
 
         self.progress_layout.addWidget(self.progress_controls_widget)
         self.main_layout.addWidget(self.progress_container, 1)
@@ -1374,31 +1377,31 @@ class MainWindow(QMainWindow):
 
     def update_media_buttons_style(self) -> None:
         accent = self.accent_color or "#C06C84"
-        style = """
-            QPushButton {
+        # Flat text style — matches the tool's link/label aesthetic
+        btn_style = f"""
+            QPushButton {{
                 background-color: transparent;
-                border: 1px solid rgba(255, 255, 255, 30);
-                border-radius: 14px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
+                border: none;
+                color: {accent};
                 font-size: 9pt;
+                padding: 0 2px;
+                text-decoration: none;
+            }}
+            QPushButton:hover {{
                 color: #FFFFFF;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 20);
-                border: 1px solid %ACCENT%;
-                color: %ACCENT%;
-            }
-            QPushButton:pressed {
-                background-color: rgba(255, 255, 255, 40);
-            }
-        """.replace("%ACCENT%", accent)
+                text-decoration: underline;
+            }}
+            QPushButton:pressed {{
+                color: rgba(255, 255, 255, 160);
+            }}
+        """
+        sep_style = f"color: rgba(255,255,255,60); font-size: 9pt; padding: 0;"
         if self.media_pause_button:
-            self.media_pause_button.setStyleSheet(style)
+            self.media_pause_button.setStyleSheet(btn_style)
         if self.media_cancel_button:
-            self.media_cancel_button.setStyleSheet(style)
+            self.media_cancel_button.setStyleSheet(btn_style)
+        if hasattr(self, "_sep_label") and self._sep_label:
+            self._sep_label.setStyleSheet(sep_style)
 
     def _update_progress_bar_style(self) -> None:
         """Update progress bar styling."""

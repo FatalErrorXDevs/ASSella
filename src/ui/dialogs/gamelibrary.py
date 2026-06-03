@@ -367,28 +367,67 @@ class GameLibraryDialog(QDialog):
         self.games_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         layout.addWidget(self.games_list)
 
-        # --- Selection Footer (hidden by default) ---
+        # --- Selection Pill Bar (hidden by default, floats below game list) ---
         self.selection_footer = QWidget()
-        selection_layout = QHBoxLayout(self.selection_footer)
-        selection_layout.setContentsMargins(4, 4, 4, 4)
+        self.selection_footer.setObjectName("selectionPillBar")
+        self.selection_footer.setStyleSheet(
+            f"""
+            QWidget#selectionPillBar {{
+                background-color: rgba(20, 20, 20, 220);
+                border: 1px solid rgba(255, 255, 255, 18);
+                border-radius: 10px;
+            }}
+            """
+        )
+        pill_layout = QHBoxLayout(self.selection_footer)
+        pill_layout.setContentsMargins(10, 6, 10, 6)
+        pill_layout.setSpacing(10)
 
-        self.selection_count_label = QLabel("0 games selected")
-        self.selection_count_label.setStyleSheet(f"color: {self.accent_color};")
-        selection_layout.addWidget(self.selection_count_label)
+        # Left: Exit select mode
+        self._exit_select_btn = QPushButton("✕  Exit")
+        self._exit_select_btn.setFlat(True)
+        self._exit_select_btn.setStyleSheet(
+            "QPushButton { color: rgba(255,255,255,120); border: none; background: transparent; font-size: 9pt; padding: 0; }"
+            "QPushButton:hover { color: #FFFFFF; }"
+        )
+        self._exit_select_btn.clicked.connect(lambda: (
+            self.select_mode_button.setChecked(False),
+            self._toggle_select_mode()
+        ))
+        pill_layout.addWidget(self._exit_select_btn)
 
-        selection_layout.addStretch()
+        pill_layout.addStretch()
 
-        clear_sel_btn = QPushButton("Clear Selection")
-        clear_sel_btn.clicked.connect(self._clear_selection)
-        selection_layout.addWidget(clear_sel_btn)
+        # Center: Count badge
+        self.selection_count_label = QLabel("0 selected")
+        self.selection_count_label.setStyleSheet(
+            f"color: {self.accent_color}; font-size: 9pt; font-weight: bold;"
+        )
+        self.selection_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pill_layout.addWidget(self.selection_count_label)
 
-        self.queue_selected_btn = QPushButton("⬇ Queue Selected")
+        pill_layout.addStretch()
+
+        # Right: Queue action button
+        self.queue_selected_btn = QPushButton("Queue Selected  ↓")
         self.queue_selected_btn.clicked.connect(self._on_queue_selected)
         self.queue_selected_btn.setEnabled(False)
         self.queue_selected_btn.setStyleSheet(
-            f"background-color: {self.accent_color}; color: #000; font-weight: bold;"
+            f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {self.accent_color};
+                border: 1px solid {self.accent_color};
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-size: 9pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,12); }}
+            QPushButton:disabled {{ color: rgba(255,255,255,40); border-color: rgba(255,255,255,25); }}
+            """
         )
-        selection_layout.addWidget(self.queue_selected_btn)
+        pill_layout.addWidget(self.queue_selected_btn)
 
         self.selection_footer.setVisible(False)
         layout.addWidget(self.selection_footer)
@@ -695,10 +734,10 @@ class GameLibraryDialog(QDialog):
         self._refresh_game_list()
 
     def _update_selection_footer(self) -> None:
-        """Update the selection count label and button state."""
+        """Update the selection count badge and button state."""
         count = len(self._selected_appids)
         self.selection_count_label.setText(
-            f"{count} game{'s' if count != 1 else ''} selected"
+            f"{count} selected" if count != 1 else "1 selected"
         )
         self.queue_selected_btn.setEnabled(count > 0)
 
@@ -1487,11 +1526,56 @@ class GameLibraryDialog(QDialog):
         super().closeEvent(event)
 
 
+class _ActionToggle(QPushButton):
+    """Pill-style toggle button for BatchQueueDialog actions."""
+
+    def __init__(self, label: str, checked: bool = False, accent: str = "#C06C84", bg: str = "#000000"):
+        super().__init__(label)
+        self._accent = accent
+        self._bg = bg
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self._refresh_style()
+        self.toggled.connect(self._refresh_style)
+
+    def _refresh_style(self, *_):
+        if self.isChecked():
+            self.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {self._accent};
+                    color: #000000;
+                    border: 1px solid {self._accent};
+                    border-radius: 6px;
+                    padding: 5px 12px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                }}
+                """
+            )
+        else:
+            self.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: rgba(255,255,255,160);
+                    border: 1px solid rgba(255,255,255,30);
+                    border-radius: 6px;
+                    padding: 5px 12px;
+                    font-size: 9pt;
+                }}
+                QPushButton:hover {{
+                    border-color: {self._accent};
+                    color: {self._accent};
+                }}
+                """
+            )
+
+
 class BatchQueueDialog(QDialog):
     """
     Dialog shown after clicking 'Queue Selected' in the library.
-    Lets the user choose which actions to apply to all selected games,
-    then enqueues each one through the normal per-game depot selection flow.
+    Redesigned with chip game preview and pill-toggle action buttons.
     """
 
     def __init__(self, selected_games: list, main_window, parent=None):
@@ -1507,85 +1591,129 @@ class BatchQueueDialog(QDialog):
             bg = main_window.settings.value("background_color", bg)
 
         self.setWindowTitle("Queue Selected Games")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(460)
         self.setModal(True)
         self.setStyleSheet(
             f"""
             QDialog {{ background-color: {bg}; color: {accent}; }}
             QLabel {{ color: {accent}; }}
-            QCheckBox {{ color: {accent}; spacing: 6px; }}
-            QCheckBox::indicator {{ width: 16px; height: 16px; }}
-            QPushButton {{
-                background-color: {bg};
-                color: {accent};
-                border: 1px solid {accent};
-                border-radius: 4px;
-                padding: 6px 12px;
-            }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,10); }}
-            QListWidget {{
-                background-color: {bg};
-                border: 1px solid rgba(255,255,255,15);
-                border-radius: 4px;
-                color: {accent};
-            }}
+            QScrollArea {{ background-color: transparent; border: none; }}
+            QWidget#chipArea {{ background-color: transparent; }}
         """
         )
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
+        layout.setContentsMargins(16, 14, 16, 14)
 
-        # Header
-        header = QLabel(f"Queue {len(selected_games)} game(s) for processing:")
+        # ── Header ──────────────────────────────────────────────────────────
+        header = QLabel(f"Queue {len(selected_games)} game(s)")
         header.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {accent};")
         layout.addWidget(header)
 
-        # Game list preview
-        games_list = QListWidget()
-        games_list.setMaximumHeight(140)
-        for g in selected_games:
-            games_list.addItem(g.get("game_name", "Unknown"))
-        layout.addWidget(games_list)
+        # ── Game chip row ────────────────────────────────────────────────────
+        from PyQt6.QtWidgets import QScrollArea, QSizePolicy
+        from PyQt6.QtCore import Qt as _Qt
 
-        # Action checkboxes
-        actions_label = QLabel("Actions to perform on each game:")
+        chip_scroll = QScrollArea()
+        chip_scroll.setWidgetResizable(True)
+        chip_scroll.setMaximumHeight(72)
+        chip_scroll.setHorizontalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        chip_scroll.setStyleSheet(
+            f"QScrollArea {{ background: rgba(255,255,255,6); border: 1px solid rgba(255,255,255,12); border-radius: 6px; }}"
+        )
+
+        chip_area = QWidget()
+        chip_area.setObjectName("chipArea")
+        chip_flow = QHBoxLayout(chip_area)
+        chip_flow.setContentsMargins(6, 4, 6, 4)
+        chip_flow.setSpacing(6)
+
+        for g in selected_games:
+            name = g.get("game_name", "Unknown")
+            short = name[:22] + "…" if len(name) > 22 else name
+            chip = QLabel(short)
+            chip.setToolTip(name)
+            chip.setStyleSheet(
+                f"""
+                QLabel {{
+                    background-color: rgba(255,255,255,10);
+                    color: rgba(255,255,255,200);
+                    border: 1px solid rgba(255,255,255,20);
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8pt;
+                }}
+                """
+            )
+            chip_flow.addWidget(chip)
+        chip_flow.addStretch()
+
+        chip_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        chip_scroll.setWidget(chip_area)
+        layout.addWidget(chip_scroll)
+
+        # ── Action toggles ───────────────────────────────────────────────────
+        actions_label = QLabel("Actions to perform:")
+        actions_label.setStyleSheet(f"color: rgba(255,255,255,140); font-size: 9pt;")
         layout.addWidget(actions_label)
 
-        self.chk_download = QCheckBox("Download / Update")
-        self.chk_download.setChecked(True)
-        layout.addWidget(self.chk_download)
+        toggles_row1 = QHBoxLayout()
+        toggles_row1.setSpacing(8)
+        toggles_row2 = QHBoxLayout()
+        toggles_row2.setSpacing(8)
 
-        self.chk_goldberg = QCheckBox("Apply Goldberg Emulator")
-        layout.addWidget(self.chk_goldberg)
+        self.tog_download = _ActionToggle("↓  Download / Update", checked=True, accent=accent, bg=bg)
+        self.tog_goldberg = _ActionToggle("🎮  Goldberg", checked=False, accent=accent, bg=bg)
+        self.tog_steamless = _ActionToggle("🔓  Remove DRM", checked=False, accent=accent, bg=bg)
+        self.tog_achievements = _ActionToggle("🏆  Achievements", checked=False, accent=accent, bg=bg)
 
-        self.chk_steamless = QCheckBox("Remove Steam DRM (Steamless AIO)")
-        layout.addWidget(self.chk_steamless)
+        toggles_row1.addWidget(self.tog_download)
+        toggles_row1.addWidget(self.tog_goldberg)
+        toggles_row2.addWidget(self.tog_steamless)
+        toggles_row2.addWidget(self.tog_achievements)
 
-        self.chk_achievements = QCheckBox("Generate Achievements (SLScheevo)")
-        layout.addWidget(self.chk_achievements)
+        layout.addLayout(toggles_row1)
+        layout.addLayout(toggles_row2)
 
         layout.addStretch()
 
-        # Buttons
+        # ── Confirm / Cancel ─────────────────────────────────────────────────
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: rgba(255,255,255,120); border: 1px solid rgba(255,255,255,20); border-radius: 5px; padding: 6px 14px; }}"
+            f"QPushButton:hover {{ color: #FFFFFF; border-color: rgba(255,255,255,60); }}"
+        )
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
-        self.confirm_btn = QPushButton("⬇ Add All to Queue")
+        self.confirm_btn = QPushButton("Add to Queue")
         self.confirm_btn.setStyleSheet(
-            f"background-color: {accent}; color: #000; font-weight: bold;"
+            f"""
+            QPushButton {{
+                background-color: {accent};
+                color: #000000;
+                border: none;
+                border-radius: 5px;
+                padding: 6px 18px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,220); }}
+            """
         )
         self.confirm_btn.clicked.connect(self._enqueue_all)
-        btn_row.addWidget(self.confirm_btn)
+        btn_row.addWidget(self.confirm_btn, 1)
         layout.addLayout(btn_row)
 
     def _enqueue_all(self) -> None:
         """Enqueue each selected game through the normal download+depot flow."""
-        do_download = self.chk_download.isChecked()
-        do_goldberg = self.chk_goldberg.isChecked()
-        do_steamless = self.chk_steamless.isChecked()
-        do_achievements = self.chk_achievements.isChecked()
+        do_download = self.tog_download.isChecked()
+        do_goldberg = self.tog_goldberg.isChecked()
+        do_steamless = self.tog_steamless.isChecked()
+        do_achievements = self.tog_achievements.isChecked()
 
         # Temporarily override settings for this batch if needed
         settings = getattr(self.main_window, "settings", None)

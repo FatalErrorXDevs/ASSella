@@ -651,8 +651,15 @@ class TaskManager(QObject):
                 from utils.update_status_cache import get_update_cache
                 appid = self.game_data.get("appid", "")
                 if appid and appid not in ("0", "N/A", "unknown"):
-                    get_update_cache().clear_status(appid)
-                    logger.debug(f"Cleared update cache for freshly installed appid={appid}")
+                    # Set status to up_to_date so the post-download rescan restores
+                    # the correct status immediately. Without this, the game would stay
+                    # at "checking" indefinitely because _on_initial_scan_complete
+                    # (the only slot that calls check_game_updates_async) disconnects
+                    # itself after boot and never runs again for subsequent rescans.
+                    cache = get_update_cache()
+                    cache.set_status(appid, "up_to_date")
+                    cache.save_async()
+                    logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
             self.main_window.game_manager.scan_steam_libraries_async()
 
         self.job_finished()
