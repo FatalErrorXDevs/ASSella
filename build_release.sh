@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/home/deck/bin:$PATH"
 set -euo pipefail
 
 # Configuration
