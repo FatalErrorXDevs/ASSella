@@ -174,6 +174,27 @@ do_run_headcrab() {
     curl -fsSL headcrab.pages.dev | bash
     echo -e ""
     echo -e "${GREEN}✓ Headcrab finished.${NC}"
+
+    # Offer to install ASSella if not already installed
+    assela_installed=false
+    [ -f "$INSTALL_DIR/ASSella.AppImage" ] && assela_installed=true
+
+    if [ "$assela_installed" = false ]; then
+        echo -e ""
+        echo -e "${CYAN}[TIP] ASSella is not installed yet.${NC}"
+        echo -ne "      Would you like to install ASSella now? [y/N] "
+        read -r as_answer </dev/tty
+        case "$as_answer" in
+            y|Y|yes|Yes)
+                do_install_assela
+                ;;
+            *)
+                echo -e "${YELLOW}[INFO] Skipping ASSella install. Run this script again and choose option 1 to install.${NC}"
+                ;;
+        esac
+    else
+        echo -e "${GREEN}[INFO] ASSella is already installed.${NC}"
+    fi
 }
 
 # ── Menu ────────────────────────────────────────────────────────────────────────
