@@ -89,7 +89,7 @@ git push origin "$CURRENT_BRANCH"
 
 # Push tag
 echo "Pushing tag $TAG to remote..."
-git push origin "$TAG"
+git push origin -f "$TAG"
 
 # Create release if gh CLI is available
 if command -v gh &>/dev/null; then

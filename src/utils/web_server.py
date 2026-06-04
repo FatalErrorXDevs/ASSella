@@ -281,6 +281,14 @@ class WebServerManager:
             self.server_thread.start()
             logger.info(f"Web server started on http://{host}:{port} (local network: http://{get_local_ip()}:{port})")
             return True
+        except OSError as e:
+            import errno
+            if e.errno == errno.EADDRINUSE:
+                logger.info(f"Web server port {port} already in use (possibly another instance or background service is running).")
+            else:
+                logger.error(f"Failed to start web server: {e}", exc_info=True)
+            self.server = None
+            return False
         except Exception as e:
             logger.error(f"Failed to start web server: {e}", exc_info=True)
             self.server = None
