@@ -4,7 +4,7 @@ import json
 import logging
 import socket
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
@@ -48,6 +48,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        query = parse_qs(parsed_url.query)
 
         if path == "/":
             self._serve_web_ui()
@@ -55,6 +56,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_library()
         elif path == "/api/status":
             self._handle_get_status()
+        elif path == "/api/search":
+            self._handle_get_search(query)
         elif path.startswith("/api/headers/"):
             self._handle_header_redirect(path)
         else:
@@ -67,6 +70,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/update":
             self._handle_post_update(query)
+        elif path == "/api/prepare-download":
+            self._handle_post_prepare_download()
         elif path == "/api/update-all":
             self._handle_post_update_all()
         elif path == "/api/check-updates":
@@ -102,12 +107,28 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             for g in games:
                 appid = str(g.get("appid", "0"))
                 header_url = db_mgr.get_header_url(appid) or f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/header.jpg"
+                
+                path = (
+                    g.get("accela_marker_path")
+                    or g.get("depot_downloader_path")
+                    or g.get("appmanifest_path")
+                    or g.get("install_path", "")
+                )
+                install_time = 0
+                if path and os.path.exists(path):
+                    try:
+                        install_time = int(os.path.getmtime(path))
+                    except Exception:
+                        pass
+                
                 res.append({
                     "appid": appid,
                     "name": g.get("game_name", "Unknown"),
                     "update_status": g.get("update_status", "cannot_determine"),
                     "header_image_url": header_url,
                     "install_path": g.get("install_path", ""),
+                    "size_bytes": g.get("size_on_disk", 0),
+                    "install_time": install_time,
                 })
             self._set_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
@@ -200,6 +221,39 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             logger.error(f"Web UI: failed to retrieve status: {e}", exc_info=True)
             self.send_error(500, str(e))
 
+    def _handle_get_search(self, query):
+        q_list = query.get("q")
+        if not q_list or not q_list[0].strip():
+            self._set_headers(status=400)
+            self.wfile.write(json.dumps({"error": "Missing query parameter 'q'"}).encode("utf-8"))
+            return
+
+        q = q_list[0].strip()
+        try:
+            from core import morrenus_api
+            results = morrenus_api.search_games(q)
+            if isinstance(results, dict) and "error" in results:
+                self._set_headers(status=500)
+                self.wfile.write(json.dumps({"error": results["error"]}).encode("utf-8"))
+                return
+
+            game_results = results.get("results", []) if isinstance(results, dict) else []
+            formatted_results = []
+            for g in game_results:
+                appid = str(g.get("game_id") or g.get("appid") or g.get("app_id") or g.get("id") or "0")
+                name = g.get("game_name") or g.get("name") or g.get("title") or "Unknown"
+                formatted_results.append({
+                    "appid": appid,
+                    "name": name,
+                    "manifest_available": g.get("manifest_available", True),
+                    "header_image_url": f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/header.jpg",
+                })
+            self._set_headers()
+            self.wfile.write(json.dumps(formatted_results).encode("utf-8"))
+        except Exception as e:
+            logger.error(f"Web UI: search error: {e}", exc_info=True)
+            self.send_error(500, str(e))
+
     def _handle_header_redirect(self, path):
         try:
             # path format: /api/headers/<appid>.jpg
@@ -219,22 +273,134 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_error(500, str(e))
 
     def _handle_post_update(self, query):
-        appids = query.get("appid")
-        if not appids or not appids[0].isdigit():
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+        
+        appid = None
+        selected_depots = None
+        local_path = None
+        
+        if post_data:
+            try:
+                data = json.loads(post_data.decode("utf-8"))
+                appid = str(data.get("appid", ""))
+                selected_depots = data.get("depots")
+                local_path = data.get("local_path")
+            except Exception:
+                pass
+                
+        if not appid:
+            appids = query.get("appid")
+            if appids:
+                appid = appids[0]
+                
+        if not appid or not appid.isdigit():
             self._set_headers(status=400)
             self.wfile.write(json.dumps({"error": "Missing or invalid appid parameter"}).encode("utf-8"))
             return
 
-        appid = appids[0]
         # Start async manifest fetch + queueing in a separate thread so as not to block HTTP requests
         threading.Thread(
             target=self.server.download_and_queue_update_sync,
-            args=(appid,),
+            args=(appid, selected_depots, local_path),
             daemon=True,
         ).start()
 
         self._set_headers()
         self.wfile.write(json.dumps({"status": "queued_update_job", "appid": appid}).encode("utf-8"))
+
+    def _handle_post_prepare_download(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+        
+        appid = None
+        if post_data:
+            try:
+                data = json.loads(post_data.decode("utf-8"))
+                appid = str(data.get("appid", ""))
+            except Exception:
+                pass
+        
+        if not appid:
+            parsed_url = urlparse(self.path)
+            query = parse_qs(parsed_url.query)
+            appids = query.get("appid")
+            if appids:
+                appid = appids[0]
+
+        if not appid or not appid.isdigit():
+            self._set_headers(status=400)
+            self.wfile.write(json.dumps({"error": "Missing or invalid appid parameter"}).encode("utf-8"))
+            return
+
+        try:
+            from core import morrenus_api as _api
+            from core.tasks.process_zip_task import ProcessZipTask
+            from utils.helpers import get_base_path
+
+            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+            save_path = manifests_dir / f"accela_fetch_{appid}.zip"
+
+            if save_path.exists():
+                logger.info(f"Web UI: Using cached manifest ZIP for AppID {appid} at {save_path}")
+                local_path = str(save_path)
+            else:
+                logger.info(f"Web UI: Preparing download (downloading manifest) for AppID {appid}...")
+                fpath, error = _api.download_manifest(appid)
+                if error or not fpath:
+                    self._set_headers(status=500)
+                    self.wfile.write(json.dumps({"error": error or "Failed to download manifest"}).encode("utf-8"))
+                    return
+                local_path = str(fpath)
+
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(local_path)
+            if not parsed_data:
+                self._set_headers(status=500)
+                self.wfile.write(json.dumps({"error": "Failed to parse manifest ZIP"}).encode("utf-8"))
+                return
+
+            depots_dict = parsed_data.get("depots") or {}
+            depots_list = []
+            for depot_id, info in depots_dict.items():
+                depots_list.append({
+                    "id": depot_id,
+                    "desc": info.get("desc", f"Depot {depot_id}"),
+                    "size": info.get("size", 0)
+                })
+
+            # Load smart selection & auto skip choices
+            settings = get_settings()
+            smart_active = settings.value("smart_depot_selection", False, type=bool)
+            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            
+            cached_val = settings.value(f"depot_selection/{appid}", "", type=str)
+            cached_selected = []
+            cached_all = []
+            if cached_val:
+                try:
+                    data = json.loads(cached_val)
+                    cached_selected = data.get("selected", [])
+                    cached_all = data.get("all_available", [])
+                except Exception:
+                    pass
+
+            res = {
+                "appid": appid,
+                "game_name": parsed_data.get("game_name", f"App {appid}"),
+                "local_path": local_path,
+                "depots": depots_list,
+                "smart_depot_selection": smart_active,
+                "auto_skip_single_choice": auto_skip,
+                "cached_selected": cached_selected,
+                "cached_all": cached_all
+            }
+            self._set_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
+
+        except Exception as e:
+            logger.error(f"Web UI: prepare-download error: {e}", exc_info=True)
+            self.send_error(500, str(e))
 
     def _handle_post_update_all(self):
         threading.Thread(
@@ -250,7 +416,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status": "queued_check_updates"}).encode("utf-8"))
 
 
-class WebServer(HTTPServer):
+class WebServer(ThreadingHTTPServer):
     def __init__(self, main_window, web_command_queue, host="0.0.0.0", port=8765):
         self.main_window = main_window
         self.web_command_queue = web_command_queue
@@ -315,18 +481,27 @@ class WebServerManager:
     def is_running(self):
         return self.server is not None
 
-    def download_and_queue_update_sync(self, appid):
+    def download_and_queue_update_sync(self, appid, selected_depots=None, local_path=None):
         try:
             from core import morrenus_api as _api
             from core.tasks.process_zip_task import ProcessZipTask
+            from utils.helpers import get_base_path
 
-            logger.info(f"Web UI: Starting manifest download for AppID {appid}...")
-            fpath, error = _api.download_manifest(appid)
-            if error or not fpath:
-                logger.warning(f"Web UI: manifest download failed for {appid}: {error}")
-                return
-
-            local_path = str(fpath)
+            if not local_path:
+                manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+                save_path = manifests_dir / f"accela_fetch_{appid}.zip"
+                if save_path.exists():
+                    logger.info(f"Web UI: Using cached manifest ZIP for AppID {appid} at {save_path}")
+                    local_path = str(save_path)
+                else:
+                    logger.info(f"Web UI: Starting manifest download for AppID {appid}...")
+                    fpath, error = _api.download_manifest(appid)
+                    if error or not fpath:
+                        logger.warning(f"Web UI: manifest download failed for {appid}: {error}")
+                        return
+                    local_path = str(fpath)
+            else:
+                logger.info(f"Web UI: Using pre-downloaded manifest at {local_path} for AppID {appid}")
 
             # Parse for depots
             zip_task = ProcessZipTask()
@@ -337,16 +512,15 @@ class WebServerManager:
 
             depots = parsed_data.get("depots") or {}
 
-            # Select depots
-            settings = get_settings()
-            val = settings.value(f"depot_selection/{appid}", "", type=str)
-            selected_depots = None
-            if val:
-                try:
-                    data = json.loads(val)
-                    selected_depots = data.get("selected", [])
-                except Exception:
-                    pass
+            if not selected_depots:
+                settings = get_settings()
+                val = settings.value(f"depot_selection/{appid}", "", type=str)
+                if val:
+                    try:
+                        data = json.loads(val)
+                        selected_depots = data.get("selected", [])
+                    except Exception:
+                        pass
 
             if not selected_depots:
                 # Fallback to all depots
@@ -363,6 +537,7 @@ class WebServerManager:
                 "install_path": game.get("install_path") if game else "",
                 "game_name": game.get("game_name") if game else parsed_data.get("game_name", f"App {appid}"),
                 "selected_depots_list": selected_depots,
+                "from_web_ui": True,
             }
 
             # Push to command queue

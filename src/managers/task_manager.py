@@ -253,6 +253,8 @@ class TaskManager(QObject):
         library_mode = self.settings.value("library_mode", False, type=bool)
         current_job_metadata = self.current_job_metadata or {}
         existing_library_path = current_job_metadata.get("library_path")
+        from_web = current_job_metadata.get("from_web_ui", False)
+        is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
 
         if slssteam_mode:
             self._handle_slssteam_mode()
@@ -264,6 +266,15 @@ class TaskManager(QObject):
                 return existing_library_path
             return self._get_library_destination_path()
         else:
+            if existing_library_path:
+                return existing_library_path
+            if from_web or is_headless:
+                libraries = steam_helpers.get_steam_libraries()
+                if libraries:
+                    return libraries[0]
+                default_dir = os.path.expanduser("~/.local/share/ACCELA/downloads")
+                os.makedirs(default_dir, exist_ok=True)
+                return default_dir
             return QFileDialog.getExistingDirectory(
                 self.main_window, "Select Destination Folder"
             )
@@ -279,12 +290,26 @@ class TaskManager(QObject):
             )
             if auto_skip_single_choice and len(libraries) == 1:
                 return libraries[0]
+            
+            current_job_metadata = self.current_job_metadata or {}
+            from_web = current_job_metadata.get("from_web_ui", False)
+            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
+            if from_web or is_headless:
+                return libraries[0]
+
             dialog = SteamLibraryDialog(libraries, self.main_window)
             if dialog.exec():
                 return dialog.get_selected_path()
             else:
                 return None
         else:
+            current_job_metadata = self.current_job_metadata or {}
+            from_web = current_job_metadata.get("from_web_ui", False)
+            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
+            if from_web or is_headless:
+                default_dir = os.path.expanduser("~/.local/share/ACCELA/downloads")
+                os.makedirs(default_dir, exist_ok=True)
+                return default_dir
             return QFileDialog.getExistingDirectory(
                 self.main_window, "Select Destination Folder"
             )

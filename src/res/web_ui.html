@@ -14,9 +14,9 @@
             --card-bg: rgba(26, 31, 41, 0.7);
             --card-hover: rgba(36, 43, 56, 0.85);
             --border-color: rgba(255, 255, 255, 0.08);
-            --border-focus: rgba(192, 108, 132, 0.5);
-            --accent-color: #C06C84;
-            --accent-gradient: linear-gradient(135deg, #C06C84 0%, #355C7D 100%);
+            --border-focus: rgba(56, 139, 253, 0.5);
+            --accent-color: #388bfd;
+            --accent-gradient: linear-gradient(135deg, #388bfd 0%, #1f242c 100%);
             --text-main: #f0f2f5;
             --text-secondary: #8b949e;
             --status-ok: #2ea44f;
@@ -50,8 +50,8 @@
             left: -10%;
             width: 120%;
             height: 120%;
-            background: radial-gradient(circle at 10% 20%, rgba(192, 108, 132, 0.05) 0%, transparent 40%),
-                        radial-gradient(circle at 90% 80%, rgba(53, 92, 125, 0.06) 0%, transparent 45%);
+            background: radial-gradient(circle at 10% 20%, rgba(56, 139, 253, 0.05) 0%, transparent 40%),
+                        radial-gradient(circle at 90% 80%, rgba(31, 36, 44, 0.06) 0%, transparent 45%);
             z-index: -1;
             pointer-events: none;
         }
@@ -81,28 +81,18 @@
             text-decoration: none;
         }
 
-        .brand-logo {
-            width: 28px;
-            height: 28px;
-            background: var(--accent-gradient);
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 14px;
-            color: #000;
-            box-shadow: 0 0 15px rgba(192, 108, 132, 0.3);
-        }
+
 
         .brand-name {
+            font-family: 'JetBrains Mono', 'Courier New', Courier, monospace;
             font-size: 18px;
             font-weight: 700;
             letter-spacing: 0.5px;
             color: var(--text-main);
-            background: linear-gradient(to right, #C06C84, #fff);
+            background: linear-gradient(to right, #388bfd, #fff);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            text-transform: lowercase;
         }
 
         .header-actions {
@@ -144,11 +134,11 @@
         button.accent {
             background: var(--accent-gradient);
             border: none;
-            color: #000;
+            color: #fff;
         }
 
         button.accent:hover:not(:disabled) {
-            box-shadow: 0 0 15px rgba(192, 108, 132, 0.4);
+            box-shadow: 0 0 15px rgba(56, 139, 253, 0.4);
             filter: brightness(1.1);
         }
 
@@ -189,7 +179,7 @@
 
         .search-input:focus {
             border-color: var(--border-focus);
-            box-shadow: 0 0 0 2px rgba(192, 108, 132, 0.15);
+            box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.15);
             background: rgba(30, 35, 45, 0.8);
         }
 
@@ -202,6 +192,30 @@
             pointer-events: none;
             width: 14px;
             height: 14px;
+        }
+
+        .sort-container {
+            display: flex;
+            align-items: center;
+        }
+
+        .sort-select {
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 14px;
+            outline: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            height: 38px;
+        }
+
+        .sort-select:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.15);
+            background: rgba(30, 35, 45, 0.8);
         }
 
         /* Grid */
@@ -265,6 +279,19 @@
             margin-top: auto;
         }
 
+        .game-meta-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .game-card-size {
+            font-family: monospace;
+            font-size: 11px;
+        }
+
         .status-badge {
             font-size: 10px;
             font-weight: 700;
@@ -287,7 +314,6 @@
 
         .status-badge.up-to-date {
             background: rgba(46, 164, 79, 0.12);
-            color: #58a6ff;
             color: var(--status-ok);
         }
         .status-badge.up-to-date::before { background: var(--status-ok); }
@@ -317,6 +343,46 @@
             height: 28px;
         }
 
+        /* Checkbox selectors */
+        .card-checkbox-container {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 10;
+            cursor: pointer;
+        }
+
+        .card-checkbox {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.6);
+            border-radius: 4px;
+            background: rgba(11, 13, 16, 0.8);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .card-checkbox:checked {
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+        }
+
+        .card-checkbox:checked::after {
+            content: '\2713';
+            color: #000;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .card-checkbox:hover {
+            border-color: var(--accent-color);
+        }
+
         /* Bottom status dock */
         .bottom-dock {
             position: fixed;
@@ -328,12 +394,16 @@
             border-top: 1px solid var(--border-color);
             padding: 12px 20px;
             z-index: 99;
+            pointer-events: none;
+            opacity: 0;
             transform: translateY(100%);
-            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
             box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
         }
 
         .bottom-dock.active {
+            pointer-events: auto;
+            opacity: 1;
             transform: translateY(0);
         }
 
@@ -360,7 +430,7 @@
         .active-job-spinner {
             width: 16px;
             height: 16px;
-            border: 2px solid rgba(192, 108, 132, 0.25);
+            border: 2px solid rgba(56, 139, 253, 0.25);
             border-top-color: var(--accent-color);
             border-radius: 50%;
             animation: spin 1s linear infinite;
@@ -413,7 +483,7 @@
             background: var(--accent-gradient);
             width: 0%;
             transition: width 0.3s ease;
-            box-shadow: 0 0 10px rgba(192, 108, 132, 0.5);
+            box-shadow: 0 0 10px rgba(56, 139, 253, 0.5);
         }
 
         .progress-bar-fill.indeterminate {
@@ -522,6 +592,205 @@
                 justify-content: space-between;
             }
         }
+
+        /* Tab Navigation styling */
+        .tabs-nav-container {
+            max-width: 1000px;
+            margin: 16px auto 0 auto;
+            width: 100%;
+            padding: 0 20px;
+        }
+
+        .tabs-nav {
+            display: flex;
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 4px;
+            gap: 4px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 10px;
+            font-size: 13px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            justify-content: center;
+        }
+
+        .tab-btn.active {
+            background: var(--accent-gradient);
+            color: #fff;
+            font-weight: 700;
+            box-shadow: 0 0 10px rgba(56, 139, 253, 0.2);
+        }
+
+        .tab-content {
+            display: none;
+            flex-direction: column;
+            width: 100%;
+        }
+
+        .tab-content.active-content {
+            display: flex;
+        }
+
+        /* Selection Floating Bar */
+        .selection-bar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translate(-50%, 120%);
+            background: rgba(22, 26, 34, 0.95);
+            border: 1px solid var(--accent-color);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(12px);
+            padding: 12px 24px;
+            border-radius: 50px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            z-index: 150;
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .selection-bar.active {
+            transform: translate(-50%, 0);
+        }
+
+        .selection-info {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-main);
+        }
+
+        .selection-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(11, 13, 16, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal-content {
+            background: #161a22;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+            animation: modal-slide 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes modal-slide {
+            from { transform: translateY(20px); }
+            to { transform: translateY(0); }
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .depot-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 10px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .depot-item:hover {
+            background: var(--card-hover);
+            border-color: var(--accent-color);
+        }
+
+        .depot-checkbox {
+            margin-top: 3px;
+        }
+
+        .depot-details {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 13px;
+        }
+
+        .depot-desc {
+            font-weight: 500;
+            color: var(--text-main);
+        }
+
+        .depot-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .loader-spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(56, 139, 253, 0.1);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
     </style>
 </head>
 <body>
@@ -529,37 +798,80 @@
     <header>
         <div class="header-container">
             <a href="#" class="brand">
-                <div class="brand-logo">A</div>
-                <div class="brand-name">ASSELA REMOTE</div>
+                <div class="brand-name">accela remote</div>
             </a>
             <div class="header-actions">
                 <button id="check-updates-btn" onclick="checkUpdates()">
-                    🔄 Check Updates
+                    Check Updates
                 </button>
                 <button id="update-all-btn" class="accent" onclick="updateAll()" disabled>
-                    ⚡ Update All
+                    Update All
                 </button>
             </div>
         </div>
     </header>
 
+    <!-- Tab Navigation -->
+    <div class="tabs-nav-container">
+        <div class="tabs-nav">
+            <button id="tab-library-btn" class="tab-btn active" onclick="switchTab('library')">My Library</button>
+            <button id="tab-store-btn" class="tab-btn" onclick="switchTab('store')">Find New Games</button>
+        </div>
+    </div>
+
     <main>
-        <div class="controls-row">
-            <div class="search-container">
-                <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                </svg>
-                <input type="text" id="search-input" class="search-input" placeholder="Search library..." oninput="filterLibrary()">
+        <!-- Tab 1: Library Content -->
+        <div id="library-tab-content" class="tab-content active-content">
+            <div class="controls-row">
+                <div class="search-container">
+                    <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" id="search-input" class="search-input" placeholder="Search library..." oninput="filterLibrary()">
+                </div>
+                <div class="sort-container">
+                    <select id="sort-select" class="sort-select" onchange="sortAndRenderLibrary()">
+                        <option value="recently_installed">Recently Installed</option>
+                        <option value="update_first">Has Update First</option>
+                        <option value="name_asc">Name (A-Z)</option>
+                        <option value="name_desc">Name (Z-A)</option>
+                        <option value="size_asc">Size (Smallest)</option>
+                        <option value="size_desc">Size (Largest)</option>
+                        <option value="appid">AppID</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="library-view" class="library-grid" style="margin-top: 16px;">
+                <!-- Game cards injected dynamically -->
+            </div>
+
+            <div id="empty-state" class="empty-state" style="display: none; margin-top: 16px;">
+                <div class="empty-state-title">No games found</div>
+                <div class="empty-state-desc">Make sure Steam libraries are scanned and ASSella is running correctly.</div>
             </div>
         </div>
 
-        <div id="library-view" class="library-grid">
-            <!-- Game cards injected dynamically -->
-        </div>
+        <!-- Tab 2: Store Search Content -->
+        <div id="store-tab-content" class="tab-content">
+            <div class="controls-row">
+                <div class="search-container">
+                    <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" id="store-search-input" class="search-input" placeholder="Search Hubcap database for new games..." onkeypress="handleStoreSearchKey(event)">
+                </div>
+                <button id="store-search-btn" class="accent" style="height: 38px;" onclick="searchStore()">Search Store</button>
+            </div>
 
-        <div id="empty-state" class="empty-state" style="display: none;">
-            <div class="empty-state-title">No games found</div>
-            <div class="empty-state-desc">Make sure Steam libraries are scanned and ASSella is running correctly.</div>
+            <div id="store-view" class="library-grid" style="display: none; margin-top: 16px;">
+                <!-- Store search results injected dynamically -->
+            </div>
+
+            <div id="store-empty-state" class="empty-state" style="margin-top: 16px;">
+                <div class="empty-state-title">Search Hubcap database</div>
+                <div class="empty-state-desc">Type a query above to search for new game manifests to download.</div>
+            </div>
         </div>
     </main>
 
@@ -584,6 +896,32 @@
         </div>
     </div>
 
+    <!-- Depot Selection Modal Overlay -->
+    <div id="depot-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div id="modal-title" class="modal-title">Select Depots</div>
+                <button onclick="closeModal()" style="padding: 4px 8px; border-radius: 4px; background: transparent; border: 1px solid var(--border-color); color: var(--text-main); cursor: pointer;">✕</button>
+            </div>
+            <div id="modal-body" class="modal-body">
+                <!-- Depots will be injected dynamically -->
+            </div>
+            <div class="modal-footer">
+                <button onclick="closeModal()">Cancel</button>
+                <button id="modal-confirm-btn" class="accent" onclick="confirmDownload()">Download</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Multi-Selection Action Bar -->
+    <div id="selection-bar" class="selection-bar">
+        <span id="selection-info" class="selection-info">0 games selected</span>
+        <div class="selection-actions">
+            <button class="accent" onclick="updateSelected()">Update Selected</button>
+            <button onclick="clearSelection()">Cancel</button>
+        </div>
+    </div>
+
     <div id="toast" class="toast">
         <span id="toast-message">Message text</span>
     </div>
@@ -592,6 +930,8 @@
         let libraryData = [];
         let pollingInterval = null;
         let isPollingFast = false;
+        let selectedAppIds = new Set();
+        let activePrepData = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -615,17 +955,63 @@
             }, 3000);
         }
 
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
         async function fetchLibrary() {
             try {
                 const response = await fetch('/api/library');
                 if (!response.ok) throw new Error('Failed to load library');
                 libraryData = await response.json();
-                renderLibrary(libraryData);
+                sortAndRenderLibrary();
                 updateUpdateAllButton();
             } catch (err) {
                 console.error(err);
                 showToast('Error loading game library', 'error');
             }
+        }
+
+        function sortAndRenderLibrary() {
+            const sortOption = document.getElementById('sort-select').value;
+            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            
+            let filtered = [...libraryData];
+            if (query) {
+                filtered = filtered.filter(g => 
+                    g.name.toLowerCase().includes(query) || g.appid.includes(query)
+                );
+            }
+            
+            filtered.sort((a, b) => {
+                if (sortOption === 'name_asc') {
+                    return a.name.localeCompare(b.name);
+                } else if (sortOption === 'name_desc') {
+                    return b.name.localeCompare(a.name);
+                } else if (sortOption === 'size_asc') {
+                    return (a.size_bytes || 0) - (b.size_bytes || 0);
+                } else if (sortOption === 'size_desc') {
+                    return (b.size_bytes || 0) - (a.size_bytes || 0);
+                } else if (sortOption === 'appid') {
+                    return parseInt(a.appid || 0) - parseInt(b.appid || 0);
+                } else if (sortOption === 'recently_installed') {
+                    return (b.install_time || 0) - (a.install_time || 0);
+                } else if (sortOption === 'update_first') {
+                    const aUpdate = a.update_status === 'update_available' ? 0 : 1;
+                    const bUpdate = b.update_status === 'update_available' ? 0 : 1;
+                    if (aUpdate !== bUpdate) {
+                        return aUpdate - bUpdate;
+                    }
+                    return a.name.localeCompare(b.name);
+                }
+                return 0;
+            });
+            
+            renderLibrary(filtered);
         }
 
         function renderLibrary(games) {
@@ -644,20 +1030,31 @@
             view.innerHTML = games.map(g => {
                 const badgeClass = g.update_status.replace(/_/g, '-');
                 const badgeLabel = g.update_status.replace(/_/g, ' ');
-                const canUpdate = g.update_status === 'update_available';
+                const isChecked = selectedAppIds.has(g.appid) ? 'checked' : '';
+                
+                let btnHtml = '';
+                if (g.update_status === 'update_available') {
+                    btnHtml = `<button class="update-btn accent" onclick="updateGame('${g.appid}', this)">Update</button>`;
+                } else if (g.update_status === 'up_to_date') {
+                    btnHtml = `<button class="update-btn" onclick="updateGame('${g.appid}', this)">Re-download</button>`;
+                } else if (g.update_status === 'cannot_determine') {
+                    btnHtml = `<button class="update-btn" onclick="updateGame('${g.appid}', this)">Download</button>`;
+                }
                 
                 return `
                     <div class="game-card" data-appid="${g.appid}">
+                        <div class="card-checkbox-container" onclick="event.stopPropagation()">
+                            <input type="checkbox" class="card-checkbox" data-appid="${g.appid}" ${isChecked} onchange="toggleCardSelection('${g.appid}')">
+                        </div>
                         <img class="game-header-img" src="${g.header_image_url}" alt="${g.name}" onerror="this.src='https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg'">
                         <div class="game-info">
                             <div class="game-title" title="${g.name}">${g.name}</div>
                             <div class="game-meta">
-                                <span class="status-badge ${badgeClass}">${badgeLabel}</span>
-                                ${canUpdate ? `
-                                    <button class="update-btn accent" onclick="updateGame('${g.appid}', this)">
-                                        ↓ Update
-                                    </button>
-                                ` : ''}
+                                <div class="game-meta-row">
+                                    <span class="status-badge ${badgeClass}">${badgeLabel}</span>
+                                    ${g.size_bytes ? `<span class="game-card-size">${formatBytes(g.size_bytes)}</span>` : ''}
+                                </div>
+                                ${btnHtml}
                             </div>
                         </div>
                     </div>
@@ -666,26 +1063,168 @@
         }
 
         function filterLibrary() {
-            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            sortAndRenderLibrary();
+        }
+
+        function toggleCardSelection(appid) {
+            if (selectedAppIds.has(appid)) {
+                selectedAppIds.delete(appid);
+            } else {
+                selectedAppIds.add(appid);
+            }
+            updateSelectionBar();
+        }
+
+        function clearSelection() {
+            selectedAppIds.clear();
+            document.querySelectorAll('.card-checkbox').forEach(cb => cb.checked = false);
+            updateSelectionBar();
+        }
+
+        function updateSelectionBar() {
+            const bar = document.getElementById('selection-bar');
+            const info = document.getElementById('selection-info');
+            const count = selectedAppIds.size;
+            
+            if (count > 0) {
+                info.textContent = `${count} game${count > 1 ? 's' : ''} selected`;
+                bar.classList.add('active');
+            } else {
+                bar.classList.remove('active');
+            }
+        }
+
+        async function updateSelected() {
+            const appids = Array.from(selectedAppIds);
+            if (appids.length === 0) return;
+            
+            showToast(`Queuing ${appids.length} update job(s)...`);
+            clearSelection();
+            
+            let successCount = 0;
+            for (const appid of appids) {
+                try {
+                    const response = await fetch(`/api/prepare-download?appid=${appid}`, { method: 'POST' });
+                    if (!response.ok) throw new Error();
+                    const prepData = await response.json();
+                    
+                    const updateResponse = await fetch('/api/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            appid: appid,
+                            local_path: prepData.local_path,
+                            depots: prepData.depots.map(d => d.id)
+                        })
+                    });
+                    
+                    if (updateResponse.ok) {
+                        successCount++;
+                    }
+                } catch (err) {
+                    console.error(`Failed to queue update for appid ${appid}`, err);
+                }
+            }
+            
+            if (successCount > 0) {
+                showToast(`Successfully queued ${successCount} update(s)`, 'success');
+                startPolling(2000);
+                setTimeout(fetchLibrary, 1000);
+            } else {
+                showToast('Failed to queue updates', 'error');
+            }
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active-content'));
+            
+            if (tabName === 'library') {
+                document.getElementById('tab-library-btn').classList.add('active');
+                document.getElementById('library-tab-content').classList.add('active-content');
+            } else if (tabName === 'store') {
+                document.getElementById('tab-store-btn').classList.add('active');
+                document.getElementById('store-tab-content').classList.add('active-content');
+            }
+        }
+
+        function handleStoreSearchKey(event) {
+            if (event.key === 'Enter') {
+                searchStore();
+            }
+        }
+
+        async function searchStore() {
+            const queryInput = document.getElementById('store-search-input');
+            const searchBtn = document.getElementById('store-search-btn');
+            const storeView = document.getElementById('store-view');
+            const storeEmpty = document.getElementById('store-empty-state');
+            
+            const query = queryInput.value.trim();
             if (!query) {
-                renderLibrary(libraryData);
+                showToast('Please enter a search query', 'error');
                 return;
             }
             
-            const filtered = libraryData.filter(g => 
-                g.name.toLowerCase().includes(query) || g.appid.includes(query)
-            );
-            renderLibrary(filtered);
+            searchBtn.disabled = true;
+            searchBtn.textContent = 'Searching...';
+            
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                if (!response.ok) throw new Error();
+                const results = await response.json();
+                
+                if (results.length === 0) {
+                    storeView.style.display = 'none';
+                    storeEmpty.style.display = 'flex';
+                    storeEmpty.innerHTML = `
+                        <div class="empty-state-title">No store games found</div>
+                        <div class="empty-state-desc">Try another keyword. Make sure your Hubcap API key is set up and valid.</div>
+                    `;
+                    return;
+                }
+                
+                storeEmpty.style.display = 'none';
+                storeView.style.display = 'grid';
+                
+                storeView.innerHTML = results.map(g => {
+                    return `
+                        <div class="game-card" data-appid="${g.appid}">
+                            <img class="game-header-img" src="${g.header_image_url}" alt="${g.name}" onerror="this.src='https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg'">
+                            <div class="game-info">
+                                <div class="game-title" title="${g.name}">${g.name}</div>
+                                <div class="game-meta">
+                                    <span class="status-badge checking">AppID: ${g.appid}</span>
+                                    <button class="update-btn accent" onclick="updateGame('${g.appid}', this)">
+                                        Download
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (err) {
+                showToast('Failed to search store', 'error');
+                storeView.style.display = 'none';
+                storeEmpty.style.display = 'flex';
+                storeEmpty.innerHTML = `
+                    <div class="empty-state-title">Search failed</div>
+                    <div class="empty-state-desc">An error occurred while connecting to the Hubcap API.</div>
+                `;
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search Store';
+            }
         }
 
         function updateUpdateAllButton() {
             const btn = document.getElementById('update-all-btn');
             const count = libraryData.filter(g => g.update_status === 'update_available').length;
             if (count > 0) {
-                btn.textContent = `⚡ Update All (${count})`;
+                btn.textContent = `Update All (${count})`;
                 btn.disabled = false;
             } else {
-                btn.textContent = '⚡ Update All';
+                btn.textContent = 'Update All';
                 btn.disabled = true;
             }
         }
@@ -699,7 +1238,6 @@
                 const dock = document.getElementById('bottom-dock');
                 const queueBadge = document.getElementById('queue-badge');
                 
-                // Update queue badge
                 queueBadge.textContent = `Queue: ${status.queue.length}`;
                 
                 if (status.is_processing && status.active_job) {
@@ -718,13 +1256,11 @@
                         fill.style.width = `${status.active_job.progress}%`;
                     }
 
-                    // Download is active, poll faster
                     if (!isPollingFast) {
                         startPolling(2500);
                     }
                 } else {
                     dock.classList.remove('active');
-                    // Back to normal polling if queue is empty
                     if (isPollingFast && status.queue.length === 0) {
                         startPolling(8000);
                     }
@@ -739,7 +1275,6 @@
             isPollingFast = ms < 5000;
             pollingInterval = setInterval(() => {
                 fetchStatus();
-                // Periodically update library status if updates are running
                 if (isPollingFast) {
                     fetchLibrary();
                 }
@@ -749,17 +1284,15 @@
         async function checkUpdates() {
             const btn = document.getElementById('check-updates-btn');
             btn.disabled = true;
-            btn.textContent = '🔄 Checking...';
+            btn.textContent = 'Checking...';
             
             try {
                 const response = await fetch('/api/check-updates', { method: 'POST' });
                 if (!response.ok) throw new Error();
                 showToast('Update check started');
                 
-                // Immediately start fast polling to catch status updates
                 startPolling(2000);
                 
-                // Wait briefly for check to kick in, then fetch library
                 setTimeout(fetchLibrary, 1500);
                 setTimeout(fetchLibrary, 4000);
             } catch (err) {
@@ -767,25 +1300,131 @@
             } finally {
                 setTimeout(() => {
                     btn.disabled = false;
-                    btn.textContent = '🔄 Check Updates';
+                    btn.textContent = 'Check Updates';
                 }, 3000);
             }
         }
 
+        function closeModal() {
+            document.getElementById('depot-modal').classList.remove('active');
+            activePrepData = null;
+        }
+
         async function updateGame(appid, btn) {
-            if (btn) btn.disabled = true;
+            const modal = document.getElementById('depot-modal');
+            const title = document.getElementById('modal-title');
+            const body = document.getElementById('modal-body');
+            const confirmBtn = document.getElementById('modal-confirm-btn');
+            
+            title.textContent = 'Loading manifest...';
+            body.innerHTML = '<div class="loader-spinner"></div>';
+            confirmBtn.disabled = true;
+            modal.classList.add('active');
             
             try {
-                const response = await fetch(`/api/update?appid=${appid}`, { method: 'POST' });
-                if (!response.ok) throw new Error();
-                showToast('Update queued successfully', 'success');
+                const response = await fetch(`/api/prepare-download?appid=${appid}`, { method: 'POST' });
+                if (!response.ok) {
+                    const errObj = await response.json();
+                    throw new Error(errObj.error || 'Failed to prepare download');
+                }
                 
-                // Fast poll library and status
-                startPolling(2000);
-                setTimeout(fetchLibrary, 1000);
+                activePrepData = await response.json();
+                
+                // 1. Single Depot Skip check
+                if (activePrepData.auto_skip_single_choice && activePrepData.depots.length === 1) {
+                    const singleDepotId = activePrepData.depots[0].id;
+                    await submitDownload(activePrepData.appid, activePrepData.local_path, [singleDepotId]);
+                    closeModal();
+                    return;
+                }
+                
+                // 2. Smart Depot Selection check
+                if (activePrepData.smart_depot_selection && activePrepData.cached_selected.length > 0) {
+                    const currentIds = activePrepData.depots.map(d => d.id);
+                    const hasNewDepot = currentIds.some(id => !activePrepData.cached_all.includes(id));
+                    if (!hasNewDepot) {
+                        const selected = activePrepData.cached_selected.filter(id => currentIds.includes(id));
+                        if (selected.length > 0) {
+                            await submitDownload(activePrepData.appid, activePrepData.local_path, selected);
+                            closeModal();
+                            return;
+                        }
+                    }
+                }
+                
+                title.textContent = `Select Depots - ${activePrepData.game_name}`;
+                
+                if (activePrepData.depots.length === 0) {
+                    body.innerHTML = '<div class="empty-state-desc">No depots found in manifest.</div>';
+                    confirmBtn.disabled = true;
+                    return;
+                }
+                
+                body.innerHTML = activePrepData.depots.map(d => {
+                    const isChecked = (activePrepData.cached_selected.length === 0 || activePrepData.cached_selected.includes(d.id)) ? 'checked' : '';
+                    const sizeStr = d.size ? formatBytes(parseInt(d.size)) : 'Unknown size';
+                    return `
+                        <label class="depot-item" for="depot-${d.id}">
+                            <input type="checkbox" id="depot-${d.id}" class="depot-checkbox" value="${d.id}" ${isChecked}>
+                            <div class="depot-details">
+                                <span class="depot-desc">${d.desc}</span>
+                                <span class="depot-meta">ID: ${d.id} | Size: ${sizeStr}</span>
+                            </div>
+                        </label>
+                    `;
+                }).join('');
+                
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Download';
             } catch (err) {
-                showToast('Failed to queue update', 'error');
-                if (btn) btn.disabled = false;
+                console.error(err);
+                showToast(err.message || 'Failed to load depots', 'error');
+                closeModal();
+            }
+        }
+
+        async function submitDownload(appid, localPath, depots) {
+            const response = await fetch('/api/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    appid: appid,
+                    local_path: localPath,
+                    depots: depots
+                })
+            });
+            
+            if (!response.ok) throw new Error('Failed to queue download');
+            showToast('Download queued successfully', 'success');
+            
+            startPolling(2000);
+            setTimeout(fetchLibrary, 1000);
+        }
+
+        async function confirmDownload() {
+            if (!activePrepData) return;
+            
+            const selectedDepots = [];
+            document.querySelectorAll('.depot-checkbox').forEach(cb => {
+                if (cb.checked) selectedDepots.push(cb.value);
+            });
+            
+            if (selectedDepots.length === 0) {
+                showToast('Please select at least one depot', 'error');
+                return;
+            }
+            
+            const confirmBtn = document.getElementById('modal-confirm-btn');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Queuing...';
+            
+            try {
+                await submitDownload(activePrepData.appid, activePrepData.local_path, selectedDepots);
+                closeModal();
+            } catch (err) {
+                showToast('Failed to queue download', 'error');
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Download';
             }
         }
 
