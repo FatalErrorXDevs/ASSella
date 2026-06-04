@@ -27,7 +27,7 @@ fi
 VERSION_STR=$(cat "$SRC_DIR/src/res/version" | tr -d '\r\n')
 # e.g., 20260603+ASSella-1.8f
 # Extract the tag name (e.g. v1.8f)
-if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?)$ ]]; then
+if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z]+)?)$ ]]; then
     TAG="v${BASH_REMATCH[1]}"
 else
     echo -e "${RED}Error: version string format invalid: $VERSION_STR${NC}"
@@ -91,17 +91,23 @@ git push origin "$CURRENT_BRANCH"
 echo "Pushing tag $TAG to remote..."
 git push origin "$TAG"
 
-# Check if release exists on GitHub, delete if so
-if gh release view "$TAG" &>/dev/null; then
-    echo -e "${YELLOW}GitHub release $TAG already exists. Re-creating it...${NC}"
-    gh release delete "$TAG" -y
-fi
+# Create release if gh CLI is available
+if command -v gh &>/dev/null; then
+    # Check if release exists on GitHub, delete if so
+    if gh release view "$TAG" &>/dev/null; then
+        echo -e "${YELLOW}GitHub release $TAG already exists. Re-creating it...${NC}"
+        gh release delete "$TAG" -y
+    fi
 
-# Create GitHub release and upload asset
-echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage...${NC}"
-gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
-    --prerelease \
-    --title "ASSella $TAG" \
-    --notes-from-tag
+    # Create GitHub release and upload asset
+    echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage...${NC}"
+    gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
+        --prerelease \
+        --title "ASSella $TAG" \
+        --notes-from-tag
+else
+    echo -e "${YELLOW}Warning: 'gh' CLI not found. Please create the release manually on GitHub and upload:${NC}"
+    echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage${NC}"
+fi
 
 echo -e "${GREEN}=== Build and release process completed successfully! ===${NC}"
