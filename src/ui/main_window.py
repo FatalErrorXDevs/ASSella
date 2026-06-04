@@ -822,7 +822,8 @@ class MainWindow(QMainWindow):
         # Start Web Server on startup if enabled
         enable_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
         if enable_web_ui:
-            self.toggle_web_server(True)
+            port = self.settings.value("web_ui_port", 8765, type=int)
+            self.toggle_web_server(True, port=port)
         else:
             self._update_web_ui_status_label()
 

@@ -136,7 +136,8 @@ def main():
         except ValueError as ve:
             logger.error(f"Failed to parse URL {url}: {ve}")
 
-    server_port = 8765
+    settings = get_settings()
+    server_port = int(settings.value("web_ui_port", 8765, type=int))
     args = sys.argv[1:]
     i = 0
     while i < len(args):

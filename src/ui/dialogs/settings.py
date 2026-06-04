@@ -313,6 +313,7 @@ class SettingsDialog(QDialog):
         self._create_assela_tab()
         self._create_downloads_tab()
         self._create_morrenus_tab()
+        self._create_webui_tab()
         self._create_steam_tab()
         self._create_tools_tab()
         self._create_audio_tab()
@@ -427,15 +428,6 @@ class SettingsDialog(QDialog):
             "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
         )
         group_layout.addWidget(self.fakeappid_db_integration_checkbox)
-
-        self.remote_web_ui_checkbox = create_checkbox_setting(
-            "Enable Remote Web UI",
-            "enable_remote_web_ui",
-            False,
-            self,
-            "Access and queue updates for your game library from a mobile browser on your local network.",
-        )
-        group_layout.addWidget(self.remote_web_ui_checkbox)
 
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -1120,8 +1112,223 @@ class SettingsDialog(QDialog):
         gif_layout.addWidget(clear_cache_btn)
         layout.addLayout(gif_layout)
 
-        layout.addStretch()
         self.tab_widget.addTab(tab, "Style")
+
+    def _create_webui_tab(self) -> None:
+        """Create the WebUI settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Web Server Group
+        server_group = QGroupBox("Web Server Configuration")
+        server_layout = QVBoxLayout()
+
+        self.remote_web_ui_checkbox = create_checkbox_setting(
+            "Enable Remote Web UI",
+            "enable_remote_web_ui",
+            False,
+            self,
+            "Access and queue updates for your game library from a mobile browser on your local network.",
+        )
+        server_layout.addWidget(self.remote_web_ui_checkbox)
+
+        # Port Layout
+        port_layout = QHBoxLayout()
+        port_label = QLabel("Web UI Port:")
+        self.web_ui_port_spinbox = QSpinBox()
+        self.web_ui_port_spinbox.setRange(1024, 65535)
+        self.web_ui_port_spinbox.setValue(self.settings.value("web_ui_port", 8765, type=int))
+        self.web_ui_port_spinbox.setFixedWidth(100)
+
+        check_port_btn = QPushButton("Check Availability")
+        check_port_btn.clicked.connect(self._check_port_availability)
+
+        port_layout.addWidget(port_label)
+        port_layout.addWidget(self.web_ui_port_spinbox)
+        port_layout.addWidget(check_port_btn)
+        port_layout.addStretch()
+        server_layout.addLayout(port_layout)
+
+        server_group.setLayout(server_layout)
+        layout.addWidget(server_group)
+
+        # Background Service Group (Linux only)
+        if sys.platform != "win32":
+            service_group = QGroupBox("Background Service (systemd)")
+            service_layout = QVBoxLayout()
+
+            self.service_status_label = QLabel("Background Service: Checking...")
+            self.service_boot_label = QLabel("Start on Boot: Checking...")
+            service_layout.addWidget(self.service_status_label)
+            service_layout.addWidget(self.service_boot_label)
+
+            # Control buttons
+            control_layout = QHBoxLayout()
+            self.start_service_btn = QPushButton("Start Service")
+            self.start_service_btn.clicked.connect(self._start_service)
+            self.stop_service_btn = QPushButton("Stop Service")
+            self.stop_service_btn.clicked.connect(self._stop_service)
+            control_layout.addWidget(self.start_service_btn)
+            control_layout.addWidget(self.stop_service_btn)
+            service_layout.addLayout(control_layout)
+
+            # Boot buttons
+            boot_layout = QHBoxLayout()
+            self.enable_boot_btn = QPushButton("Enable on Boot")
+            self.enable_boot_btn.clicked.connect(self._enable_boot)
+            self.disable_boot_btn = QPushButton("Disable on Boot")
+            self.disable_boot_btn.clicked.connect(self._disable_boot)
+            boot_layout.addWidget(self.enable_boot_btn)
+            boot_layout.addWidget(self.disable_boot_btn)
+            service_layout.addLayout(boot_layout)
+
+            service_group.setLayout(service_layout)
+            layout.addWidget(service_group)
+
+            self.service_poll_timer = QTimer(self)
+            self.service_poll_timer.timeout.connect(self._update_service_status)
+            self.service_poll_timer.start(2000)
+            self._update_service_status()
+
+        layout.addStretch()
+        self.tab_widget.addTab(tab, "WebUI")
+
+    def _check_port_availability(self) -> None:
+        """Check if the configured port is open/available for use."""
+        port = self.web_ui_port_spinbox.value()
+        
+        is_our_running_port = False
+        if self.main_window and hasattr(self.main_window, "web_server_manager"):
+            if self.main_window.web_server_manager.is_running():
+                if self.main_window.web_server_manager.server.port == port:
+                    is_our_running_port = True
+
+        if is_our_running_port:
+            QMessageBox.information(
+                self,
+                "Port Check",
+                f"Port {port} is currently in use by this instance of ASSella (Active)."
+            )
+            return
+
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            s.close()
+            QMessageBox.information(
+                self,
+                "Port Check",
+                f"Port {port} is free and available!"
+            )
+        except OSError:
+            QMessageBox.warning(
+                self,
+                "Port Check",
+                f"Port {port} is already in use by another application or the background service."
+            )
+
+    def _get_service_status(self) -> str:
+        """Return 'running', 'stopped', 'not_installed', or 'unknown'."""
+        try:
+            service_path = os.path.expanduser("~/.config/systemd/user/assella-testing.service")
+            if not os.path.exists(service_path):
+                return "not_installed"
+
+            res = subprocess.run(
+                ["systemctl", "--user", "is-active", "assella-testing.service"],
+                capture_output=True,
+                text=True,
+            )
+            status = res.stdout.strip()
+            if status == "active":
+                return "running"
+            else:
+                return "stopped"
+        except Exception as e:
+            logger.error(f"Error checking service status: {e}")
+            return "unknown"
+
+    def _is_service_enabled(self) -> bool:
+        """Return True if enabled to start on boot."""
+        try:
+            res = subprocess.run(
+                ["systemctl", "--user", "is-enabled", "assella-testing.service"],
+                capture_output=True,
+                text=True,
+            )
+            return res.stdout.strip() == "enabled"
+        except Exception:
+            return False
+
+    def _update_service_status(self) -> None:
+        """Update systemd status label and enable/disable control buttons."""
+        if sys.platform == "win32":
+            return
+
+        status = self._get_service_status()
+        enabled = self._is_service_enabled()
+
+        if status == "running":
+            self.service_status_label.setText("Background Service: <font color='#44cc44'>Active (Running)</font>")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(True)
+        elif status == "stopped":
+            self.service_status_label.setText("Background Service: <font color='#cc4444'>Inactive (Stopped)</font>")
+            self.start_service_btn.setEnabled(True)
+            self.stop_service_btn.setEnabled(False)
+        elif status == "not_installed":
+            self.service_status_label.setText("Background Service: <font color='#888888'>Not Configured / Installed</font>")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(False)
+        else:
+            self.service_status_label.setText("Background Service: Unknown Status")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(False)
+
+        if status != "not_installed":
+            self.enable_boot_btn.setEnabled(not enabled)
+            self.disable_boot_btn.setEnabled(enabled)
+            boot_text = "Enabled" if enabled else "Disabled"
+            self.service_boot_label.setText(f"Start on Boot: <b>{boot_text}</b>")
+        else:
+            self.enable_boot_btn.setEnabled(False)
+            self.disable_boot_btn.setEnabled(False)
+            self.service_boot_label.setText("Start on Boot: N/A")
+
+    def _start_service(self) -> None:
+        """Start the systemd user service."""
+        try:
+            subprocess.run(["systemctl", "--user", "start", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to start service: {e}")
+
+    def _stop_service(self) -> None:
+        """Stop the systemd user service."""
+        try:
+            subprocess.run(["systemctl", "--user", "stop", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to stop service: {e}")
+
+    def _enable_boot(self) -> None:
+        """Enable service on boot."""
+        try:
+            subprocess.run(["systemctl", "--user", "enable", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to enable service on boot: {e}")
+
+    def _disable_boot(self) -> None:
+        """Disable service on boot."""
+        try:
+            subprocess.run(["systemctl", "--user", "disable", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to disable service on boot: {e}")
 
     @staticmethod
     def _add_checkbox_explanation(layout: QVBoxLayout, text: str) -> None:
@@ -1229,6 +1436,8 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         """Save all settings and close."""
+        if hasattr(self, "service_poll_timer") and self.service_poll_timer:
+            self.service_poll_timer.stop()
         self._save_general_settings()
         self._save_download_settings()
         if not self._save_style_settings():
@@ -1302,11 +1511,23 @@ class SettingsDialog(QDialog):
         # Check if Remote Web UI toggle changed
         old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
         new_web_ui = self.remote_web_ui_checkbox.isChecked()
+        
+        old_port = self.settings.value("web_ui_port", 8765, type=int)
+        new_port = self.web_ui_port_spinbox.value()
+        
         self.settings.setValue("enable_remote_web_ui", new_web_ui)
+        self.settings.setValue("web_ui_port", new_port)
 
-        if old_web_ui != new_web_ui and self.main_window:
-            if hasattr(self.main_window, "toggle_web_server"):
-                self.main_window.toggle_web_server(new_web_ui)
+        if self.main_window and hasattr(self.main_window, "toggle_web_server"):
+            if old_web_ui != new_web_ui:
+                if new_web_ui:
+                    self.main_window.toggle_web_server(True, port=new_port)
+                else:
+                    self.main_window.toggle_web_server(False)
+            elif new_web_ui and old_port != new_port:
+                # Port changed while running -> restart web server on the new port
+                self.main_window.toggle_web_server(False)
+                self.main_window.toggle_web_server(True, port=new_port)
         
         if hasattr(self, "update_interval_spinbox"):
             self.settings.setValue(
@@ -1412,6 +1633,9 @@ class SettingsDialog(QDialog):
         if self.main_window and hasattr(self.main_window, "audio_manager"):
             # noinspection PyUnresolvedReferences
             self.main_window.audio_manager.apply_audio_settings()
+        
+        if hasattr(self, "service_poll_timer") and self.service_poll_timer:
+            self.service_poll_timer.stop()
         super().reject()
 
     @staticmethod

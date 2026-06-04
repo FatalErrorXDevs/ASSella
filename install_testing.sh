@@ -6,7 +6,7 @@ INSTALL_DIR="$HOME/.local/share/assella_testing"
 DESKTOP_ENTRY="$HOME/.local/share/applications/assella_testing.desktop"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_DIR/assella-testing.service"
-APPIMAGE_URL="https://github.com/niwia/ASSella/releases/download/v1.8h-alpha/ASSella.AppImage"
+APPIMAGE_URL="https://github.com/niwia/ASSella/releases/download/v1.8h-alpha3/ASSella.AppImage"
 
 echo "=== Installing ASSella Testing (Alpha) ==="
 mkdir -p "$INSTALL_DIR"
@@ -72,16 +72,14 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable assella-testing.service
-systemctl --user start assella-testing.service
 
 echo ""
 echo "=========================================================="
-echo " ASSella Testing (v1.8h-alpha) Installed Successfully!"
+echo " ASSella Testing (v1.8h-alpha3) Installed Successfully!"
 echo "=========================================================="
 echo " 1. Desktop shortcut created: 'ASSella Testing' on your desktop/launcher"
-echo " 2. Headless background service has been started on port 8765"
-echo "    Access the Remote Web UI here: http://steamdeck.local:8765"
-echo "                                or http://localhost:8765"
-echo "    Manage service: systemctl --user status/stop/restart assella-testing"
+echo " 2. Background service has been registered but is NOT started by default."
+echo "    You can enable, configure, and start it from the new 'WebUI' tab"
+echo "    in the ASSella Settings, or manually via systemctl:"
+echo "      systemctl --user enable --now assella-testing"
 echo "=========================================================="
