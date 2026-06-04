@@ -72,10 +72,10 @@ do_install() {
 
     echo -e "${YELLOW}[INFO] Installing dependencies from requirements.txt...${NC}"
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
-        "$VENV_DIR/bin/python" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
+        "$VENV_DIR/bin/python" -m pip install --quiet --pre -r "$INSTALL_DIR/requirements.txt"
     else
         # Fallback if requirements.txt missing
-        "$VENV_DIR/bin/python" -m pip install --quiet PyQt6 PyYAML requests zstandard steam just_playback cryptography protobuf vdf psutil configobj pillow urwid
+        "$VENV_DIR/bin/python" -m pip install --quiet --pre PyQt6 PyYAML requests zstandard steam just_playback cryptography protobuf vdf psutil configobj pillow urwid
     fi
 
     # Create Desktop Entry
