@@ -176,7 +176,7 @@ main_menu() {
         echo -e "  5) Uninstall ASSella Testing"
         echo -e "  q) Quit"
         echo -e ""
-        read -p "Select an option: " opt < /dev/tty
+        read -p "Select an option: " opt
         echo -e ""
 
         case $opt in
@@ -185,7 +185,7 @@ main_menu() {
             3) do_stop_service ;;
             4) do_launch_gui ;;
             5)
-                read -p "Are you sure you want to uninstall? (y/n): " confirm < /dev/tty
+                read -p "Are you sure you want to uninstall? (y/n): " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
                     do_uninstall
                 fi
