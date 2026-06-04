@@ -210,6 +210,7 @@ class SettingsDialog(QDialog):
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.download_screen_2_0_beta_checkbox = None
+        self.fakeappid_db_integration_checkbox = None
         self.max_downloads_spinbox = None
         self.steamless_checkbox = None
         self.achievements_checkbox = None
@@ -416,6 +417,15 @@ class SettingsDialog(QDialog):
             "Enable the modern, redesigned Download Screen 2.0 interface.",
         )
         group_layout.addWidget(self.download_screen_2_0_beta_checkbox)
+
+        self.fakeappid_db_integration_checkbox = create_checkbox_setting(
+            "Fake AppID Database Integration",
+            "fakeappid_db_integration",
+            False,
+            self,
+            "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
+        )
+        group_layout.addWidget(self.fakeappid_db_integration_checkbox)
 
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -775,6 +785,80 @@ class SettingsDialog(QDialog):
         tools_group.setLayout(tools_layout)
         layout.addWidget(tools_group)
 
+        # ── Headcrab Group ────────────────────────────────────────────────
+        if sys.platform != "win32":
+            hc_group = QGroupBox("Headcrab")
+            hc_layout = QVBoxLayout()
+
+            hc_installed = self._is_headcrab_installed()
+            hc_status_lbl = QLabel(
+                "✔ Headcrab appears to be installed." if hc_installed
+                else "✘ Headcrab not detected on this system."
+            )
+            hc_status_lbl.setStyleSheet(
+                "color: #66cc66; font-size: 11px;" if hc_installed
+                else "color: #cc6666; font-size: 11px;"
+            )
+            hc_status_lbl.setWordWrap(True)
+            hc_layout.addWidget(hc_status_lbl)
+
+            hc_lbl = QLabel(
+                "Headcrab installs SLSsteam and the tools required for ASSella to work. "
+                "It also blocks Steam auto-updates and patches steam.sh."
+            )
+            hc_lbl.setStyleSheet("color: #888888; font-size: 11px;")
+            hc_lbl.setWordWrap(True)
+            hc_layout.addWidget(hc_lbl)
+
+            if hc_installed:
+                SettingsDialog._add_tool_button(
+                    hc_layout,
+                    "Run Headcrab Again",
+                    "Re-run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash).",
+                    self.run_headcrab,
+                )
+            else:
+                SettingsDialog._add_tool_button(
+                    hc_layout,
+                    "Install Headcrab",
+                    "Run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash).",
+                    self.run_headcrab,
+                )
+
+            hc_group.setLayout(hc_layout)
+            layout.addWidget(hc_group)
+
+        # ── ASSella Manager Group ─────────────────────────────────────────
+        if sys.platform != "win32":
+            mgr_group = QGroupBox("ASSella Manager")
+            mgr_layout = QVBoxLayout()
+
+            install_dir = os.path.expanduser("~/.local/share/ACCELA")
+            has_backup = os.path.isfile(os.path.join(install_dir, "ACCELA.AppImage.bak"))
+
+            SettingsDialog._add_tool_button(
+                mgr_layout,
+                "Uninstall ASSella",
+                "Remove the ASSella AppImage and revert the desktop shortcut name to ACCELA.",
+                self.uninstall_assela,
+            )
+
+            if has_backup:
+                SettingsDialog._add_tool_button(
+                    mgr_layout,
+                    "Restore Original ACCELA",
+                    "Restore the original ACCELA.AppImage.bak backup and remove ASSella.",
+                    self.restore_accela,
+                )
+            else:
+                no_bak_lbl = QLabel("No original ACCELA backup found (ACCELA.AppImage.bak).")
+                no_bak_lbl.setStyleSheet("color: #888888; font-size: 11px;")
+                no_bak_lbl.setWordWrap(True)
+                mgr_layout.addWidget(no_bak_lbl)
+
+            mgr_group.setLayout(mgr_layout)
+            layout.addWidget(mgr_group)
+
         # Windows Registry Group
         if sys.platform == "win32":
             reg_group = QGroupBox("Windows Registry")
@@ -799,6 +883,159 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Tools")
+
+    # ── Headcrab helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_headcrab_installed() -> bool:
+        """Detect whether Headcrab has been installed on this system."""
+        headcrab_dir = os.path.expanduser("~/.headcrab")
+        headcrab_desktop = os.path.expanduser(
+            "~/.local/share/applications/headcrab.desktop"
+        )
+        return os.path.isdir(headcrab_dir) or os.path.isfile(headcrab_desktop)
+
+    def run_headcrab(self) -> None:
+        """Run the Headcrab installer script in a terminal."""
+        already = self._is_headcrab_installed()
+        verb = "re-run" if already else "install"
+        reply = QMessageBox.question(
+            self,
+            "Run Headcrab",
+            f"This will {verb} Headcrab via:\n"
+            "  curl -fsSL headcrab.pages.dev | bash\n\n"
+            "A terminal window will open. Close it when finished.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+        cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
+        SettingsDialog._launch_terminal_command(cmd, os.path.expanduser("~"))
+
+    # ── ASSella Manager helpers ───────────────────────────────────────────
+
+    def uninstall_assela(self) -> None:
+        """Remove ASSella AppImage and revert desktop shortcut."""
+        install_dir = os.path.expanduser("~/.local/share/ACCELA")
+        assela_path = os.path.join(install_dir, "ASSella.AppImage")
+        symlink_path = os.path.join(install_dir, "ACCELA.AppImage")
+        desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
+
+        reply = QMessageBox.question(
+            self,
+            "Uninstall ASSella",
+            "This will remove ASSella.AppImage and revert the desktop shortcut name to ACCELA.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        errors = []
+
+        # Remove symlink
+        if os.path.islink(symlink_path):
+            try:
+                os.remove(symlink_path)
+            except OSError as e:
+                errors.append(f"Could not remove symlink: {e}")
+
+        # Remove ASSella AppImage
+        if os.path.isfile(assela_path):
+            try:
+                os.remove(assela_path)
+            except OSError as e:
+                errors.append(f"Could not remove ASSella.AppImage: {e}")
+
+        # Revert desktop entry name
+        if os.path.isfile(desktop_entry):
+            try:
+                with open(desktop_entry, "r") as f:
+                    content = f.read()
+                content = content.replace("Name=ASSella", "Name=ACCELA")
+                with open(desktop_entry, "w") as f:
+                    f.write(content)
+                # Refresh desktop DB
+                try:
+                    subprocess.run(
+                        ["update-desktop-database", os.path.dirname(desktop_entry)],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            except OSError as e:
+                errors.append(f"Could not update desktop entry: {e}")
+
+        if errors:
+            QMessageBox.warning(self, "Uninstall — Partial", "\n".join(errors))
+        else:
+            QMessageBox.information(
+                self, "Done", "ASSella has been uninstalled.\nRestart ACCELA to use the original app."
+            )
+
+    def restore_accela(self) -> None:
+        """Restore original ACCELA.AppImage from backup."""
+        install_dir = os.path.expanduser("~/.local/share/ACCELA")
+        backup_path = os.path.join(install_dir, "ACCELA.AppImage.bak")
+        target_path = os.path.join(install_dir, "ACCELA.AppImage")
+        assela_path = os.path.join(install_dir, "ASSella.AppImage")
+        desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
+
+        if not os.path.isfile(backup_path):
+            QMessageBox.critical(self, "Error", "Backup file not found:\n" + backup_path)
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Restore ACCELA",
+            "This will restore ACCELA.AppImage from backup and remove ASSella.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        errors = []
+
+        # Remove ASSella and any existing symlink first
+        for p in (target_path, assela_path):
+            if os.path.exists(p) or os.path.islink(p):
+                try:
+                    os.remove(p)
+                except OSError as e:
+                    errors.append(f"Could not remove {os.path.basename(p)}: {e}")
+
+        # Restore backup
+        try:
+            shutil.copy2(backup_path, target_path)
+            os.chmod(target_path, 0o755)
+        except OSError as e:
+            errors.append(f"Could not restore backup: {e}")
+
+        # Revert desktop entry
+        if os.path.isfile(desktop_entry):
+            try:
+                with open(desktop_entry, "r") as f:
+                    content = f.read()
+                content = content.replace("Name=ASSella", "Name=ACCELA")
+                with open(desktop_entry, "w") as f:
+                    f.write(content)
+                try:
+                    subprocess.run(
+                        ["update-desktop-database", os.path.dirname(desktop_entry)],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            except OSError as e:
+                errors.append(f"Could not update desktop entry: {e}")
+
+        if errors:
+            QMessageBox.warning(self, "Restore — Partial", "\n".join(errors))
+        else:
+            QMessageBox.information(
+                self,
+                "Done",
+                "Original ACCELA has been restored.\nYou can now launch ACCELA normally.",
+            )
 
     @staticmethod
     def _add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> None:
@@ -1097,6 +1334,24 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "use_steamless_aio", self.steamless_aio_checkbox.isChecked()
         )
+
+        # Check if the toggle changed
+        old_val = self.settings.value("fakeappid_db_integration", False, type=bool)
+        new_val = self.fakeappid_db_integration_checkbox.isChecked()
+        self.settings.setValue("fakeappid_db_integration", new_val)
+
+        if old_val != new_val:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+            if config_path.exists():
+                try:
+                    from utils.yaml_config_manager import check_and_merge_fakeappid_db, clean_fakeappid_db
+                    if new_val:
+                        check_and_merge_fakeappid_db(config_path)
+                    else:
+                        clean_fakeappid_db(config_path)
+                except Exception as ex:
+                    logger.error(f"Failed to apply Fake AppID database integration changes: {ex}")
         
         if hasattr(self, "update_interval_spinbox"):
             self.settings.setValue(
