@@ -1,63 +1,62 @@
-## What's new in ASSella v1.8g
+## ASSella v1.8g — Changes from v1.8f
 
-### 🛠 Tools Tab — Headcrab Integration
-- **Auto-detection**: ASSella now detects whether Headcrab is installed by checking `~/.headcrab/` and `~/.local/share/applications/headcrab.desktop`
-- Status shown in Settings → Tools: green ✔ if installed, red ✘ if not
-- **Install Headcrab** button (or **Run Headcrab Again** if already installed) — opens a terminal and runs the Headcrab setup script
+### Installer Script — Interactive Menu
 
-### 🗂 Tools Tab — ASSella Manager
-- **Uninstall ASSella**: removes `ASSella.AppImage`, removes the `ACCELA.AppImage` symlink, and reverts the desktop shortcut name back to ACCELA
-- **Restore Original ACCELA**: restores `ACCELA.AppImage.bak` (the original ACCELA that was backed up at install time) and removes ASSella — only shown if the backup exists
+The install.sh is now a fully interactive menu-driven installer with four options:
 
-### 📦 Installer Script — Interactive Menu
-The `install.sh` is now a fully interactive menu-driven installer:
-```
   1) Install / Update ASSella
   2) Uninstall ASSella (+ restore ACCELA if backup exists)
   3) Install / Run Headcrab
   q) Quit
-```
-- Option 1 (Install): after installing, offers to run Headcrab immediately if not detected
-- Option 3 (Headcrab): after running, offers to install ASSella immediately if not already installed
-- Uninstall automatically restores the original ACCELA backup if one exists
+
+Install flow: after installing ASSella, if Headcrab is not detected the script offers to run it immediately.
+Headcrab flow: after running Headcrab, if ASSella is not installed the script offers to install it immediately.
+Uninstall flow: removes ASSella, removes the ACCELA.AppImage symlink, reverts the desktop shortcut, and restores the original ACCELA backup if one exists.
+
+### Settings — Headcrab Integration (Linux)
+
+A new Headcrab section appears in Settings > Tools (Linux only).
+
+- ASSella auto-detects whether Headcrab is installed by checking ~/.headcrab/ and ~/.local/share/applications/headcrab.desktop
+- Status label shows green if installed, red if not detected
+- Button label reads "Install Headcrab" or "Run Headcrab Again" depending on detection result
+- Clicking confirms with a dialog, then opens a terminal running: curl -fsSL headcrab.pages.dev | bash
+
+### Settings — ASSella Tab Uninstall Button (Linux)
+
+An Uninstall ASSella button has been added at the bottom of the ASSella settings tab.
+
+- Step 1: Confirms the uninstall action
+- Step 2: If a backup (ACCELA.AppImage.bak) is found, asks whether to restore the original ACCELA
+- Proceeds in one pass and reverts the desktop shortcut name back to ACCELA
 
 ---
 
-## What was new in ASSella v1.8f
+## ASSella v1.8f — Changes from v1.8e
 
-### 🧬 Fake AppID Database Integration *(Experimental)*
-- New toggle in Settings → ASSella: **Fake AppID Database Integration**
-- Merges a curated list of games that support online play via Spacewar (FakeAppIds) into your SLSsteam `config.yaml`
-- Automatic merge on every boot when enabled; clean removal when disabled
-- Marked experimental — takes a `config.yaml.bak` backup before any changes
+### Fake AppID Database Integration (Highly Experimental)
 
-### ✅ Post-Download Status Fix
-- After downloading a game update, the game's status now correctly updates to "Up to date" instead of showing "Checking for update" indefinitely
+A new toggle in Settings > ASSella: "Fake AppID Database Integration".
 
-### 🎛 Multi-Select UX Overhaul
-- Depot selection UI redesigned to be cleaner and less cluttered
-- Smart Selection remembers your depot choices per-game and auto-selects them on future updates
+- When enabled, ASSella merges a bundled curated list of games that support online play via Spacewar (FakeAppIds) into your SLSsteam config.yaml on every boot
+- When disabled, any merged entries are cleanly removed, leaving user-configured entries untouched
+- A config.yaml.bak backup is taken before any changes are made
+- Marked highly experimental as SLSsteam config.yaml is sensitive to formatting errors
 
-### ⏸ Flat-Text Download Controls
-- Pause/Resume and Stop controls below the download progress bar are now styled as flat clickable text, matching the rest of the tool's UI
+### Post-Download Status Fix
 
----
+After downloading a game update, the game's library status now correctly updates to "Up to date" instead of remaining stuck on "Checking for update". The update status cache is also cleared for the game after a successful download so future checks work correctly.
 
-## What was new in ASSella v1.8e
+### Multi-Select Depot UX Overhaul
 
-### ⬇️ Download Screen 2.0 (Beta)
-- New download screen with redesigned layout (toggle in Settings → ASSella)
-- Game name shown in the download queue instead of raw depot IDs
+The depot selection screen for games with multiple depots has been redesigned to be cleaner and less cluttered. Smart Selection remembers your depot choices per-game and automatically reuses them on future updates, only prompting again when a new depot is added since your last choice.
 
-### 🐧 Linux DRM Detection
-- If the downloading depots are Linux-only, DRM status now shows `No DRM (Linux)` instead of an error
+### Flat-Text Pause and Stop Controls
 
-### 🔇 Manifest Warning Removals
-- Suppressed noisy manifest-related warnings in the log output
+The Pause/Resume and Stop buttons below the download progress bar are now styled as flat clickable text to match the rest of the tool's UI, replacing the previously out-of-place button style.
 
 ---
 
-*Install or update ASSella:*
-```bash
-curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
-```
+Install or update ASSella:
+
+  curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
