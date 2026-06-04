@@ -431,6 +431,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(group)
         layout.addStretch()
 
+        # ── Uninstall (Linux only) ────────────────────────────────────────
+        if sys.platform != "win32":
+            uninstall_btn = QPushButton("Uninstall ASSella")
+            uninstall_btn.setToolTip("Remove ASSella and optionally restore the original ACCELA.")
+            uninstall_btn.setStyleSheet("color: #cc4444;")
+            uninstall_btn.clicked.connect(self.uninstall_assela)
+            layout.addWidget(uninstall_btn)
+
         self.tab_widget.addTab(tab, "ASSella")
 
     def _create_downloads_tab(self) -> None:
@@ -828,37 +836,6 @@ class SettingsDialog(QDialog):
             hc_group.setLayout(hc_layout)
             layout.addWidget(hc_group)
 
-        # ── ASSella Manager Group ─────────────────────────────────────────
-        if sys.platform != "win32":
-            mgr_group = QGroupBox("ASSella Manager")
-            mgr_layout = QVBoxLayout()
-
-            install_dir = os.path.expanduser("~/.local/share/ACCELA")
-            has_backup = os.path.isfile(os.path.join(install_dir, "ACCELA.AppImage.bak"))
-
-            SettingsDialog._add_tool_button(
-                mgr_layout,
-                "Uninstall ASSella",
-                "Remove the ASSella AppImage and revert the desktop shortcut name to ACCELA.",
-                self.uninstall_assela,
-            )
-
-            if has_backup:
-                SettingsDialog._add_tool_button(
-                    mgr_layout,
-                    "Restore Original ACCELA",
-                    "Restore the original ACCELA.AppImage.bak backup and remove ASSella.",
-                    self.restore_accela,
-                )
-            else:
-                no_bak_lbl = QLabel("No original ACCELA backup found (ACCELA.AppImage.bak).")
-                no_bak_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-                no_bak_lbl.setWordWrap(True)
-                mgr_layout.addWidget(no_bak_lbl)
-
-            mgr_group.setLayout(mgr_layout)
-            layout.addWidget(mgr_group)
-
         # Windows Registry Group
         if sys.platform == "win32":
             reg_group = QGroupBox("Windows Registry")
@@ -915,20 +892,35 @@ class SettingsDialog(QDialog):
     # ── ASSella Manager helpers ───────────────────────────────────────────
 
     def uninstall_assela(self) -> None:
-        """Remove ASSella AppImage and revert desktop shortcut."""
+        """Remove ASSella and optionally restore the original ACCELA backup."""
         install_dir = os.path.expanduser("~/.local/share/ACCELA")
         assela_path = os.path.join(install_dir, "ASSella.AppImage")
         symlink_path = os.path.join(install_dir, "ACCELA.AppImage")
+        backup_path = os.path.join(install_dir, "ACCELA.AppImage.bak")
         desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
+        has_backup = os.path.isfile(backup_path)
 
+        # Step 1 — Confirm uninstall
         reply = QMessageBox.question(
             self,
             "Uninstall ASSella",
-            "This will remove ASSella.AppImage and revert the desktop shortcut name to ACCELA.\n\nContinue?",
+            "This will remove ASSella and revert the desktop shortcut to ACCELA.\n\nAre you sure?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+
+        # Step 2 — Offer to restore ACCELA backup (if one exists)
+        restore = False
+        if has_backup:
+            restore_reply = QMessageBox.question(
+                self,
+                "Restore Original ACCELA?",
+                "A backup of the original ACCELA (ACCELA.AppImage.bak) was found.\n\n"
+                "Would you like to restore it after uninstalling ASSella?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            restore = restore_reply == QMessageBox.StandardButton.Yes
 
         errors = []
 
@@ -946,6 +938,14 @@ class SettingsDialog(QDialog):
             except OSError as e:
                 errors.append(f"Could not remove ASSella.AppImage: {e}")
 
+        # Restore backup if requested
+        if restore:
+            try:
+                shutil.copy2(backup_path, symlink_path)
+                os.chmod(symlink_path, 0o755)
+            except OSError as e:
+                errors.append(f"Could not restore ACCELA backup: {e}")
+
         # Revert desktop entry name
         if os.path.isfile(desktop_entry):
             try:
@@ -954,7 +954,6 @@ class SettingsDialog(QDialog):
                 content = content.replace("Name=ASSella", "Name=ACCELA")
                 with open(desktop_entry, "w") as f:
                     f.write(content)
-                # Refresh desktop DB
                 try:
                     subprocess.run(
                         ["update-desktop-database", os.path.dirname(desktop_entry)],
@@ -968,74 +967,11 @@ class SettingsDialog(QDialog):
         if errors:
             QMessageBox.warning(self, "Uninstall — Partial", "\n".join(errors))
         else:
-            QMessageBox.information(
-                self, "Done", "ASSella has been uninstalled.\nRestart ACCELA to use the original app."
-            )
+            msg = "ASSella has been uninstalled."
+            if restore:
+                msg += "\nOriginal ACCELA has been restored."
+            QMessageBox.information(self, "Done", msg)
 
-    def restore_accela(self) -> None:
-        """Restore original ACCELA.AppImage from backup."""
-        install_dir = os.path.expanduser("~/.local/share/ACCELA")
-        backup_path = os.path.join(install_dir, "ACCELA.AppImage.bak")
-        target_path = os.path.join(install_dir, "ACCELA.AppImage")
-        assela_path = os.path.join(install_dir, "ASSella.AppImage")
-        desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
-
-        if not os.path.isfile(backup_path):
-            QMessageBox.critical(self, "Error", "Backup file not found:\n" + backup_path)
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Restore ACCELA",
-            "This will restore ACCELA.AppImage from backup and remove ASSella.\n\nContinue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        errors = []
-
-        # Remove ASSella and any existing symlink first
-        for p in (target_path, assela_path):
-            if os.path.exists(p) or os.path.islink(p):
-                try:
-                    os.remove(p)
-                except OSError as e:
-                    errors.append(f"Could not remove {os.path.basename(p)}: {e}")
-
-        # Restore backup
-        try:
-            shutil.copy2(backup_path, target_path)
-            os.chmod(target_path, 0o755)
-        except OSError as e:
-            errors.append(f"Could not restore backup: {e}")
-
-        # Revert desktop entry
-        if os.path.isfile(desktop_entry):
-            try:
-                with open(desktop_entry, "r") as f:
-                    content = f.read()
-                content = content.replace("Name=ASSella", "Name=ACCELA")
-                with open(desktop_entry, "w") as f:
-                    f.write(content)
-                try:
-                    subprocess.run(
-                        ["update-desktop-database", os.path.dirname(desktop_entry)],
-                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
-                except Exception:
-                    pass
-            except OSError as e:
-                errors.append(f"Could not update desktop entry: {e}")
-
-        if errors:
-            QMessageBox.warning(self, "Restore — Partial", "\n".join(errors))
-        else:
-            QMessageBox.information(
-                self,
-                "Done",
-                "Original ACCELA has been restored.\nYou can now launch ACCELA normally.",
-            )
 
     @staticmethod
     def _add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> None:
