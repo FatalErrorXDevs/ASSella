@@ -27,7 +27,7 @@ fi
 VERSION_STR=$(cat "$SRC_DIR/src/res/version" | tr -d '\r\n')
 # e.g., 20260603+ASSella-1.8f
 # Extract the tag name (e.g. v1.8f)
-if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z]+)?)$ ]]; then
+if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z0-9]+)?)$ ]]; then
     TAG="v${BASH_REMATCH[1]}"
 else
     echo -e "${RED}Error: version string format invalid: $VERSION_STR${NC}"
