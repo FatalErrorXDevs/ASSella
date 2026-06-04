@@ -78,6 +78,12 @@ def main():
     logger.info(f"ASSELA {app_version} starting...")
     logger.info("========================================")
 
+    # Pre-scan for headless mode to set environment variable before QApplication is created
+    headless_mode = "--headless" in sys.argv
+    if headless_mode:
+        logger.info("Headless mode requested. Setting QT_QPA_PLATFORM=offscreen")
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
     # People only have substance within the memories of other people.
 
     app = QApplication(sys.argv)
@@ -130,12 +136,22 @@ def main():
         except ValueError as ve:
             logger.error(f"Failed to parse URL {url}: {ve}")
 
+    server_port = 8765
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         arg = args[i]
         if arg in ("-cli", "--cli"):
             cli_mode = True
+        elif arg == "--headless":
+            # Already handled in pre-scan
+            pass
+        elif arg == "--port" and i + 1 < len(args):
+            try:
+                server_port = int(args[i + 1])
+            except ValueError:
+                logger.error(f"Invalid port: {args[i + 1]} (must be a number)")
+            i += 1
         elif arg == "--appid" and i + 1 < len(args):
             appid_str = args[i + 1]
             if appid_str.isdigit():
@@ -194,6 +210,12 @@ def main():
         if config_path.exists():
             if ensure_slssteam_api_enabled(config_path):
                 logger.info("SLSsteam API enabled in config")
+            
+            try:
+                from utils.yaml_config_manager import check_and_merge_fakeappid_db
+                check_and_merge_fakeappid_db(config_path)
+            except Exception as ex:
+                logger.error(f"Failed to check and merge Fake AppID database: {ex}")
     except OSError as e:
         logger.error(f"Startup I/O error (Config/Backup): {e}")
 
@@ -233,8 +255,15 @@ def main():
     # -------------------------------------------------------------------------
     try:
         main_win = MainWindow()
-        main_win.show()
-        logger.info("Main window displayed successfully.")
+        if headless_mode:
+            main_win.hide()
+            main_win.toggle_web_server(True, port=server_port)
+            logger.info("========================================")
+            logger.info(f"ASSella running headless on http://0.0.0.0:{server_port}")
+            logger.info("========================================")
+        else:
+            main_win.show()
+            logger.info("Main window displayed successfully.")
 
         # ---------------------------------------------------------------------
         # Post-Launch Processing

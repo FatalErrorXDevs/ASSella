@@ -48,6 +48,8 @@ from ui.dialogs.settings import SettingsDialog
 from ui.dialogs.status import StatusDialog
 from utils.logger import qt_log_handler
 from utils.paths import Paths
+from queue import Queue
+from utils.web_server import WebServerManager, get_local_ip
 from utils.settings import get_settings
 from utils.task_runner import TaskRunner
 from core.morrenus_api import get_user_stats
@@ -817,6 +819,13 @@ class MainWindow(QMainWindow):
         self._setup_exit_shortcut()
         self._setup_update_timer()
 
+        # Start Web Server on startup if enabled
+        enable_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
+        if enable_web_ui:
+            self.toggle_web_server(True)
+        else:
+            self._update_web_ui_status_label()
+
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
         self.setWindowTitle("ASSELA")
@@ -904,6 +913,13 @@ class MainWindow(QMainWindow):
         self.audio_manager = AudioManager(self)
         self.game_manager = GameManager(self)
 
+        # Initialize Web Server Manager
+        self.web_command_queue = Queue()
+        self.web_server_manager = WebServerManager(self, self.web_command_queue)
+        self.web_command_timer = QTimer(self)
+        self.web_command_timer.timeout.connect(self._process_web_commands)
+        self.web_command_timer.start(200)
+
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
         
@@ -920,6 +936,42 @@ class MainWindow(QMainWindow):
         self.refresh_hubcap_stats()
 
         self.game_manager.scan_steam_libraries_async()
+
+    def _process_web_commands(self) -> None:
+        while not self.web_command_queue.empty():
+            try:
+                cmd = self.web_command_queue.get_nowait()
+                cmd_type = cmd.get("type")
+                if cmd_type == "enqueue_job":
+                    path = cmd.get("path")
+                    metadata = cmd.get("metadata")
+                    logger.info(f"Main Window: Enqueueing job from Web UI for {metadata.get('game_name')}")
+                    self.job_queue.add_job(path, metadata)
+                elif cmd_type == "check_updates":
+                    logger.info("Main Window: Checking updates triggered from Web UI")
+                    if self.game_manager:
+                        self.game_manager.reset_up_to_date_for_recheck()
+                        self.game_manager.check_game_updates_async()
+            except Exception as e:
+                logger.error(f"Error processing web command: {e}")
+
+    def toggle_web_server(self, enabled: bool, port: int = 8765) -> None:
+        if enabled:
+            if not self.web_server_manager.is_running():
+                self.web_server_manager.start(port=port)
+        else:
+            if self.web_server_manager.is_running():
+                self.web_server_manager.stop()
+        self._update_web_ui_status_label()
+
+    def _update_web_ui_status_label(self) -> None:
+        if not hasattr(self, "web_ui_status_value") or not self.web_ui_status_value:
+            return
+        if self.web_server_manager and self.web_server_manager.is_running():
+            port = self.web_server_manager.server.port
+            self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port}")
+        else:
+            self.web_ui_status_value.setText("Disabled")
 
     def _on_initial_scan_complete(self, games_found: int) -> None:
         """Slot triggered when the initial library scan completes."""
@@ -1254,10 +1306,21 @@ class MainWindow(QMainWindow):
         sls_row.addWidget(sls_lbl)
         sls_row.addWidget(self.sls_status_value)
         sls_row.addStretch()
+
+        web_ui_row = QHBoxLayout()
+        web_ui_row.setSpacing(4)
+        web_ui_lbl = QLabel("Web UI:")
+        web_ui_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
+        self.web_ui_status_value = QLabel("Disabled")
+        self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        web_ui_row.addWidget(web_ui_lbl)
+        web_ui_row.addWidget(self.web_ui_status_value)
+        web_ui_row.addStretch()
         
         status_layout.addWidget(self.status_card_title)
         status_layout.addLayout(steam_row)
         status_layout.addLayout(sls_row)
+        status_layout.addLayout(web_ui_row)
         
         dash_layout.addWidget(self.hubcap_stats_card, 1)
         dash_layout.addWidget(self.update_action_card, 1)
@@ -1629,6 +1692,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Handle application shutdown."""
         try:
+            if hasattr(self, "web_server_manager") and self.web_server_manager:
+                self.web_server_manager.stop()
             MainWindow._cleanup_logging()
             self.task_manager.cleanup()
             self.job_queue.clear()

@@ -211,6 +211,7 @@ class SettingsDialog(QDialog):
         self.autofetch_manifests_checkbox = None
         self.download_screen_2_0_beta_checkbox = None
         self.fakeappid_db_integration_checkbox = None
+        self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
         self.steamless_checkbox = None
         self.achievements_checkbox = None
@@ -426,6 +427,15 @@ class SettingsDialog(QDialog):
             "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
         )
         group_layout.addWidget(self.fakeappid_db_integration_checkbox)
+
+        self.remote_web_ui_checkbox = create_checkbox_setting(
+            "Enable Remote Web UI",
+            "enable_remote_web_ui",
+            False,
+            self,
+            "Access and queue updates for your game library from a mobile browser on your local network.",
+        )
+        group_layout.addWidget(self.remote_web_ui_checkbox)
 
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -1288,6 +1298,15 @@ class SettingsDialog(QDialog):
                         clean_fakeappid_db(config_path)
                 except Exception as ex:
                     logger.error(f"Failed to apply Fake AppID database integration changes: {ex}")
+
+        # Check if Remote Web UI toggle changed
+        old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
+        new_web_ui = self.remote_web_ui_checkbox.isChecked()
+        self.settings.setValue("enable_remote_web_ui", new_web_ui)
+
+        if old_web_ui != new_web_ui and self.main_window:
+            if hasattr(self.main_window, "toggle_web_server"):
+                self.main_window.toggle_web_server(new_web_ui)
         
         if hasattr(self, "update_interval_spinbox"):
             self.settings.setValue(

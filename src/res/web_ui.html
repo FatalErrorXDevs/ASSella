@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASSella Remote Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0d10;
+            --container-bg: rgba(22, 26, 34, 0.7);
+            --card-bg: rgba(26, 31, 41, 0.7);
+            --card-hover: rgba(36, 43, 56, 0.85);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-focus: rgba(192, 108, 132, 0.5);
+            --accent-color: #C06C84;
+            --accent-gradient: linear-gradient(135deg, #C06C84 0%, #355C7D 100%);
+            --text-main: #f0f2f5;
+            --text-secondary: #8b949e;
+            --status-ok: #2ea44f;
+            --status-warn: #db8e00;
+            --status-info: #0969da;
+            --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-family);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding-bottom: 90px; /* Space for bottom dock */
+            overflow-x: hidden;
+        }
+
+        /* Subtle background glow */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -10%;
+            left: -10%;
+            width: 120%;
+            height: 120%;
+            background: radial-gradient(circle at 10% 20%, rgba(192, 108, 132, 0.05) 0%, transparent 40%),
+                        radial-gradient(circle at 90% 80%, rgba(53, 92, 125, 0.06) 0%, transparent 45%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        header {
+            background: rgba(15, 18, 23, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 14px 20px;
+        }
+
+        .header-container {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+        }
+
+        .brand-logo {
+            width: 28px;
+            height: 28px;
+            background: var(--accent-gradient);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+            color: #000;
+            box-shadow: 0 0 15px rgba(192, 108, 132, 0.3);
+        }
+
+        .brand-name {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: var(--text-main);
+            background: linear-gradient(to right, #C06C84, #fff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        button {
+            font-family: var(--font-family);
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--card-hover);
+            border-color: var(--accent-color);
+            transform: translateY(-1px);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        button.accent {
+            background: var(--accent-gradient);
+            border: none;
+            color: #000;
+        }
+
+        button.accent:hover:not(:disabled) {
+            box-shadow: 0 0 15px rgba(192, 108, 132, 0.4);
+            filter: brightness(1.1);
+        }
+
+        main {
+            max-width: 1000px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            flex-grow: 1;
+        }
+
+        /* Search area */
+        .controls-row {
+            display: flex;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .search-container {
+            position: relative;
+            flex-grow: 1;
+        }
+
+        .search-input {
+            width: 100%;
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 10px 14px 10px 38px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .search-input:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 2px rgba(192, 108, 132, 0.15);
+            background: rgba(30, 35, 45, 0.8);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            pointer-events: none;
+            width: 14px;
+            height: 14px;
+        }
+
+        /* Grid */
+        .library-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 16px;
+        }
+
+        .game-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .game-card:hover {
+            transform: translateY(-4px) scale(1.01);
+            background: var(--card-hover);
+            border-color: rgba(255, 255, 255, 0.15);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .game-header-img {
+            width: 100%;
+            aspect-ratio: 460 / 215;
+            object-fit: cover;
+            border-bottom: 1px solid var(--border-color);
+            background: #161b22;
+        }
+
+        .game-info {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-grow: 1;
+        }
+
+        .game-title {
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.3;
+            color: var(--text-main);
+            /* Clamp text to 2 lines */
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            height: 36px;
+        }
+
+        .game-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: auto;
+        }
+
+        .status-badge {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 3px 8px;
+            border-radius: 100px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-badge.up-to-date {
+            background: rgba(46, 164, 79, 0.12);
+            color: #58a6ff;
+            color: var(--status-ok);
+        }
+        .status-badge.up-to-date::before { background: var(--status-ok); }
+
+        .status-badge.update-available {
+            background: rgba(219, 142, 0, 0.12);
+            color: var(--status-warn);
+            animation: pulse-border 2s infinite;
+        }
+        .status-badge.update-available::before { background: var(--status-warn); }
+
+        .status-badge.checking {
+            background: rgba(9, 105, 218, 0.12);
+            color: var(--status-info);
+        }
+        .status-badge.checking::before { background: var(--status-info); }
+
+        .status-badge.cannot-determine {
+            background: rgba(139, 148, 158, 0.12);
+            color: var(--text-secondary);
+        }
+        .status-badge.cannot-determine::before { background: var(--text-secondary); }
+
+        .update-btn {
+            padding: 6px 12px;
+            font-size: 11px;
+            height: 28px;
+        }
+
+        /* Bottom status dock */
+        .bottom-dock {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(13, 15, 18, 0.85);
+            backdrop-filter: blur(16px);
+            border-top: 1px solid var(--border-color);
+            padding: 12px 20px;
+            z-index: 99;
+            transform: translateY(100%);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .bottom-dock.active {
+            transform: translateY(0);
+        }
+
+        .dock-container {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .dock-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .active-job-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .active-job-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(192, 108, 132, 0.25);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .active-job-name {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .active-job-status {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .dock-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .active-job-speed {
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--accent-color);
+            font-weight: 600;
+        }
+
+        .queue-count-badge {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-color);
+            padding: 2px 8px;
+            border-radius: 100px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        /* Progress Bar */
+        .progress-bar-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 100px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: var(--accent-gradient);
+            width: 0%;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 10px rgba(192, 108, 132, 0.5);
+        }
+
+        .progress-bar-fill.indeterminate {
+            width: 50%;
+            position: absolute;
+            animation: indeterminate-flow 1.5s infinite ease-in-out;
+        }
+
+        @keyframes indeterminate-flow {
+            0% { left: -50%; }
+            100% { left: 100%; }
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(219, 142, 0, 0.2); }
+            70% { box-shadow: 0 0 0 6px rgba(219, 142, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(219, 142, 0, 0); }
+        }
+
+        /* Empty state styling */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            background: var(--container-bg);
+            border: 1px dashed var(--border-color);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .empty-state-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .empty-state-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            max-width: 400px;
+        }
+
+        /* Notifications toast */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(22, 26, 34, 0.9);
+            border: 1px solid var(--accent-color);
+            backdrop-filter: blur(12px);
+            padding: 12px 18px;
+            border-radius: 8px;
+            z-index: 1000;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+            transform: translateX(120%);
+            transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            max-width: 320px;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast-success { border-color: var(--status-ok); }
+        .toast-error { border-color: #f85149; }
+
+        @media (max-width: 600px) {
+            .header-container {
+                flex-direction: column;
+                gap: 12px;
+            }
+            .header-actions {
+                width: 100%;
+                justify-content: space-between;
+            }
+            .header-actions button {
+                flex-grow: 1;
+                justify-content: center;
+            }
+            .controls-row {
+                flex-direction: column;
+            }
+            .library-grid {
+                grid-template-columns: 1fr;
+            }
+            body {
+                padding-bottom: 120px;
+            }
+            .dock-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 6px;
+            }
+            .dock-right {
+                width: 100%;
+                justify-content: space-between;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-container">
+            <a href="#" class="brand">
+                <div class="brand-logo">A</div>
+                <div class="brand-name">ASSELA REMOTE</div>
+            </a>
+            <div class="header-actions">
+                <button id="check-updates-btn" onclick="checkUpdates()">
+                    🔄 Check Updates
+                </button>
+                <button id="update-all-btn" class="accent" onclick="updateAll()" disabled>
+                    ⚡ Update All
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="controls-row">
+            <div class="search-container">
+                <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                </svg>
+                <input type="text" id="search-input" class="search-input" placeholder="Search library..." oninput="filterLibrary()">
+            </div>
+        </div>
+
+        <div id="library-view" class="library-grid">
+            <!-- Game cards injected dynamically -->
+        </div>
+
+        <div id="empty-state" class="empty-state" style="display: none;">
+            <div class="empty-state-title">No games found</div>
+            <div class="empty-state-desc">Make sure Steam libraries are scanned and ASSella is running correctly.</div>
+        </div>
+    </main>
+
+    <div id="bottom-dock" class="bottom-dock">
+        <div class="dock-container">
+            <div class="dock-header">
+                <div class="active-job-info">
+                    <div class="active-job-spinner"></div>
+                    <div>
+                        <div id="active-job-name" class="active-job-name">Game Name</div>
+                        <div id="active-job-status" class="active-job-status">Stage Label</div>
+                    </div>
+                </div>
+                <div class="dock-right">
+                    <div id="active-job-speed" class="active-job-speed">0.0 MB/s</div>
+                    <div id="queue-badge" class="queue-count-badge">Queue: 0</div>
+                </div>
+            </div>
+            <div class="progress-bar-container">
+                <div id="progress-bar-fill" class="progress-bar-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">
+        <span id="toast-message">Message text</span>
+    </div>
+
+    <script>
+        let libraryData = [];
+        let pollingInterval = null;
+        let isPollingFast = false;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchLibrary();
+            fetchStatus();
+            startPolling(8000); // Standard poll is 8s
+        });
+
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const msgSpan = document.getElementById('toast-message');
+            
+            toast.className = 'toast show';
+            if (type === 'success') toast.classList.add('toast-success');
+            if (type === 'error') toast.classList.add('toast-error');
+            
+            msgSpan.textContent = message;
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        async function fetchLibrary() {
+            try {
+                const response = await fetch('/api/library');
+                if (!response.ok) throw new Error('Failed to load library');
+                libraryData = await response.json();
+                renderLibrary(libraryData);
+                updateUpdateAllButton();
+            } catch (err) {
+                console.error(err);
+                showToast('Error loading game library', 'error');
+            }
+        }
+
+        function renderLibrary(games) {
+            const view = document.getElementById('library-view');
+            const emptyState = document.getElementById('empty-state');
+            
+            if (games.length === 0) {
+                view.style.display = 'none';
+                emptyState.style.display = 'flex';
+                return;
+            }
+
+            view.style.display = 'grid';
+            emptyState.style.display = 'none';
+            
+            view.innerHTML = games.map(g => {
+                const badgeClass = g.update_status.replace(/_/g, '-');
+                const badgeLabel = g.update_status.replace(/_/g, ' ');
+                const canUpdate = g.update_status === 'update_available';
+                
+                return `
+                    <div class="game-card" data-appid="${g.appid}">
+                        <img class="game-header-img" src="${g.header_image_url}" alt="${g.name}" onerror="this.src='https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg'">
+                        <div class="game-info">
+                            <div class="game-title" title="${g.name}">${g.name}</div>
+                            <div class="game-meta">
+                                <span class="status-badge ${badgeClass}">${badgeLabel}</span>
+                                ${canUpdate ? `
+                                    <button class="update-btn accent" onclick="updateGame('${g.appid}', this)">
+                                        ↓ Update
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function filterLibrary() {
+            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            if (!query) {
+                renderLibrary(libraryData);
+                return;
+            }
+            
+            const filtered = libraryData.filter(g => 
+                g.name.toLowerCase().includes(query) || g.appid.includes(query)
+            );
+            renderLibrary(filtered);
+        }
+
+        function updateUpdateAllButton() {
+            const btn = document.getElementById('update-all-btn');
+            const count = libraryData.filter(g => g.update_status === 'update_available').length;
+            if (count > 0) {
+                btn.textContent = `⚡ Update All (${count})`;
+                btn.disabled = false;
+            } else {
+                btn.textContent = '⚡ Update All';
+                btn.disabled = true;
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (!response.ok) throw new Error('Status fetch failed');
+                const status = await response.json();
+                
+                const dock = document.getElementById('bottom-dock');
+                const queueBadge = document.getElementById('queue-badge');
+                
+                // Update queue badge
+                queueBadge.textContent = `Queue: ${status.queue.length}`;
+                
+                if (status.is_processing && status.active_job) {
+                    dock.classList.add('active');
+                    document.getElementById('active-job-name').textContent = status.active_job.name;
+                    document.getElementById('active-job-status').textContent = status.active_job.stage_label;
+                    document.getElementById('active-job-speed').textContent = status.active_job.speed || '';
+                    
+                    const fill = document.getElementById('progress-bar-fill');
+                    
+                    if (status.active_job.stage === 'processing_zip' || status.active_job.stage === 'fetching_manifest') {
+                        fill.className = 'progress-bar-fill indeterminate';
+                        fill.style.width = '100%';
+                    } else {
+                        fill.className = 'progress-bar-fill';
+                        fill.style.width = `${status.active_job.progress}%`;
+                    }
+
+                    // Download is active, poll faster
+                    if (!isPollingFast) {
+                        startPolling(2500);
+                    }
+                } else {
+                    dock.classList.remove('active');
+                    // Back to normal polling if queue is empty
+                    if (isPollingFast && status.queue.length === 0) {
+                        startPolling(8000);
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function startPolling(ms) {
+            if (pollingInterval) clearInterval(pollingInterval);
+            isPollingFast = ms < 5000;
+            pollingInterval = setInterval(() => {
+                fetchStatus();
+                // Periodically update library status if updates are running
+                if (isPollingFast) {
+                    fetchLibrary();
+                }
+            }, ms);
+        }
+
+        async function checkUpdates() {
+            const btn = document.getElementById('check-updates-btn');
+            btn.disabled = true;
+            btn.textContent = '🔄 Checking...';
+            
+            try {
+                const response = await fetch('/api/check-updates', { method: 'POST' });
+                if (!response.ok) throw new Error();
+                showToast('Update check started');
+                
+                // Immediately start fast polling to catch status updates
+                startPolling(2000);
+                
+                // Wait briefly for check to kick in, then fetch library
+                setTimeout(fetchLibrary, 1500);
+                setTimeout(fetchLibrary, 4000);
+            } catch (err) {
+                showToast('Failed to check updates', 'error');
+            } finally {
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = '🔄 Check Updates';
+                }, 3000);
+            }
+        }
+
+        async function updateGame(appid, btn) {
+            if (btn) btn.disabled = true;
+            
+            try {
+                const response = await fetch(`/api/update?appid=${appid}`, { method: 'POST' });
+                if (!response.ok) throw new Error();
+                showToast('Update queued successfully', 'success');
+                
+                // Fast poll library and status
+                startPolling(2000);
+                setTimeout(fetchLibrary, 1000);
+            } catch (err) {
+                showToast('Failed to queue update', 'error');
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function updateAll() {
+            const btn = document.getElementById('update-all-btn');
+            btn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/update-all', { method: 'POST' });
+                if (!response.ok) throw new Error();
+                showToast('All updates queued successfully', 'success');
+                
+                startPolling(2000);
+                setTimeout(fetchLibrary, 1000);
+            } catch (err) {
+                showToast('Failed to queue updates', 'error');
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -861,3 +861,198 @@ def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> 
         f"Removed AppID '{app_id}' from FakeAppIds in {config_path}",
         f"Failed to remove FakeAppId '{app_id}': {{e}}",
     )
+
+
+def check_and_merge_fakeappid_db(config_path: Path) -> bool:
+    """Check if fakeappid database integration is enabled and merge it if so.
+
+    Returns:
+        True if changes were written, False otherwise.
+    """
+    settings = get_settings()
+    if not settings.value("fakeappid_db_integration", False, type=bool):
+        return False
+
+    if not is_slssteam_mode_enabled():
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        return False
+
+    # Get database file path
+    from utils.paths import Paths
+    db_path = Paths.resource("fakeapps_accela.yaml")
+    if not db_path.exists():
+        logger.warning(f"Fake AppID database not found at {db_path}")
+        return False
+
+    # Parse database FakeAppIds
+    db_fakeapps = {}
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line == "FakeAppIds:":
+                    continue
+                # Split at comment if any
+                comment = ""
+                if "#" in line:
+                    line, comment = line.split("#", 1)
+                    comment = comment.strip()
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    k, v = k.strip(), v.strip()
+                    if k.isdigit() and v.isdigit():
+                        db_fakeapps[k] = (v, comment)
+    except Exception as e:
+        logger.error(f"Failed to parse Fake AppID database: {e}")
+        return False
+
+    if not db_fakeapps:
+        return False
+
+    # Load current content
+    try:
+        content = _read_config_content(config_path)
+        if content is None:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            content = ""
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    # Find FakeAppIds section
+    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
+    match = fake_appids_pattern.search(content)
+
+    # Let's collect existing FakeAppIds
+    existing_fake_apps = {}
+    if match:
+        section_start = match.end()
+        after_section = content[section_start:]
+        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+        next_match = next_key_pattern.search(after_section)
+        section_end = section_start + next_match.start() if next_match else len(content)
+        section_content = content[section_start:section_end]
+        
+        entry_pattern = re.compile(r"^\s*(\d+)\s*:\s*(\d+)", re.MULTILINE)
+        for m in entry_pattern.finditer(section_content):
+            existing_fake_apps[m.group(1).strip()] = m.group(2).strip()
+
+    # Determine which entries are missing
+    missing_entries = {}
+    for appid, (fake_appid, comment) in db_fakeapps.items():
+        if appid not in existing_fake_apps:
+            missing_entries[appid] = (fake_appid, comment)
+
+    if not missing_entries:
+        logger.debug("No missing FakeAppIds to merge.")
+        return False
+
+    logger.info(f"Merging {len(missing_entries)} entries from database into SLSsteam FakeAppIds...")
+    
+    # Create the text block to insert
+    insert_text = ""
+    for appid, (fake_appid, comment) in missing_entries.items():
+        comment_suffix = f"  # {comment}" if comment else ""
+        insert_text += f"  {appid}: {fake_appid}{comment_suffix}\n"
+
+    new_content = ""
+    if match:
+        # Find where to insert. We insert right after "FakeAppIds:\n"
+        insert_pos = match.end()
+        if insert_pos < len(content) and content[insert_pos] == "\n":
+            insert_pos += 1
+        new_content = content[:insert_pos] + insert_text + content[insert_pos:]
+    else:
+        # Section doesn't exist, append it
+        new_content = content.rstrip() + "\n\nFakeAppIds:\n" + insert_text
+
+    # Write atomically
+    _create_backup(config_path)
+    if _atomic_write(config_path, new_content):
+        logger.info(f"Successfully merged Fake AppID database into {config_path}")
+        return True
+    return False
+
+
+def clean_fakeappid_db(config_path: Path) -> bool:
+    """Remove all FakeAppIds that belong to the database from SLSsteam config.yaml.
+
+    Returns:
+        True if changes were written, False otherwise.
+    """
+    if not config_path.exists():
+        return False
+
+    from utils.paths import Paths
+    db_path = Paths.resource("fakeapps_accela.yaml")
+    if not db_path.exists():
+        return False
+
+    # Parse database AppIDs
+    db_appids = set()
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line == "FakeAppIds:":
+                    continue
+                if "#" in line:
+                    line, _ = line.split("#", 1)
+                if ":" in line:
+                    k, _ = line.split(":", 1)
+                    k = k.strip()
+                    if k.isdigit():
+                        db_appids.add(k)
+    except Exception as e:
+        logger.error(f"Failed to parse Fake AppID database: {e}")
+        return False
+
+    if not db_appids:
+        return False
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    # Find FakeAppIds section
+    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
+    match = fake_appids_pattern.search(content)
+    if not match:
+        return False
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+    section_content = content[section_start:section_end]
+
+    # Rebuild section content, omitting any lines that match db_appids
+    new_section_lines = []
+    removed_count = 0
+    entry_pattern = re.compile(r"^\s*(\d+)\s*:")
+    for line in section_content.split("\n"):
+        m = entry_pattern.match(line)
+        if m:
+            appid = m.group(1).strip()
+            if appid in db_appids:
+                removed_count += 1
+                continue  # skip/remove this line
+        new_section_lines.append(line)
+
+    if removed_count == 0:
+        return False
+
+    new_section_content = "\n".join(new_section_lines)
+    new_content = content[:section_start] + new_section_content + content[section_end:]
+
+    _create_backup(config_path)
+    if _atomic_write(config_path, new_content):
+        logger.info(f"Successfully cleaned {removed_count} database FakeAppIds from {config_path}")
+        return True
+    return False

@@ -6,7 +6,7 @@ ASSella is a personal fork of ACCELA — a Steam game downloader and launcher fo
 
 ---
 
-## Installation
+## Installation (Stable/Beta)
 
 Install or update ASSella with a single command:
 
@@ -20,7 +20,41 @@ The installer presents a menu with the following options:
 - Uninstall ASSella (restores original ACCELA if a backup is present)
 - Install / Run Headcrab (installs the tools required for ASSella to work)
 
-On first install, the script backs up your existing ACCELA.AppImage, downloads ASSella, creates a compatibility symlink, and patches the desktop shortcut.
+---
+
+## Testing / Alpha (Remote Web UI & Headless Mode)
+
+The **alpha** branch introduces remote WiFi control via a Web UI and a headless background mode designed for gaming mode. 
+
+Install and manage the testing version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/alpha/install_testing.sh | bash
+```
+
+The testing installer installs an **extracted source + virtualenv** version to `~/.local/share/assella_testing` and provides options to:
+- Install or update the testing files.
+- Enable/Disable a **systemd user service** to run the headless server in the background automatically.
+- Launch the testing GUI.
+- Uninstall the testing files.
+
+---
+
+## What's New: Remote Web UI & Headless Mode
+
+### 📱 Remote Web UI
+Access and manage your game library from your phone or any device on the same WiFi network!
+- **Library Grid**: View all installed games with name, update status, and Steam header images.
+- **Search**: Fast local filter to search your games by name.
+- **Queue Control**: Trigger updates for single games, check for library updates, or click **Update All** to download all pending updates.
+- **Live Progress Monitor**: Docked at the bottom, showing the active download name, current stage (manifest check, downloading, removing DRM), speed, and queue count.
+
+### ⚙️ Headless Mode
+Run ASSella silently in the background without opening the desktop GUI window:
+- Run via CLI: `/path/to/venv/bin/python src/main.py --headless --port 8765`
+- Runs in the background (using Qt offscreen platform) so downloads and tools work flawlessly.
+- Exposes Web UI on port `8765` (customizable with `--port`).
+- Configurable as a systemd user service via the `install_testing.sh` menu.
 
 ---
 
@@ -40,8 +74,8 @@ On first install, the script backs up your existing ACCELA.AppImage, downloads A
 
 ### SLSsteam / Config
 
-- **Fake AppID Database Integration (Highly Experimental)** — toggle in Settings > ASSella. Merges a curated list of games supporting online play via Spacewar (FakeAppIds / 480 mapping) into your SLSsteam config.yaml on every boot. Disabled by default. Takes a config.yaml.bak backup before making any changes.
-- **Steam Update Blocking status** — the home screen shows whether Steam auto-updates are blocked via steam.cfg (BootStrapperInhibitAll / BootStrapperForceSelfUpdate).
+- **Fake AppID Database Integration (Highly Experimental)** — toggle in Settings > ASSella. Merges a curated list of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml on every boot.
+- **Steam Update Blocking status** — the home screen shows whether Steam auto-updates are blocked via steam.cfg.
 
 ### Home Screen
 
@@ -61,7 +95,8 @@ On first install, the script backs up your existing ACCELA.AppImage, downloads A
 - Auto-fetch update manifests on boot toggle
 - Download Screen 2.0 Beta toggle
 - Fake AppID Database Integration toggle (experimental)
-- Uninstall ASSella button — confirms the action, optionally restores the original ACCELA backup, and reverts the desktop shortcut
+- **Enable Remote Web UI** — starts/stops the background Web UI server.
+- Uninstall ASSella button — confirms the action, optionally restores the original ACCELA backup, and reverts the desktop shortcut.
 
 ### Bundled Tools
 
