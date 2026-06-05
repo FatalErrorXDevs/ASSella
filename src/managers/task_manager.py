@@ -369,7 +369,7 @@ class TaskManager(QObject):
         self._last_steamless_status = "not_run"
         self._last_steamless_status_text = "N/A"
 
-        self.main_window.ui_state.switch_to_download_gif()
+        logger.debug("Download started; GIF animation removed.")
         self._update_status_button_color()
         self.main_window.drop_text_label.setText(
             f"Downloading: {self.game_data.get('game_name', '')}"
@@ -1703,7 +1703,7 @@ class TaskManager(QObject):
             if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
                 self.main_window.simplified_terminal.add_history_entry(history_entry)
 
-        self.main_window.ui_state.show_main_gif()
+        logger.debug("Job finished; GIF animation removed.")
         self.main_window.progress_bar.setVisible(False)
         self.main_window.speed_label.setVisible(False)
         self.game_data = None

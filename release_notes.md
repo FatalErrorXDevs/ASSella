@@ -1,3 +1,28 @@
+## ASSella v1.9a (Release candidate 1) — Changes from v1.8g
+
+**[REUPLOAD / HOTFIX 2]**: Fixed two critical crashes caused by orphaned GIF manager calls:
+1. `AttributeError` on `switch_to_download_gif()` after selecting a library.
+2. `AttributeError` on `show_main_gif()` occurring immediately after a download/installation successfully finishes.
+
+### 1. Remote Web UI & Headless Mode
+*   **Web Server & UI**: Access and control your ASSella client over a web interface on the local network (port `8765` by default). Features a beautiful themed layout matching ASSella's aesthetic.
+*   **Background Service**: Built-in Systemd background user service management integration in the Settings dialog (Start/Stop service, and Enable/Disable on boot).
+*   **Smart Selection & Cache Reuse**: Seamlessly skip depot confirmation dialogs remotely and reuse cached ZIP files when queueing downloads.
+
+### 2. Complete Asset & Dependency Pruning
+*   **GIF & Sound Removal**: Completely removed the animation panel, all `.gif` files, `.wav`/`.mp3` clips, settings toggles/sliders, and deleted the underlying GIF and audio manager classes.
+*   **Unused Dependencies**: Removed `numpy`, `pillow` (Pillow), and `just_playback` from python requirements to keep the package light and slim.
+*   **Style Dialog Removal**: Removed the duplicate and unused `StyleDialog` to clean up the dialog codebase.
+
+### 3. Stability & Concurrency Optimizations
+*   **Memory Leak Guards**: Migrated the log widget from `QTextEdit` to `QPlainTextEdit` with a strict `5000` line history limit. Enabled a `RotatingFileHandler` for logs, capping individual log files at 5MB with a maximum of 3 rotating backups.
+*   **Sequential Download Stalling Fix**: Migrated from a simple boolean conductor flag to a step-by-step state machine tracker. This guarantees sequential downloads advance correctly past 100% and proceed to post-processing without stalling.
+*   **Connection Reuse**: Upgraded the steam metadata fetcher to share a single `SteamClient` connection across batches with a localized fallback.
+*   **File I/O debouncing**: Coalesced high-frequency status cache writes using a debounced timer.
+*   **Offscreen & DRM fixes**: Corrected executable globbing pattern behavior for offscreen execution under temporary mount points. Steamless completion signal now fires once-per-game rather than per-file.
+
+---
+
 ## ASSella v1.8g — Changes from v1.8f
 
 ### Installer Script — Interactive Menu

@@ -2,7 +2,7 @@ import logging
 from typing import Callable, Optional
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QMovie, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QFrame,
@@ -59,7 +59,6 @@ class BottomTitleBar(QFrame):
         self.no_previous_state = True
 
         self.navi_label: Optional[QLabel] = None
-        self.navi_movie: Optional[QMovie] = None
         self.title_label: Optional[QLabel] = None
 
         # Buttons
@@ -115,30 +114,6 @@ class BottomTitleBar(QFrame):
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return widget
 
-    def _setup_navi_animation(self, layout: QHBoxLayout) -> None:
-        """Setup the Navi GIF animation."""
-        self.navi_label = QLabel()
-        gif_path = get_base_path() / "gifs/colorized/navi.gif"
-        self.navi_movie = QMovie(str(gif_path))
-
-        if not self.navi_movie.isValid():
-            return
-
-        self.navi_movie.jumpToFrame(0)
-        orig_size = self.navi_movie.currentImage().size()
-        height = 20
-        width = (
-            int(height * (orig_size.width() / orig_size.height()))
-            if orig_size.height() > 0
-            else 57
-        )
-
-        self.navi_label.setFixedSize(width, height)
-        self.navi_label.setScaledContents(True)
-        self.navi_label.setMovie(self.navi_movie)
-        self.navi_movie.start()
-
-        layout.addWidget(self.navi_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def _create_right_section(self) -> QWidget:
         """Create the right section containing buttons."""
