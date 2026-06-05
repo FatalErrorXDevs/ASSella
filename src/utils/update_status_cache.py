@@ -60,6 +60,7 @@ class UpdateStatusCache:
         # In-memory store: appid -> {"status": str, "updated_at": float}
         self._cache: Dict[str, dict] = {}
         self._dirty = False  # True when in-memory != on-disk
+        self._save_timer: Optional[threading.Timer] = None
         self._load()
 
     # ──────────────────────────────── Public API ────────────────────────────────
@@ -142,9 +143,19 @@ class UpdateStatusCache:
                 self._dirty = True
 
     def save_async(self) -> None:
-        """Save cache to disk in a background daemon thread (fire-and-forget)."""
-        t = threading.Thread(target=self.save, daemon=True, name="UpdateCacheSave")
-        t.start()
+        """Save cache to disk in a background thread (coalesced via debounce)."""
+        with self._lock:
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+            self._save_timer = threading.Timer(1.0, self._do_async_save)
+            self._save_timer.daemon = True
+            self._save_timer.name = "UpdateCacheSaveDebounce"
+            self._save_timer.start()
+
+    def _do_async_save(self) -> None:
+        self.save()
+        with self._lock:
+            self._save_timer = None
 
     def purge_expired(self) -> int:
         """Remove stale 'up_to_date' entries that have exceeded TTL.  Returns count removed."""

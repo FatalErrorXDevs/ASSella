@@ -87,6 +87,9 @@ class GameManager(QObject):
         """Add a game to the library"""
         logger.info(f"Adding game to library: {game_data.get('game_name', 'Unknown')}")
         self.games.append(game_data)
+        game_id = str(game_data.get("appid", ""))
+        if game_id:
+            self._games_by_appid[game_id] = game_data
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
@@ -96,17 +99,16 @@ class GameManager(QObject):
         """Remove a game from the library"""
         logger.info(f"Removing game from library: {game_id}")
         self.games = [g for g in self.games if g.get("appid") != game_id]
+        if str(game_id) in self._games_by_appid:
+            del self._games_by_appid[str(game_id)]
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
         self.library_updated.emit()
 
     def get_game(self, game_id):
-        """Get a specific game by ID"""
-        for game in self.games:
-            if game.get("appid") == game_id:
-                return game
-        return None
+        """Get a specific game by ID (O(1) lookup)"""
+        return self._games_by_appid.get(str(game_id))
 
     def get_all_games(self):
         """Get all games in the library - returns sorted list"""
@@ -131,6 +133,7 @@ class GameManager(QObject):
         for i, game in enumerate(self.games):
             if game.get("appid") == game_id:
                 self.games[i].update(game_data)
+                self._games_by_appid[str(game_id)] = self.games[i]
                 # Sort the main games list after update
                 self.games = self._get_sorted_games(self.games)
                 self.game_updated.emit(game_id)

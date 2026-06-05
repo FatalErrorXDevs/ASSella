@@ -112,17 +112,19 @@ def _fetch_with_steam_client(app_id, access_token=None):
             request_list = [int_app_id]
 
         result = client.get_product_info(apps=request_list, timeout=30)
-        debug_dump_path = os.path.join(
-            tempfile.gettempdir(), f"mistwalker_steamclient_response_{int_app_id}.json"
-        )
-        try:
-            with open(debug_dump_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=4, default=str)
-            logger.debug(
-                f"DEBUG: Raw steam.client response dumped to {debug_dump_path}"
+        # Only write the debug dump when DEBUG logging is explicitly enabled
+        if logger.isEnabledFor(logging.DEBUG):
+            debug_dump_path = os.path.join(
+                tempfile.gettempdir(), f"mistwalker_steamclient_response_{int_app_id}.json"
             )
-        except Exception as e:
-            logger.error(f"DEBUG: Failed to dump raw response: {e}", exc_info=True)
+            try:
+                with open(debug_dump_path, "w", encoding="utf-8") as f:
+                    json.dump(result, f, indent=4, default=str)
+                logger.debug(
+                    f"DEBUG: Raw steam.client response dumped to {debug_dump_path}"
+                )
+            except Exception as e:
+                logger.error(f"DEBUG: Failed to dump raw response: {e}", exc_info=True)
         try:
             cleaned_result = json.loads(json.dumps(result, default=str))
         except Exception as e:
@@ -297,131 +299,156 @@ def batched_get_product_info(
     all_results = {}
     failed_appids = []
 
+    shared_client = None
+    try:
+        shared_client = SteamClient()
+        shared_client.anonymous_login()
+        if not shared_client.logged_on:
+            logger.warning("Batched fetch: Failed to establish shared SteamClient. Will fallback to per-batch clients.")
+            shared_client = None
+    except Exception as e:
+        logger.error(f"Batched fetch: Error establishing shared SteamClient: {e}. Will fallback.")
+        shared_client = None
+
     # Process each batch
     for batch_idx, batch_appids in enumerate(batches):
         if is_cancelled and is_cancelled():
             logger.info("Batched fetch cancelled before batch execution")
             break
-        client = None
-        try:
-            client = SteamClient()
-            client.anonymous_login()
 
-            if is_cancelled and is_cancelled():
-                logger.info("Batched fetch cancelled after login")
-                failed_appids.extend(batch_appids)
-                continue
+        # Convert appids to integers
+        int_appids = []
+        for appid in batch_appids:
+            try:
+                int_appids.append(int(appid))
+            except (ValueError, TypeError):
+                logger.error(f"Invalid AppID: '{appid}'")
+                failed_appids.append(appid)
 
-            if not client.logged_on:
-                logger.error(f"Batch {batch_idx + 1}: Failed to login to Steam")
-                failed_appids.extend(batch_appids)
-                continue
+        if not int_appids:
+            continue
 
-            # Convert appids to integers
-            int_appids = []
-            for appid in batch_appids:
+        # Build request list with access tokens if available
+        request_list = []
+        for appid in int_appids:
+            appid_str = str(appid)
+            token = access_tokens.get(appid_str)
+            if token:
                 try:
-                    int_appids.append(int(appid))
+                    request_list.append({"appid": appid, "access_token": int(token)})
                 except (ValueError, TypeError):
-                    logger.error(f"Invalid AppID: '{appid}'")
-                    failed_appids.append(appid)
-
-            if not int_appids:
-                continue
-
-            # Build request list with access tokens if available
-            request_list = []
-            for appid in int_appids:
-                appid_str = str(appid)
-                token = access_tokens.get(appid_str)
-                if token:
-                    try:
-                        request_list.append(
-                            {"appid": appid, "access_token": int(token)}
-                        )
-                    except (ValueError, TypeError):
-                        request_list.append(appid)
-                else:
                     request_list.append(appid)
-
-            # Single API call for all appids in this batch
-            result = client.get_product_info(apps=request_list, timeout=request_timeout)
-
-            # Process results
-            if result and isinstance(result, dict):
-                cleaned_result = json.loads(json.dumps(result, default=str))
-                apps_data = cleaned_result.get("apps", {})
-
-                for int_appid in int_appids:
-                    appid_str = str(int_appid)
-                    app_data = apps_data.get(appid_str, {})
-                    build_id = None
-                    app_name = None
-
-                    # Parse the app data
-                    depot_info = {}
-                    if app_data:
-                        app_data.get("config", {}).get("installdir")
-                        ImageFetcher.get_header_image_url(int_appid)
-                        app_name = app_data.get("common", {}).get("name")
-                        build_id = None
-                        try:
-                            build_id = (
-                                app_data.get("depots", {})
-                                .get("branches", {})
-                                .get("public", {})
-                                .get("buildid")
-                            )
-                        except AttributeError:
-                            pass
-
-                        depots = app_data.get("depots", {})
-                        for depot_id, depot_data in depots.items():
-                            if not isinstance(depot_data, dict):
-                                continue
-                            config = depot_data.get("config", {})
-                            manifests = depot_data.get("manifests", {})
-                            manifest_public = manifests.get("public", {})
-
-                            manifest_id = (
-                                manifest_public.get("gid")
-                                if isinstance(manifest_public, dict)
-                                else manifest_public
-                            )
-
-                            depot_info[depot_id] = {
-                                "name": depot_data.get("name"),
-                                "oslist": config.get("oslist"),
-                                "language": config.get("language"),
-                                "steamdeck": config.get("steamdeck") == "1",
-                                "size": None,
-                                "manifest_id": manifest_id,
-                            }
-
-                    all_results[appid_str] = {
-                        "depots": depot_info,
-                        "installdir": app_data.get("config", {}).get("installdir"),
-                        "header_url": (
-                            ImageFetcher.get_header_image_url(int_appid)
-                            if app_data
-                            else None
-                        ),
-                        "buildid": build_id,
-                        "name": app_name,
-                    }
             else:
-                failed_appids.extend(batch_appids)
+                request_list.append(appid)
 
-        except Exception as e:
-            logger.error(f"Batch {batch_idx + 1}: Error during fetch: {e}")
+        # Retry loop for fallback mechanism
+        batch_success = False
+        client = None
+        for attempt in range(2):
+            used_shared_client = False
+            try:
+                if attempt == 0 and shared_client and shared_client.logged_on:
+                    client = shared_client
+                    used_shared_client = True
+                else:
+                    logger.debug(f"Batch {batch_idx + 1}: Using new fallback client for attempt {attempt + 1}")
+                    client = SteamClient()
+                    client.anonymous_login()
+
+                if is_cancelled and is_cancelled():
+                    logger.info("Batched fetch cancelled after login")
+                    break
+
+                if not client.logged_on:
+                    logger.error(f"Batch {batch_idx + 1}: Failed to login to Steam")
+                    continue
+
+                # Single API call for all appids in this batch
+                result = client.get_product_info(apps=request_list, timeout=request_timeout)
+
+                # Process results
+                if result and isinstance(result, dict):
+                    cleaned_result = json.loads(json.dumps(result, default=str))
+                    apps_data = cleaned_result.get("apps", {})
+
+                    for int_appid in int_appids:
+                        appid_str = str(int_appid)
+                        app_data = apps_data.get(appid_str, {})
+                        build_id = None
+                        app_name = None
+
+                        # Parse the app data
+                        depot_info = {}
+                        if app_data:
+                            app_data.get("config", {}).get("installdir")
+                            ImageFetcher.get_header_image_url(int_appid)
+                            app_name = app_data.get("common", {}).get("name")
+                            build_id = None
+                            try:
+                                build_id = (
+                                    app_data.get("depots", {})
+                                    .get("branches", {})
+                                    .get("public", {})
+                                    .get("buildid")
+                                )
+                            except AttributeError:
+                                pass
+
+                            depots = app_data.get("depots", {})
+                            for depot_id, depot_data in depots.items():
+                                if not isinstance(depot_data, dict):
+                                    continue
+                                config = depot_data.get("config", {})
+                                manifests = depot_data.get("manifests", {})
+                                manifest_public = manifests.get("public", {})
+
+                                manifest_id = (
+                                    manifest_public.get("gid")
+                                    if isinstance(manifest_public, dict)
+                                    else manifest_public
+                                )
+
+                                depot_info[depot_id] = {
+                                    "name": depot_data.get("name"),
+                                    "oslist": config.get("oslist"),
+                                    "language": config.get("language"),
+                                    "steamdeck": config.get("steamdeck") == "1",
+                                    "size": None,
+                                    "manifest_id": manifest_id,
+                                }
+
+                        all_results[appid_str] = {
+                            "depots": depot_info,
+                            "installdir": app_data.get("config", {}).get("installdir"),
+                            "header_url": (
+                                ImageFetcher.get_header_image_url(int_appid)
+                                if app_data
+                                else None
+                            ),
+                            "buildid": build_id,
+                            "name": app_name,
+                        }
+                batch_success = True
+                break  # Success! Exit retry loop
+
+            except Exception as e:
+                logger.error(f"Batch {batch_idx + 1} (Attempt {attempt + 1}): Error during fetch: {e}")
+                if used_shared_client:
+                    # Drop the broken shared client so the next iteration uses the fallback
+                    logger.info(f"Batch {batch_idx + 1}: Shared client failed, falling back to new client...")
+                    shared_client = None
+                # If we're on the last attempt, it's a hard failure
+                if attempt == 1 or not used_shared_client:
+                    break
+            finally:
+                if client and not used_shared_client and client.logged_on:
+                    try:
+                        client.logout()
+                    except Exception as e:
+                        logger.error(f"Error during fallback client logout: {e}")
+
+        if not batch_success:
             failed_appids.extend(batch_appids)
-
-        finally:
-            if client and client.logged_on:
-                try:
-                    client.logout()
-                except Exception as e:
-                    logger.error(f"Error during logout: {e}")
 
         # Rate limiting: delay before next batch
         if is_cancelled and is_cancelled():
@@ -438,6 +465,13 @@ def batched_get_product_info(
 
     if failure_count > 0:
         logger.debug(f"Failed appids: {failed_appids}")
+
+    # Ensure shared client is logged out at the very end
+    if shared_client and shared_client.logged_on:
+        try:
+            shared_client.logout()
+        except Exception as e:
+            logger.error(f"Error logging out shared client: {e}")
 
     return all_results
 

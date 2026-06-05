@@ -384,6 +384,7 @@ class SteamlessIntegration(QObject):
                 self.progress.emit(
                     f"Steamless completed: {success_count}/{len(exe_files)} executables processed successfully"
                 )
+                self.finished.emit(True)  # emit once for the whole game, not per-exe
                 return True
             else:
                 self.error.emit("Steamless failed: No executables could be processed")
@@ -583,7 +584,7 @@ class SteamlessIntegration(QObject):
             except Exception as e:
                 self.progress.emit(f"Warning: Failed to rename backup files: {e}")
 
-            self.finished.emit(True)
+            self.finished.emit(True)  # removed from here — now emitted once in process_game_with_steamless
             return True
 
         except Exception as e:

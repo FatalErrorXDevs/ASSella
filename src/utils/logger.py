@@ -4,6 +4,7 @@ import platform
 import subprocess
 import sys
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
 
@@ -60,16 +61,23 @@ _current_log_name: Optional[str] = None
 _log_dir = get_base_path() / "logs"
 
 
-def _create_file_handler(log_path: Path) -> Optional[logging.FileHandler]:
-    """Attempt to create a file handler at the specified path."""
+# Cap per-session log file at 5 MB; keep up to 3 rotated backups per session.
+_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+_LOG_BACKUP_COUNT = 3
+
+
+def _create_file_handler(log_path: Path) -> Optional[RotatingFileHandler]:
+    """Attempt to create a rotating file handler at the specified path."""
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     try:
-        handler = logging.FileHandler(
+        handler = RotatingFileHandler(
             log_path,
-            mode="w",  # Create new file for each session
+            mode="w",  # Start fresh for each session; rotation is within the session
             encoding="utf-8",
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUP_COUNT,
             delay=False,
         )
         handler.setLevel(logging.DEBUG)

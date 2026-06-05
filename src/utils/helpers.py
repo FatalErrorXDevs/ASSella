@@ -516,6 +516,19 @@ def get_venv_path() -> Path | None:
         venv_dir = check_venv(Path(app_dir) / "bin" / ".venv")
         if venv_dir:
             return venv_dir
+        # The APPDIR env var is set but the venv wasn't found there.
+        # Log what was tried so it's easier to debug future mismatches.
+        logger.debug(f"AppImage APPDIR set to '{app_dir}' but no .venv found at {Path(app_dir) / 'bin' / '.venv'}")
+
+    # 1b. Glob-based fallback for AppImages whose mount point has a random suffix
+    # e.g. /tmp/.mount_ASSellXYZ/bin/.venv — the suffix changes every run.
+    if not venv_dir and sys.platform != "win32":
+        import glob
+        for candidate in glob.glob("/tmp/.mount_*/bin/.venv"):
+            venv_dir = check_venv(Path(candidate))
+            if venv_dir:
+                logger.debug(f"Found AppImage .venv via glob: {venv_dir}")
+                return venv_dir
 
     # 2. Check relative to this script file (Absolute traversal)
     current_file_dir = Path(__file__).resolve().parent

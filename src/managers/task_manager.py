@@ -20,7 +20,6 @@ except ImportError:
     psutil = None
 
 from core import steam_helpers
-from core.tasks.application_shortcuts import ApplicationShortcutsTask
 from core.tasks.download_depots_task import DownloadDepotsTask
 from core.tasks.generate_achievements_task import GenerateAchievementsTask
 from core.tasks.monitor_speed_task import SpeedMonitorTask
@@ -66,8 +65,6 @@ class TaskManager(QObject):
         self.achievement_task_runner = None
         self.achievement_worker = None
         self.steamless_task = None
-        self.application_shortcuts_task = None
-        self.application_shortcuts_task_runner = None
         self.slssteam_download_task = None
         self.slssteam_download_runner = None
 
@@ -116,6 +113,11 @@ class TaskManager(QObject):
         self._last_download_avg_speed = 0.0
 
         self._delete_files_on_cancel: Optional[bool] = None
+
+        # Guards for post-download finalization
+        self._current_active_step = None
+        # Event used to abort the finalize IO thread early on job cancellation.
+        self._finalize_cancel_event = threading.Event()
 
         # Status colors
         self.STATUS_OK = "#00FF00"
@@ -351,6 +353,10 @@ class TaskManager(QObject):
         self._slscheevo_ran = False
         self._slscheevo_error = False
 
+        # Reset per-job finalize guards
+        self._current_active_step = None
+        self._finalize_cancel_event.clear()
+
         self._download_start_time = time.time()
         self._download_end_time = 0.0
         self._last_download_duration = 0.0
@@ -498,22 +504,43 @@ class TaskManager(QObject):
         except OSError as e:
             logger.error(f"Error checking config management status: {e}")
 
+        # Signal the finalize thread to abort if it's still running
+        self._finalize_cancel_event.clear()
         # Start the worker thread
         threading.Thread(
             target=self._run_finalize_io_worker,
             args=(size_on_disk, auto_apply_goldberg_val, config_management_enabled_val),
             daemon=True,
+            name="FinalizeIOWorker",
         ).start()
 
     def _run_finalize_io_worker(
         self, size_on_disk: int, auto_apply_goldberg: bool, config_enabled: bool
     ):
-        """Background thread worker for post-download I/O"""
+        """Background thread worker for post-download I/O.
+
+        Checks _finalize_cancel_event at each major step so the thread can exit
+        cleanly when the user cancels before finalization completes.
+        """
         try:
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._finalize_acf_and_manifests(size_on_disk)
+
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._persist_wrapper_metadata()
+
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._finalize_platform_specifics(config_enabled)
+
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._finalize_goldberg(auto_apply_goldberg)
+
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._finalize_greenluma(config_enabled)
 
         except OSError as e:
@@ -521,10 +548,11 @@ class TaskManager(QObject):
                 f"Critical error in post-processing thread: {e}", exc_info=True
             )
         finally:
-            # Thread-safe slot invocation
-            QMetaObject.invokeMethod(
-                self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-            )
+            # Only invoke the main-thread slot if we weren't cancelled mid-way
+            if not self._finalize_cancel_event.is_set():
+                QMetaObject.invokeMethod(
+                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+                )
 
     def _finalize_acf_and_manifests(self, size_on_disk: int):
         # 1. ACF
@@ -613,7 +641,18 @@ class TaskManager(QObject):
 
     @pyqtSlot()
     def _finalize_job_logic(self):
-        """Called on Main Thread. Acts as a State Machine Conductor."""
+        """Called on Main Thread. Acts as a State Machine Conductor.
+
+        Guard against being invoked more than once per step or when no job is active.
+        """
+        if not self.is_processing:
+            logger.warning("_finalize_job_logic called when no job is processing — ignoring duplicate callback")
+            return
+
+        if self._current_active_step is not None:
+            logger.warning(f"_finalize_job_logic called while step '{self._current_active_step}' is still running — ignoring duplicate callback")
+            return
+
         if self._should_prompt_for_steam_restart():
             self.main_window.job_queue.steam_restart_prompt_pending = True
 
@@ -622,26 +661,11 @@ class TaskManager(QObject):
         if (steamless_enabled or steamless_aio_enabled) and not self.is_cancelling:
             if "steamless" not in self._job_steps_completed:
                 self._job_steps_completed.add("steamless")
+                self._current_active_step = "steamless"
                 self.main_window.drop_text_label.setText(
                     f"Running Steamless: {self.game_data.get('game_name', '')}"
                 )
                 self._start_steamless_processing(use_aio=steamless_aio_enabled)
-                return
-
-        shortcuts_enabled = self.settings.value(
-            "create_application_shortcuts", False, type=bool
-        )
-        slssteam_mode = is_slssteam_mode_enabled()
-
-        if (
-            shortcuts_enabled
-            and slssteam_mode
-            and sys.platform == "linux"
-            and not self.is_cancelling
-        ):
-            if "shortcuts_linux" not in self._job_steps_completed:
-                self._job_steps_completed.add("shortcuts_linux")
-                self._start_application_shortcuts_step()
                 return
 
         achievements_enabled = self.settings.value(
@@ -650,20 +674,11 @@ class TaskManager(QObject):
         if achievements_enabled and not self.is_cancelling:
             if "achievements" not in self._job_steps_completed:
                 self._job_steps_completed.add("achievements")
+                self._current_active_step = "achievements"
                 self.main_window.drop_text_label.setText(
                     f"Generating Achievements: {self.game_data.get('game_name', '')}"
                 )
                 self._start_achievement_generation()
-                return
-
-        if (
-            shortcuts_enabled
-            and not self.is_cancelling
-            and "shortcuts_linux" not in self._job_steps_completed
-        ):
-            if "shortcuts_std" not in self._job_steps_completed:
-                self._job_steps_completed.add("shortcuts_std")
-                self._start_application_shortcuts_step()
                 return
 
         # --- FINISH ---
@@ -688,12 +703,6 @@ class TaskManager(QObject):
             self.main_window.game_manager.scan_steam_libraries_async()
 
         self.job_finished()
-
-    def _start_application_shortcuts_step(self):
-        self.main_window.drop_text_label.setText(
-            f"Creating Application Shortcuts: {self.game_data.get('game_name', '')}"
-        )
-        self._start_application_shortcuts_processing()
 
     def _should_prompt_for_steam_restart(self) -> bool:
         if self.is_cancelling:
@@ -1328,6 +1337,8 @@ class TaskManager(QObject):
         if self._steamless_success is not None:
             self._steamless_success = None
 
+        self._current_active_step = None
+
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
@@ -1395,6 +1406,8 @@ class TaskManager(QObject):
         if self.steamless_task:
             QTimer.singleShot(0, self._clear_steamless_task)
 
+        self._current_active_step = None
+
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
@@ -1452,6 +1465,8 @@ class TaskManager(QObject):
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("achievements", "completed" if success else "error")
 
+        self._current_active_step = None
+
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
@@ -1466,6 +1481,8 @@ class TaskManager(QObject):
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("achievements", "error")
 
+        self._current_active_step = None
+
         QMetaObject.invokeMethod(
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
@@ -1475,60 +1492,6 @@ class TaskManager(QObject):
         self.achievement_task = None
         self.achievement_worker = None
         self.main_window.job_queue.check_if_safe_to_start_next_job()
-
-    def _on_application_shortcuts_task_cleanup(self):
-        self.application_shortcuts_task_runner = None
-        self.application_shortcuts_task = None
-        self.main_window.job_queue.check_if_safe_to_start_next_job()
-
-    def _start_application_shortcuts_processing(self):
-        if not self.game_data:
-            self._finalize_job_logic()
-            return
-
-        app_id = self.game_data.get("appid")
-        game_name = self.game_data.get("game_name")
-        sgdb_api_key = self.settings.value("sgdb_api_key", "", type=str)
-
-        if not app_id or not sgdb_api_key:
-            self._finalize_job_logic()
-            return
-
-        logger.info("\n" + "=" * 40)
-        logger.info("Starting Application Shortcuts Creation...")
-
-        self.application_shortcuts_task = ApplicationShortcutsTask()
-        self.application_shortcuts_task.set_api_key(sgdb_api_key)
-        self.application_shortcuts_task.progress.connect(logger.info)
-
-        self.application_shortcuts_task_runner = TaskRunner()
-        self.application_shortcuts_task_runner.cleanup_complete.connect(
-            self._on_application_shortcuts_task_cleanup
-        )
-
-        worker = self.application_shortcuts_task_runner.run(
-            self.application_shortcuts_task.run, app_id, game_name
-        )
-        worker.finished.connect(self._on_application_shortcuts_complete)
-        worker.error.connect(self._handle_application_shortcuts_error)
-
-    def _on_application_shortcuts_complete(self, result):
-        if result:
-            logger.info("Application shortcuts creation completed successfully")
-        else:
-            logger.info("Application shortcuts creation failed")
-
-        QMetaObject.invokeMethod(
-            self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-        )
-
-    def _handle_application_shortcuts_error(self, error_info):
-        _, error_value, _ = error_info
-        logger.error(f"Application shortcuts creation failed: {error_value}")
-
-        QMetaObject.invokeMethod(
-            self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-        )
 
     def _add_appids_to_slssteam_config(self):
         if not self.game_data:
@@ -1849,6 +1812,8 @@ class TaskManager(QObject):
 
         logger.info(f"--- Cancelling job: {os.path.basename(self.current_job)} ---")
         self.is_cancelling = True
+        # Signal the finalize IO thread (if running) to abort immediately
+        self._finalize_cancel_event.set()
         if self.download_runner is not None:
             self.is_awaiting_download_stop = True
 
@@ -2027,11 +1992,6 @@ class TaskManager(QObject):
 
         if self.steamless_task:
             self.steamless_task.stop()
-
-        if self.application_shortcuts_task:
-            self.application_shortcuts_task.stop()
-            self.application_shortcuts_task_runner = None
-            self.application_shortcuts_task = None
 
         TaskRunner.stop_all_active()
 

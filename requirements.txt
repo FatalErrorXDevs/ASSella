@@ -3,12 +3,9 @@ PyYAML==6.0.3
 requests==2.34.0
 zstandard==0.25.0
 steam @ git+https://github.com/solsticegamestudios/steam.git
-just_playback==0.1.8
 cryptography==48.0.0
 protobuf==5.29.6
 vdf @ git+https://github.com/solsticegamestudios/vdf.git@v4.0
 psutil==7.2.2
 configobj==5.0.9
 urwid==4.0.0
-pillow==12.2.0
-numpy==2.4.4

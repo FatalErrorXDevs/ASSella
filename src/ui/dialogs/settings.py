@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import (
 )
 
 from core import morrenus_api
-from ui.dialogs.custom_gifs import CustomGifsDialog
 from ui.dialogs.dialog_helpers import create_standard_buttons
 from utils.helpers import (
     create_checkbox_setting,
@@ -216,7 +215,6 @@ class SettingsDialog(QDialog):
         self.steamless_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
-        self.application_shortcuts_checkbox = None
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
         self.prompt_steam_restart_checkbox = None
@@ -224,21 +222,14 @@ class SettingsDialog(QDialog):
         self.download_slssteam_button = None
         self.slssteam_status_label = None
         self.slssteam_hash_warning_label = None
-        self.play_etw_checkbox = None
-        self.play_lall_checkbox = None
-        self.play_50hz_hum_checkbox = None
-        self.test_etw_button = None
-        self.test_lall_button = None
         self.accent_color_button = None
         self.accent_reset_button = None
         self.bg_color_button = None
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
         self.sonic_mode_checkbox = None
-        self.gif_display_checkbox = None
         self.ignore_color_warnings_checkbox = None
         self.current_font = QFont()
-        self.sgdb_api_key_input = None
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
 
@@ -246,7 +237,6 @@ class SettingsDialog(QDialog):
         self._original_morrenus_key = self.settings.value(
             "morrenus_api_key", "", type=str
         )
-        self._original_sgdb_key = self.settings.value("sgdb_api_key", "", type=str)
 
         self._user_accent_color = self.settings.value(
             "user_accent_color",
@@ -261,9 +251,6 @@ class SettingsDialog(QDialog):
         self._original_titlebar_position = self.settings.value(
             "titlebar_position", "bottom", type=str
         )
-        self._original_gif_display_enabled = self.settings.value(
-            "gif_display_enabled", True, type=bool
-        )
 
         logger.debug("Opening SettingsDialog.")
         self._setup_ui()
@@ -275,11 +262,6 @@ class SettingsDialog(QDialog):
         self._create_tab_widget()
         self._setup_tabs()
         self.main_layout.addWidget(self.tab_widget)
-
-        # Sync audio preview values
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.sync_preview_values_from_settings()
 
         self._create_dialog_buttons()
 
@@ -316,7 +298,6 @@ class SettingsDialog(QDialog):
         self._create_webui_tab()
         self._create_steam_tab()
         self._create_tools_tab()
-        self._create_audio_tab()
         self._create_style_tab()
 
     def _create_dialog_buttons(self) -> None:
@@ -541,19 +522,6 @@ class SettingsDialog(QDialog):
         )
         pp_layout.addWidget(self.steamless_aio_checkbox)
 
-
-        if sys.platform == "linux":
-            self.application_shortcuts_checkbox = create_checkbox_setting(
-                "Create Application Shortcuts",
-                "create_application_shortcuts",
-                False,
-                self,
-                "Create desktop shortcuts and install icons from SteamGridDB.",
-            )
-            pp_layout.addWidget(self.application_shortcuts_checkbox)
-        else:
-            self.application_shortcuts_checkbox = None
-
         pp_group.setLayout(pp_layout)
         layout.addWidget(pp_group)
 
@@ -647,17 +615,6 @@ class SettingsDialog(QDialog):
             help_url="https://hubcapmanifest.com/",
         )
         key_layout.addLayout(morrenus_layout)
-
-        if sys.platform == "linux":
-            sgdb_layout, self.sgdb_api_key_input = self._create_api_key_setting(
-                "SteamGridDB API Key:",
-                "Paste your SteamGridDB API key",
-                "sgdb_api_key",
-                help_url="https://www.steamgriddb.com/profile/account",
-            )
-            key_layout.addLayout(sgdb_layout)
-        else:
-            self.sgdb_api_key_input = None
 
         key_group.setLayout(key_layout)
         layout.addWidget(key_group)
@@ -992,11 +949,7 @@ class SettingsDialog(QDialog):
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
 
-    def _create_audio_tab(self) -> None:
-        """Create the Audio settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+
 
     def _create_style_tab(self) -> None:
         """Create the Style settings tab."""
@@ -1069,15 +1022,7 @@ class SettingsDialog(QDialog):
             disp_layout, "Move the titlebar to the top of the window."
         )
 
-        self.gif_display_checkbox = create_checkbox_setting(
-            "Show GIF Display",
-            "gif_display_enabled",
-            True,
-            self,
-            "Show animated GIF in the main window.",
-        )
-        self.gif_display_checkbox.stateChanged.connect(self.on_gif_display_changed)
-        disp_layout.addWidget(self.gif_display_checkbox)
+
 
         self.ignore_color_warnings_checkbox = create_checkbox_setting(
             "Ignore color warnings",
@@ -1100,17 +1045,7 @@ class SettingsDialog(QDialog):
         disp_group.setLayout(disp_layout)
         layout.addWidget(disp_group)
 
-        # Custom GIFs
-        gif_layout = QHBoxLayout()
-        custom_gifs_btn = QPushButton("Custom Gifs")
-        custom_gifs_btn.clicked.connect(self.open_custom_gifs_dialog)
-        gif_layout.addWidget(custom_gifs_btn)
 
-        clear_cache_btn = QPushButton("Clear GIF Cache")
-        clear_cache_btn.clicked.connect(self.clear_gif_cache)
-        clear_cache_btn.setToolTip("Regenerate all GIFs.")
-        gif_layout.addWidget(clear_cache_btn)
-        layout.addLayout(gif_layout)
 
         self.tab_widget.addTab(tab, "Style")
 
@@ -1298,6 +1233,10 @@ class SettingsDialog(QDialog):
             self.disable_boot_btn.setEnabled(False)
             self.service_boot_label.setText("Start on Boot: N/A")
 
+        if self.main_window and hasattr(self.main_window, "_update_web_ui_status_label"):
+            self.main_window._update_web_ui_status_label()
+
+
     def _start_service(self) -> None:
         """Start the systemd user service."""
         try:
@@ -1427,12 +1366,7 @@ class SettingsDialog(QDialog):
             # noinspection PyUnresolvedReferences
             self.main_window.reposition_titlebar(pos)
 
-    def on_gif_display_changed(self, state: int) -> None:
-        enabled = state == 2
-        self.settings.setValue("gif_display_enabled", enabled)
-        if self.main_window and hasattr(self.main_window, "update_gif_display"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.update_gif_display(enabled)
+
 
     def accept(self) -> None:
         """Save all settings and close."""
@@ -1448,9 +1382,6 @@ class SettingsDialog(QDialog):
     def _save_general_settings(self) -> None:
         api_key = self.api_key_input.text().strip()
         self.settings.setValue("morrenus_api_key", api_key)
-        if self.sgdb_api_key_input:
-            sgdb_key = self.sgdb_api_key_input.text().strip()
-            self.settings.setValue("sgdb_api_key", sgdb_key)
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -1536,12 +1467,6 @@ class SettingsDialog(QDialog):
             if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
                 self.main_window.apply_update_timer_settings()
 
-        if self.application_shortcuts_checkbox:
-            self.settings.setValue(
-                "create_application_shortcuts",
-                self.application_shortcuts_checkbox.isChecked(),
-            )
-
         val = 4
         if hasattr(self, "max_downloads_spinbox"):
             try:
@@ -1550,16 +1475,7 @@ class SettingsDialog(QDialog):
                 pass
         self.settings.setValue("max_downloads", val)
 
-    def _save_audio_settings(self) -> None:
-        self.settings.setValue("play_etw", self.play_etw_checkbox.isChecked())
-        self.settings.setValue("play_lall", self.play_lall_checkbox.isChecked())
-        self.settings.setValue("play_50hz_hum", self.play_50hz_hum_checkbox.isChecked())
-        self.settings.setValue("master_volume", self.master_volume_slider.value())
-        self.settings.setValue("effects_volume", self.effects_volume_slider.value())
-        self.settings.setValue("hum_volume", self.hum_volume_slider.value())
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.apply_audio_settings()
+
 
     def _save_style_settings(self) -> bool:
         acc_s = self.accent_color_button.styleSheet()
@@ -1614,8 +1530,6 @@ class SettingsDialog(QDialog):
     def reject(self) -> None:
         """Revert settings on cancel."""
         self.settings.setValue("morrenus_api_key", self._original_morrenus_key)
-        if self.sgdb_api_key_input:
-            self.settings.setValue("sgdb_api_key", self._original_sgdb_key)
 
         # Revert live-previewed settings that were saved immediately
         self.settings.setValue("titlebar_position", self._original_titlebar_position)
@@ -1623,16 +1537,7 @@ class SettingsDialog(QDialog):
             # noinspection PyUnresolvedReferences
             self.main_window.reposition_titlebar(self._original_titlebar_position)
 
-        self.settings.setValue(
-            "gif_display_enabled", self._original_gif_display_enabled
-        )
-        if self.main_window and hasattr(self.main_window, "update_gif_display"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.update_gif_display(self._original_gif_display_enabled)
 
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.apply_audio_settings()
         
         if hasattr(self, "service_poll_timer") and self.service_poll_timer:
             self.service_poll_timer.stop()
@@ -1891,27 +1796,7 @@ class SettingsDialog(QDialog):
             self.steamless_aio_path_edit.setText(path)
             get_settings().setValue("steamless_aio_path", path)
 
-    def open_custom_gifs_dialog(self) -> None:
-        try:
-            CustomGifsDialog(self.main_window).exec()
-        except Exception as e:
-            logger.error(f"Error opening GIF dialog: {e}")
 
-    def clear_gif_cache(self) -> None:
-        if (
-            QMessageBox.question(
-                self,
-                "Clear Cache",
-                "Regenerate all GIFs?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            if self.main_window:
-                # noinspection PyUnresolvedReferences
-                self.main_window.gif_manager.regenerate_anyway = True
-                # noinspection PyUnresolvedReferences
-                self.main_window.ui_state.update_gifs()
 
     @staticmethod
     def register_registry_entries() -> None:

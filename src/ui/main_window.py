@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSizePolicy,
-    QTextEdit,
+    QPlainTextEdit,
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
@@ -32,10 +32,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 
-from components.custom_widgets import ScaledFontLabel, ScaledLabel
-from managers.audio_manager import AudioManager
+from components.custom_widgets import ScaledFontLabel
 from managers.game_manager import GameManager
-from managers.gif_manager import GIFManager
 from managers.job_queue_manager import JobQueueManager
 from managers.task_manager import TaskManager
 from managers.ui_state_manager import UIStateManager
@@ -767,10 +765,8 @@ class MainWindow(QMainWindow):
         self.accent_color = None
         self.background_color = None
         self.task_manager = None
-        self.gif_manager = None
         self.ui_state = None
         self.job_queue = None
-        self.audio_manager = None
         self.game_manager = None
         self.exit_shortcut = None
         self.sequence_timeout = None
@@ -782,7 +778,6 @@ class MainWindow(QMainWindow):
         self.main_layout = None
         self.drop_zone_container = None
         self.drop_zone_layout = None
-        self.drop_zone_gif = None
         self.drop_text_label = None
         self.dashboard_widget = None
         self.usage_value = None
@@ -908,10 +903,8 @@ class MainWindow(QMainWindow):
         self.background_color = self.settings.value("background_color", "#000000")
 
         self.task_manager = TaskManager(self)
-        self.gif_manager = GIFManager(self)
         self.ui_state = UIStateManager(self)
         self.job_queue = JobQueueManager(self)
-        self.audio_manager = AudioManager(self)
         self.game_manager = GameManager(self)
 
         # Initialize Web Server Manager
@@ -968,11 +961,38 @@ class MainWindow(QMainWindow):
     def _update_web_ui_status_label(self) -> None:
         if not hasattr(self, "web_ui_status_value") or not self.web_ui_status_value:
             return
+        
+        port = self.settings.value("web_ui_port", 8765, type=int)
+        
+        # 1. Check if the local web server manager is running in this GUI instance
         if self.web_server_manager and self.web_server_manager.is_running():
             port = self.web_server_manager.server.port
             self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port}")
+            self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            return
+
+        # 2. Check if the systemd background user service is active (Linux only)
+        is_bg_active = False
+        if sys.platform == "linux":
+            try:
+                import subprocess
+                res = subprocess.run(
+                    ["systemctl", "--user", "is-active", "assella-testing.service"],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.stdout.strip() == "active":
+                    is_bg_active = True
+            except Exception:
+                pass
+
+        if is_bg_active:
+            self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port} (Service)")
+            self.web_ui_status_value.setStyleSheet("color: #44cc44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         else:
             self.web_ui_status_value.setText("Disabled")
+            self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
 
     def _on_initial_scan_complete(self, games_found: int) -> None:
         """Slot triggered when the initial library scan completes."""
@@ -1073,7 +1093,6 @@ class MainWindow(QMainWindow):
 
         self._create_main_content()
         self._create_bottom_section()
-        self.update_gif_display()
 
         if self.titlebar_position != "top":
             self.bottom_titlebar = BottomTitleBar(self)
@@ -1151,7 +1170,7 @@ class MainWindow(QMainWindow):
         self.main_container.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self.layout.addWidget(self.main_container, 3)
+        self.layout.addWidget(self.main_container, 1)
 
         self.main_layout = QVBoxLayout(self.main_container)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1170,12 +1189,7 @@ class MainWindow(QMainWindow):
         self.drop_zone_layout.setContentsMargins(0, 0, 0, 0)
         self.drop_zone_layout.setSpacing(0)
 
-        self.drop_zone_gif = ScaledLabel()
-        self.drop_zone_gif.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.drop_zone_gif.setMinimumHeight(150)
-        self.drop_zone_gif.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+
 
         # Smaller drag status label for backward compatibility and status updates
         self.drop_text_label = ScaledFontLabel("Drag and Drop Zip here")
@@ -1327,10 +1341,9 @@ class MainWindow(QMainWindow):
         dash_layout.addWidget(self.update_action_card, 1)
         dash_layout.addWidget(self.steam_sls_status_card, 1)
         
-        self.drop_zone_layout.addWidget(self.drop_zone_gif, 9)
         self.drop_zone_layout.addWidget(self.drop_text_label, 1)
         self.drop_zone_layout.addWidget(self.dashboard_widget, 2)
-        self.main_layout.addWidget(self.drop_zone_container, 10)
+        self.main_layout.addWidget(self.drop_zone_container, 1)
 
     def _create_progress_section(self) -> None:
         """Create the progress bar, controls and speed label."""
@@ -1387,9 +1400,10 @@ class MainWindow(QMainWindow):
 
         self.stacked_terminal_widget = QStackedWidget()
 
-        self.log_output = QTextEdit()
+        self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
-        qt_log_handler.new_record.connect(self.log_output.append)
+        self.log_output.setMaximumBlockCount(5000)  # cap RAM: keep only last 5000 lines
+        qt_log_handler.new_record.connect(self.log_output.appendPlainText)
         self.stacked_terminal_widget.addWidget(self.log_output)
 
         self.simplified_terminal = SimplifiedTerminalWidget(self)
@@ -1397,33 +1411,10 @@ class MainWindow(QMainWindow):
 
         self.bottom_layout.addWidget(self.stacked_terminal_widget, 1)
 
-        self.layout.addWidget(self.bottom_widget, 1)
+        self.layout.addWidget(self.bottom_widget, 3)
         self.ui_state.queue_widget.setVisible(False)
 
-    def update_gif_display(self, enabled: Optional[bool] = None) -> None:
-        """Update GIF display visibility and adjust window layout."""
-        if enabled is None:
-            enabled = self.settings.value("gif_display_enabled", True, type=bool)
 
-        if enabled:
-            if self.height() < 400:
-                self.resize(self.width(), max(400, self.height()))
-            self.main_layout.setStretchFactor(self.drop_zone_gif, 9)
-            self.drop_zone_gif.setVisible(True)
-            self.layout.setStretchFactor(self.main_container, 3)
-            self.layout.setStretchFactor(self.bottom_widget, 1)
-        else:
-            current_height = self.height()
-            gif_height = self.drop_zone_gif.height()
-            new_height = max(200, current_height - gif_height)
-            self.resize(self.width(), new_height)
-            self.main_layout.setStretchFactor(self.drop_zone_gif, 0)
-            self.drop_zone_gif.setVisible(False)
-            self.layout.setStretchFactor(self.main_container, 1)
-            self.layout.setStretchFactor(self.bottom_widget, 3)
-
-        self.update()
-        logger.info(f"GIF display updated: {'enabled' if enabled else 'disabled'}")
 
     def update_nerd_mode(self, nerd: Optional[bool] = None) -> None:
         """Update terminal widget display based on nerd mode setting."""
