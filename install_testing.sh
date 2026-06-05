@@ -6,7 +6,7 @@ INSTALL_DIR="$HOME/.local/share/assella_testing"
 DESKTOP_ENTRY="$HOME/.local/share/applications/assella_testing.desktop"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_DIR/assella-testing.service"
-APPIMAGE_URL="https://github.com/niwia/ASSella/releases/download/v1.8h-alpha4/ASSella.AppImage"
+APPIMAGE_URL="https://github.com/niwia/ASSella/releases/download/v1.8h-alpha5/ASSella.AppImage"
 
 echo "=== Installing ASSella Testing (Alpha) ==="
 mkdir -p "$INSTALL_DIR"
@@ -75,7 +75,7 @@ systemctl --user daemon-reload
 
 echo ""
 echo "=========================================================="
-echo " ASSella Testing (v1.8h-alpha4) Installed Successfully!"
+echo " ASSella Testing (v1.8h-alpha5) Installed Successfully!"
 echo "=========================================================="
 echo " 1. Desktop shortcut created: 'ASSella Testing' on your desktop/launcher"
 echo " 2. Background service has been registered but is NOT started by default."

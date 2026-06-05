@@ -47,10 +47,21 @@ class SSLAdapter(HTTPAdapter):
         return super().init_poolmanager(*args, **kwargs)
 
 
-# Initialize Session
-_session = requests.Session()
-_session.verify = False
-_session.mount("https://", SSLAdapter())
+import threading
+
+_thread_local = threading.local()
+
+
+def get_session() -> requests.Session:
+    """Gets or creates a thread-local requests.Session object."""
+    if not hasattr(_thread_local, "session"):
+        session = requests.Session()
+        session.verify = False
+        session.mount("https://", SSLAdapter())
+        _thread_local.session = session
+    return _thread_local.session
+
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -107,7 +118,7 @@ def _make_json_request(
     url = f"{BASE_URL}{endpoint}"
 
     try:
-        response = _session.request(
+        response = get_session().request(
             method, url, headers=headers, params=params, timeout=10
         )
         response.raise_for_status()
@@ -196,7 +207,7 @@ def check_health() -> Dict:
     """
     url = f"{BASE_URL}/health"
     try:
-        response = _session.get(url, timeout=5)
+        response = get_session().get(url, timeout=5)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -221,7 +232,7 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
     logger.info(f"Downloading manifest {app_id} to {save_path}")
 
     try:
-        with _session.get(url, headers=headers, stream=True, timeout=60) as r:
+        with get_session().get(url, headers=headers, stream=True, timeout=60) as r:
             r.raise_for_status()
             with open(save_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
