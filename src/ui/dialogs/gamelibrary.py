@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
     QFrame,
+    QGraphicsBlurEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -312,6 +313,21 @@ class GameItemWidget(QWidget):
     def sizeHint(self) -> QSize:
         """Return size hint that matches the desired row height."""
         return QSize(400, 118)
+
+
+class BlurredHeaderWidget(QWidget):
+    """Custom widget containing a blurred background image and overlay."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bg_label = QLabel(self)
+        self.bg_label.setScaledContents(True)
+        self.overlay = QWidget(self)
+        self.overlay.setStyleSheet("background-color: rgba(0, 0, 0, 165);")
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.bg_label.setGeometry(0, 0, self.width(), self.height())
+        self.overlay.setGeometry(0, 0, self.width(), self.height())
 
 
 class GameLibraryDialog(QDialog):
@@ -1070,6 +1086,8 @@ class GameLibraryDialog(QDialog):
         self._details_dialog = QDialog(self)
         self._details_dialog.setWindowTitle("Game Details")
         self._details_dialog.setMinimumWidth(500)
+        self._details_dialog.setMinimumHeight(390)
+        self._details_dialog.resize(500, 395)
         self._details_dialog.setModal(True)
 
         # Consistent styling using background_color
@@ -1080,7 +1098,7 @@ class GameLibraryDialog(QDialog):
             QTabBar::tab {{ 
                 background: {self.background_color}; 
                 color: #888; 
-                padding: 8px 16px; 
+                padding: 6px 12px; 
             }}
             QTabBar::tab:selected {{ 
                 color: {self.accent_color}; 
@@ -1091,6 +1109,8 @@ class GameLibraryDialog(QDialog):
         )
 
         main_layout = QVBoxLayout(self._details_dialog)
+        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(6, 6, 6, 6)
         tab_widget = QTabWidget()
 
         self._create_overview_tab(tab_widget, game_data, self._details_dialog)
@@ -1105,37 +1125,29 @@ class GameLibraryDialog(QDialog):
         """Helper to create the Overview tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setSpacing(15)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(6)
+        layout.setContentsMargins(8, 8, 8, 8)
 
         appid = str(game_data.get("appid", "0"))
 
-        # --- 1. Header Layout (Horizontal) ---
-        header_layout = QHBoxLayout()
-        header_layout.setSpacing(15)
+        # --- 1. Blurred Header Widget ---
+        header_widget = BlurredHeaderWidget()
+        header_widget.setFixedHeight(85)
+        
+        # Apply blur effect to bg_label
+        from PyQt6.QtWidgets import QGraphicsBlurEffect
+        blur = QGraphicsBlurEffect()
+        blur.setBlurRadius(12)
+        blur.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
+        header_widget.bg_label.setGraphicsEffect(blur)
 
-        # Left: Thumbnail image
-        image_lbl = QLabel()
-        image_lbl.setFixedSize(230, 108)
-        image_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_lbl.setStyleSheet(
-            f"border: 1px solid #333333; "
-            f"border-radius: 6px; "
-            f"background-color: {self.background_color};"
-        )
-
-        # Try to set cached image or download it
+        # Set bg_label pixmap
         cached_image = self._image_cache.get(appid)
         if cached_image:
             pixmap = QPixmap()
             pixmap.loadFromData(cached_image)
             if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    image_lbl.size(),
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                image_lbl.setPixmap(scaled)
+                header_widget.bg_label.setPixmap(pixmap)
         else:
             if appid not in ("0", "N/A", "unknown"):
                 if ImageFetcher:
@@ -1143,75 +1155,57 @@ class GameLibraryDialog(QDialog):
                     fetcher = ImageFetcher(url)
                     fetcher.setProperty("app_id", appid)
                     
-                    def _on_details_img_ready(data, label=image_lbl):
+                    def _on_details_img_ready(data, label=header_widget.bg_label):
                         if data:
                             px = QPixmap()
                             px.loadFromData(data)
                             if not px.isNull():
-                                sc = px.scaled(
-                                    label.size(),
-                                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                    Qt.TransformationMode.SmoothTransformation,
-                                )
-                                label.setPixmap(sc)
+                                label.setPixmap(px)
                     
                     fetcher.finished.connect(_on_details_img_ready)
                     fetcher.start()
-                    # Cache the fetcher to avoid garbage collection
                     self._active_fetchers[f"details_{appid}"] = fetcher
                     fetcher.finished.connect(lambda _, aid=appid: self._cleanup_fetcher(f"details_{aid}"))
 
-        if not image_lbl.pixmap():
-            # Initials placeholder
-            name = game_data.get("game_name", "Unknown")
-            image_lbl.setText(name[:2].upper())
-            image_lbl.setStyleSheet(
-                f"border: 1px solid #333333; "
-                f"border-radius: 6px; "
-                f"background-color: #111111; "
-                f"color: {self.accent_color}; "
-                f"font-size: 24px; "
-                f"font-weight: bold;"
-            )
+        if not header_widget.bg_label.pixmap():
+            # Dark gray fallback background if no image
+            header_widget.bg_label.setStyleSheet("background-color: #1a1a1a;")
 
-        header_layout.addWidget(image_lbl)
-
-        # Right: Game Title & Meta (Vertical)
-        title_meta_layout = QVBoxLayout()
-        title_meta_layout.setSpacing(5)
+        # Header Content Layout (Overlay Text)
+        header_content_layout = QVBoxLayout(header_widget)
+        header_content_layout.setContentsMargins(12, 6, 12, 6)
+        header_content_layout.setSpacing(1)
 
         name_lbl = QLabel(format_game_display_name(game_data))
         name_lbl.setStyleSheet(
-            f"font-size: 18px; font-weight: bold; color: {self.accent_color};"
+            f"font-size: 14px; font-weight: bold; color: #FFFFFF;"
         )
         name_lbl.setWordWrap(True)
-        title_meta_layout.addWidget(name_lbl)
+        header_content_layout.addWidget(name_lbl)
+
+        def _lbl_white(text):
+            label = QLabel(text)
+            label.setStyleSheet("color: rgba(255, 255, 255, 180); font-size: 10px;")
+            return label
+
+        header_content_layout.addWidget(_lbl_white(f"App ID: {appid}"))
+        header_content_layout.addWidget(_lbl_white(f"Source: {game_data.get('source', 'Steam')}"))
+        header_content_layout.addStretch()
+
+        layout.addWidget(header_widget)
+
+        # --- 2. Information Grid ---
+        form = QFormLayout()
+        form.setSpacing(4)
+        form.setContentsMargins(5, 0, 5, 0)
 
         def _lbl(text, style=None):
             label = QLabel(text)
             if style:
                 label.setStyleSheet(style)
             else:
-                label.setStyleSheet(f"color: {self.accent_color};")
+                label.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
             return label
-
-        title_meta_layout.addWidget(_lbl(f"App ID: {appid}", "color: #888888; font-size: 12px;"))
-        title_meta_layout.addWidget(_lbl(f"Source: {game_data.get('source', 'Steam')}", "color: #888888; font-size: 12px;"))
-        title_meta_layout.addStretch()
-
-        header_layout.addLayout(title_meta_layout, 1)
-        layout.addLayout(header_layout)
-
-        # Divider line
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet("background-color: #222222; max-height: 1px; border: none;")
-        layout.addWidget(line)
-
-        # --- 2. Information Grid ---
-        form = QFormLayout()
-        form.setSpacing(8)
 
         # Size on disk
         size = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
@@ -1264,11 +1258,6 @@ class GameLibraryDialog(QDialog):
             self._add_fake_appid_controls(layout, game_data)
 
         # --- 3. Update Controls Section ---
-        update_group = QGroupBox()
-        update_group.setStyleSheet("QGroupBox { border: 1px solid #222222; border-radius: 6px; padding: 10px; margin-top: 5px; }")
-        update_group_layout = QVBoxLayout(update_group)
-        update_group_layout.setSpacing(10)
-
         def _status_text(status):
             return {
                 "update_available": "⬆  New version available",
@@ -1283,36 +1272,41 @@ class GameLibraryDialog(QDialog):
         if settings:
             applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
 
+        # Row with Update Status and Check button
+        update_row = QHBoxLayout()
+        update_row.setSpacing(10)
         status_lbl = QLabel(_status_text(game_data.get("update_status")))
         if applist_2_0_enabled and game_data.get("update_status") == "update_available":
-            status_lbl.setStyleSheet("color: #E05A47; font-weight: bold;")
+            status_lbl.setStyleSheet("color: #E05A47; font-weight: bold; font-size: 11px;")
         else:
-            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-weight: bold;")
-        update_group_layout.addWidget(status_lbl)
+            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
+        update_row.addWidget(status_lbl, 1)
 
-        # Row with Check button and Auto-update checkbox
-        check_row = QHBoxLayout()
         check_btn = QPushButton("Check for Updates")
         check_btn.setToolTip("Manually re-check for an update for this game")
-        check_row.addWidget(check_btn)
+        check_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        update_row.addWidget(check_btn)
+        layout.addLayout(update_row)
 
+        # Row with Auto-update checkbox
+        auto_update_row = QHBoxLayout()
         self.update_manifest_checkbox = QCheckBox("Auto-update manifest if update found")
-        self.update_manifest_checkbox.setStyleSheet(f"color: {self.accent_color};")
+        self.update_manifest_checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
         self.update_manifest_checkbox.setChecked(
             self.settings.value("auto_update_manifest_on_check", False, type=bool) if self.settings else False
         )
         self.update_manifest_checkbox.stateChanged.connect(
             lambda state: self.settings.setValue("auto_update_manifest_on_check", bool(state)) if self.settings else None
         )
-        check_row.addWidget(self.update_manifest_checkbox)
-        update_group_layout.addLayout(check_row)
-
-        layout.addWidget(update_group)
+        auto_update_row.addWidget(self.update_manifest_checkbox)
+        auto_update_row.addStretch()
+        layout.addLayout(auto_update_row)
 
         # Validate/Update Button
         validate_btn = QPushButton()
         is_update = game_data.get("update_status") == "update_available"
         validate_btn.setText("Download Update" if is_update else "Validate Files")
+        validate_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
         validate_btn.clicked.connect(
             lambda: self._fetch_game_manifest(game_data, dialog)
         )
@@ -1371,7 +1365,7 @@ class GameLibraryDialog(QDialog):
 
         hbox = QHBoxLayout()
         checkbox = QCheckBox("Add to SLSonline as:")
-        checkbox.setStyleSheet(f"color: {self.accent_color};")
+        checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
         checkbox.setToolTip("Add to FakeAppIds in SLSsteam config.yaml")
         hbox.addWidget(checkbox)
 
@@ -1379,12 +1373,14 @@ class GameLibraryDialog(QDialog):
 
         inp = QLineEdit()
         inp.setPlaceholderText("Spacewar (480)")
-        inp.setFixedWidth(150)
+        inp.setFixedWidth(120)
+        inp.setStyleSheet("font-size: 11px; padding: 2px;")
         inp.setValidator(QIntValidator())
         hbox.addWidget(inp)
 
         save_btn = QPushButton("Save")
-        save_btn.setFixedWidth(70)
+        save_btn.setFixedWidth(60)
+        save_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         hbox.addWidget(save_btn)
 
         layout.addLayout(hbox)

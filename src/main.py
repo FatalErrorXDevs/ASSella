@@ -4,8 +4,9 @@ import sys
 import threading
 from urllib.parse import unquote
 import ctypes
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
+from utils.paths import Paths
 from PyQt6.QtCore import QTimer, QMetaObject, Qt, Q_ARG
 from ui.main_window import MainWindow
 from ui.theme import update_appearance
@@ -87,6 +88,13 @@ def main():
     # People only have substance within the memories of other people.
 
     app = QApplication(sys.argv)
+    app.setApplicationName("accela")
+    app.setDesktopFileName("accela.desktop")
+
+    # Set default window icon for all dialogs and sub-windows
+    icon_path = Paths.resource("logo/icon.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # -------------------------------------------------------------------------
     # Argument Parsing

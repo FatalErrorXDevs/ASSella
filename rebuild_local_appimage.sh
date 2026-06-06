@@ -35,6 +35,9 @@ unsquashfs -dest "$WORKDIR/squashfs-root" -offset "$OFFSET" "$BACKUP_APPIMAGE"
 echo -e "${YELLOW}=== Syncing current source code into squashfs-root ===${NC}"
 rsync -a --delete "$SRC_DIR/src/" "$WORKDIR/squashfs-root/bin/src/"
 
+echo -e "${YELLOW}=== Updating AppImage root brand assets ===${NC}"
+cp "$SRC_DIR/src/res/logo/icon.png" "$WORKDIR/squashfs-root/accela.png"
+
 # Write version string to squashfs-root version file (just to be absolutely sure)
 echo "$VERSION_STR" > "$WORKDIR/squashfs-root/bin/src/res/version"
 
