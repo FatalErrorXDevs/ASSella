@@ -283,4 +283,27 @@ class DatabaseManager:
                 self.conn.close()
 
     def clear_app_info(self, appid):
-        pass
+        if not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("DELETE FROM apps WHERE appid = ?", (str(appid),))
+                self.conn.commit()
+        except Exception as e:
+            logger.error(f"DB Delete Error {appid}: {e}")
+
+    def get_cache_time(self, appid: str) -> Optional[int]:
+        """Get the last_updated timestamp for a given appid (ignoring expiration)."""
+        if not self.conn:
+            return None
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("SELECT last_updated FROM apps WHERE appid = ?", (str(appid),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        except Exception as e:
+            logger.error(f"DB Read Error for cache time {appid}: {e}")
+        return None

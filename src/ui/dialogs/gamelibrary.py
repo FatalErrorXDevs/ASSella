@@ -182,6 +182,9 @@ class GameItemWidget(QWidget):
         # Update status
         self._add_status_label(info_layout)
 
+        # Manifest cache status
+        self._add_manifest_label(info_layout)
+
         info_layout.addStretch()
         layout.addLayout(info_layout)
 
@@ -203,6 +206,43 @@ class GameItemWidget(QWidget):
         status_label.setText(text)
         status_label.setStyleSheet(f"color: {color}; font-style: italic;")
         layout.addWidget(status_label)
+
+    def _add_manifest_label(self, layout: QVBoxLayout) -> None:
+        """Add the manifest cache status label."""
+        appid = self.game_data.get("appid", "0")
+        update_status = self.game_data.get("update_status", "cannot_determine")
+        self.manifest_label = QLabel()
+
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.manifest_label.setText("Manifest: N/A")
+            self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
+        else:
+            db = DatabaseManager() if DatabaseManager else None
+            last_updated = None
+            if db:
+                last_updated = db.get_cache_time(appid)
+
+            if update_status == "checking" or not last_updated:
+                self.manifest_label.setText("Manifest: Fetching...")
+                self.manifest_label.setStyleSheet("color: #FFA500; font-style: italic; font-size: 11px;")
+            else:
+                import time
+                age_seconds = time.time() - last_updated
+                if age_seconds < 0:
+                    age_seconds = 0
+                hours = age_seconds / 3600
+                if hours <= 24:
+                    age_str = "1-24hrs ago"
+                elif hours <= 72:
+                    age_str = "1-3days ago"
+                else:
+                    days = int(age_seconds / 86400)
+                    age_str = f"{days}d ago"
+
+                self.manifest_label.setText(f"Manifest: Cached ({age_str})")
+                self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
+
+        layout.addWidget(self.manifest_label)
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label, scaling it nicely."""

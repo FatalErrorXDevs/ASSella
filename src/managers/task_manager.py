@@ -68,6 +68,7 @@ class TaskManager(QObject):
         self.slssteam_download_task = None
         self.slssteam_download_runner = None
 
+
         # Processing state
         self.is_processing = False
         self.is_download_paused = False
@@ -388,10 +389,17 @@ class TaskManager(QObject):
         self.download_task = DownloadDepotsTask()
         self.download_task.progress.connect(logger.info)
         self.download_task.progress_percentage.connect(
-            self.main_window.progress_bar.setValue
+            self.main_window.progress_bar.setValue,
+            Qt.ConnectionType.QueuedConnection
         )
-        self.download_task.completed.connect(self._on_download_complete)
-        self.download_task.error.connect(self._handle_task_error)
+        self.download_task.completed.connect(
+            self._on_download_complete,
+            Qt.ConnectionType.QueuedConnection
+        )
+        self.download_task.error.connect(
+            self._handle_task_error,
+            Qt.ConnectionType.QueuedConnection
+        )
 
         self.download_runner = TaskRunner()
         self.is_awaiting_download_stop = True
@@ -421,7 +429,8 @@ class TaskManager(QObject):
     def _start_speed_monitor(self):
         self.speed_monitor_task = SpeedMonitorTask()
         self.speed_monitor_task.speed_update.connect(
-            self.main_window.speed_label.setText
+            self.main_window.speed_label.setText,
+            Qt.ConnectionType.QueuedConnection
         )
 
         self.speed_monitor_runner = TaskRunner()
@@ -438,6 +447,7 @@ class TaskManager(QObject):
             if self.is_awaiting_speed_monitor_stop:
                 self.is_awaiting_speed_monitor_stop = False
                 self.main_window.job_queue.check_if_safe_to_start_next_job()
+
 
     def _on_speed_monitor_stopped(self):
         self.speed_monitor_runner = None
@@ -700,6 +710,24 @@ class TaskManager(QObject):
                     cache.set_status(appid, "up_to_date")
                     cache.save_async()
                     logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+
+                    # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        db = DatabaseManager()
+                        db_data = {
+                            "appid": appid,
+                            "name": self.game_data.get("game_name"),
+                            "installdir": self.game_data.get("installdir"),
+                            "header_url": self.game_data.get("header_url"),
+                            "buildid": self.game_data.get("buildid"),
+                            "depots": self.game_data.get("depots", {}),
+                        }
+                        db.upsert_app_info(appid, db_data)
+                        logger.debug(f"Upserted updated app/manifest info to SQLite DB for appid={appid}")
+                    except Exception as e:
+                        logger.error(f"Failed to upsert app info on job completion: {e}")
+
             self.main_window.game_manager.scan_steam_libraries_async()
 
         self.job_finished()
