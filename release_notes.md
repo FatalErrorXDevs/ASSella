@@ -1,3 +1,11 @@
+## ASSella v1.9b (Release candidate 1) — Changes from v1.9a
+
+*   **Unrestricted Fetching**: Removed the blacklist filtering for manifest downloading. Tags and media variants previously restricted are now available to fetch.
+*   **Minimal Boot Window**: Resized the initial application window upon startup to be significantly smaller and less intrusive instead of displaying all prior update history prominently at boot.
+*   **Config Resilience**: The config parser relies natively on `QSettings` ignoring keys that are not requested. It is fully backwards-compatible with ACCELA's config layout and gracefully handles and ignores obsolete `[GIFs]` and audio settings. Transitioning from ACCELA to ASSella is completely conflict-free.
+
+---
+
 ## ASSella v1.9a (Release candidate 1) — Changes from v1.8g
 
 **[REUPLOAD / HOTFIX 2]**: Fixed two critical crashes caused by orphaned GIF manager calls:

@@ -292,8 +292,9 @@ class FetchManifestDialog(QDialog):
             g
             for g in game_results
             if isinstance(g, dict)
-            and not self._is_blacklisted_result(g)
-            and not self._is_likely_media_variant(g)
+            # Restriction removed per user request:
+            # and not self._is_blacklisted_result(g)
+            # and not self._is_likely_media_variant(g)
             and g.get("manifest_available", True) is not False
         ]
 

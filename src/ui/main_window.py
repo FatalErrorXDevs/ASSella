@@ -826,7 +826,7 @@ class MainWindow(QMainWindow):
         """Configure basic window properties."""
         self.setWindowTitle("ASSELA")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 800, 350)
 
         icon_path = Paths.resource("logo/icon.ico")
         if icon_path.exists():
