@@ -77,16 +77,12 @@ do_install_assela() {
     echo -e "${GREEN}[INFO] Created compatibility symlink ACCELA.AppImage → ASSella.AppImage${NC}"
 
     # Desktop entry
-    if [ -f "$DESKTOP_ENTRY" ]; then
-        sed -i 's/^Name=ACCELA$/Name=ASSella/' "$DESKTOP_ENTRY"
-        echo -e "${GREEN}[INFO] Updated desktop shortcut to ASSella.${NC}"
-    else
-        mkdir -p "$(dirname "$DESKTOP_ENTRY")"
-        cat >"$DESKTOP_ENTRY" <<EOL
+    mkdir -p "$(dirname "$DESKTOP_ENTRY")"
+    cat >"$DESKTOP_ENTRY" <<EOL
 [Desktop Entry]
 Version=2.0
 Name=ASSella
-Comment=god is in the ass
+Comment=ASSella Game Library and Launcher
 Exec=$INSTALL_DIR/ACCELA.AppImage %u
 Icon=accela
 Terminal=false
@@ -94,8 +90,7 @@ Type=Application
 Categories=Utility;Application;
 MimeType=x-scheme-handler/accela;
 EOL
-        echo -e "${GREEN}[INFO] Created desktop shortcut.${NC}"
-    fi
+    echo -e "${GREEN}[INFO] Applied ASSella desktop shortcut.${NC}"
 
     # Icon
     echo -e "${YELLOW}[INFO] Applying application icon...${NC}"
