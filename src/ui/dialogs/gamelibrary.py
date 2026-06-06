@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -1256,6 +1257,30 @@ class GameLibraryDialog(QDialog):
 
         self.gb_btn.clicked.connect(_on_gb_click)
 
+        # Depot Selection Group
+        depot_group = QGroupBox("Depot Configuration")
+        depot_group.setStyleSheet(f"QGroupBox {{ color: {self.accent_color}; font-weight: bold; }}")
+        depot_layout = QVBoxLayout()
+        depot_layout.setSpacing(10)
+
+        self.depot_status_lbl = QLabel()
+        self.depot_status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
+        self._update_depot_status_label(appid)
+        depot_layout.addWidget(self.depot_status_lbl)
+
+        btn_row = QHBoxLayout()
+        configure_btn = QPushButton("Choose Depots...")
+        configure_btn.clicked.connect(lambda: self._configure_depots(game_data))
+        btn_row.addWidget(configure_btn)
+
+        reset_btn = QPushButton("Reset Selection")
+        reset_btn.clicked.connect(lambda: self._reset_depot_selection(game_data))
+        btn_row.addWidget(reset_btn)
+
+        depot_layout.addLayout(btn_row)
+        depot_group.setLayout(depot_layout)
+        layout.addWidget(depot_group)
+
         layout.addStretch()
         tab_widget.addTab(tab, "Tools")
 
@@ -1340,6 +1365,17 @@ class GameLibraryDialog(QDialog):
         if self._download_progress_dialog:
             self._download_progress_dialog.close()
             self._download_progress_dialog = None
+
+        if hasattr(self, "_configure_depots_after_download") and self._configure_depots_after_download:
+            target_game = self._configure_depots_after_download
+            self._configure_depots_after_download = None
+            if fpath:
+                appid = str(target_game.get("appid"))
+                self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                self._show_depot_selection_dialog(fpath, target_game)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
+            return
 
         if fpath:
             # Mark manifest as fresh now
@@ -1555,6 +1591,99 @@ class GameLibraryDialog(QDialog):
         p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
         return f"{s} {size_names[i]}"
+
+    def _update_depot_status_label(self, appid: str) -> None:
+        if not hasattr(self, "depot_status_lbl") or not self.depot_status_lbl:
+            return
+        val = self.settings.value(f"depot_selection/{appid}", "", type=str)
+        if val:
+            try:
+                import json
+                data = json.loads(val)
+                selected = data.get("selected", [])
+                self.depot_status_lbl.setText(f"Status: {len(selected)} depot(s) manually chosen.")
+            except Exception:
+                self.depot_status_lbl.setText("Status: Error reading saved selection.")
+        else:
+            self.depot_status_lbl.setText("Status: Default (automatic download of all depots).")
+
+    def _reset_depot_selection(self, game_data: dict) -> None:
+        appid = str(game_data.get("appid", ""))
+        if not appid or appid in ("0", "N/A", "unknown"):
+            return
+        
+        self.settings.remove(f"depot_selection/{appid}")
+        self._update_depot_status_label(appid)
+        QMessageBox.information(self, "Reset Successful", "Depot selection has been reset to default.")
+
+    def _configure_depots(self, game_data: dict) -> None:
+        appid = str(game_data.get("appid", "0"))
+        if appid in ("0", "N/A", "unknown"):
+            QMessageBox.warning(self, "Error", "Invalid App ID.")
+            return
+
+        name = game_data.get("game_name", "Unknown")
+        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+        
+        if fpath.exists():
+            self._show_depot_selection_dialog(str(fpath), game_data)
+        else:
+            self._download_progress_dialog = QProgressDialog(
+                f"Downloading manifest for {name}...", "Cancel", 0, 0, self
+            )
+            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self._download_progress_dialog.show()
+
+            self._configure_depots_after_download = game_data
+            self.executor.submit(self._download_manifest_async, appid, game_data)
+
+    def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
+        try:
+            from core.tasks.process_zip_task import ProcessZipTask
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(filepath)
+            
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                depots = parsed_data.get("depots")
+                appid = str(parsed_data["appid"])
+                
+                saved_val = self.settings.value(f"depot_selection/{appid}", "", type=str)
+                selected_depots = None
+                if saved_val:
+                    try:
+                        import json
+                        data = json.loads(saved_val)
+                        selected_depots = data.get("selected", [])
+                    except Exception:
+                        pass
+
+                depot_dialog = DepotSelectionDialog(
+                    parsed_data["appid"],
+                    parsed_data.get("game_name", ""),
+                    depots,
+                    parsed_data.get("header_url"),
+                    self,
+                    selected_depots=selected_depots
+                )
+                if depot_dialog.exec():
+                    chosen = depot_dialog.get_selected_depots()
+                    if chosen:
+                        import json
+                        self.settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": chosen,
+                                "all_available": list(depots.keys())
+                            })
+                        )
+                        self._update_depot_status_label(appid)
+                        QMessageBox.information(self, "Success", "Depot selection saved successfully.")
+                    else:
+                        QMessageBox.warning(self, "Warning", "No depots selected. Depot selection not saved.")
+        except Exception as e:
+            logger.error(f"Failed to show depot selection dialog: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to load depots: {e}")
 
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""

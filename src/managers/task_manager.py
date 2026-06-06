@@ -97,6 +97,8 @@ class TaskManager(QObject):
         self._last_slscheevo_message = ""
         self._slscheevo_ran = False
         self._slscheevo_error = False
+        self._slscheevo_completed = False
+        self._waiting_for_achievements = False
 
         self._last_ddm_status = "not_run"
         self._last_ddm_status_text = "N/A"
@@ -353,6 +355,8 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._slscheevo_ran = False
         self._slscheevo_error = False
+        self._slscheevo_completed = False
+        self._waiting_for_achievements = False
 
         # Reset per-job finalize guards
         self._current_active_step = None
@@ -413,6 +417,13 @@ class TaskManager(QObject):
         self.is_download_paused = False
         self.main_window.ui_state.set_pause_button_text("Pause")
         self.main_window.ui_state.set_download_controls_visible(True)
+
+        # Start achievement generation in parallel if enabled
+        achievements_enabled = self.settings.value(
+            "generate_achievements", False, type=bool
+        )
+        if achievements_enabled and not self.is_cancelling:
+            self._start_achievement_generation()
 
         if not self.slssteam_mode_was_active:
             app_token = self.game_data.get("app_token")
@@ -683,13 +694,18 @@ class TaskManager(QObject):
         )
         if achievements_enabled and not self.is_cancelling:
             if "achievements" not in self._job_steps_completed:
-                self._job_steps_completed.add("achievements")
-                self._current_active_step = "achievements"
-                self.main_window.drop_text_label.setText(
-                    f"Generating Achievements: {self.game_data.get('game_name', '')}"
-                )
-                self._start_achievement_generation()
-                return
+                if not self._slscheevo_completed:
+                    logger.info("Waiting for parallel Steam achievement generation to complete...")
+                    if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                        self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
+                    self.main_window.drop_text_label.setText(
+                        f"Waiting for achievements: {self.game_data.get('game_name', '')}"
+                    )
+                    self._current_active_step = "achievements"
+                    self._waiting_for_achievements = True
+                    return
+                else:
+                    self._job_steps_completed.add("achievements")
 
         # --- FINISH ---
         logger.info("All post-processing steps complete. Finishing job.")
@@ -1487,17 +1503,25 @@ class TaskManager(QObject):
         self._last_slscheevo_message = message
         if success:
             logger.info(f"Achievement generation completed: {message}")
+            self._last_slscheevo_status = "ok"
+            self._last_slscheevo_status_text = "Completed"
         else:
             logger.info(f"Achievement generation failed: {message}")
+            self._last_slscheevo_status = "error"
+            self._last_slscheevo_status_text = "Failed"
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("achievements", "completed" if success else "error")
 
-        self._current_active_step = None
+        self._slscheevo_completed = True
 
-        QMetaObject.invokeMethod(
-            self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-        )
+        if self._waiting_for_achievements:
+            self._waiting_for_achievements = False
+            if self._current_active_step == "achievements":
+                self._current_active_step = None
+            QMetaObject.invokeMethod(
+                self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+            )
 
     def _handle_achievement_error(self, error_info):
         _, error_value, _ = error_info
@@ -1505,15 +1529,21 @@ class TaskManager(QObject):
         self._last_slscheevo_success = False
         self._slscheevo_error = True
         self._last_slscheevo_message = str(error_value)
+        self._last_slscheevo_status = "error"
+        self._last_slscheevo_status_text = "Failed"
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("achievements", "error")
 
-        self._current_active_step = None
+        self._slscheevo_completed = True
 
-        QMetaObject.invokeMethod(
-            self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-        )
+        if self._waiting_for_achievements:
+            self._waiting_for_achievements = False
+            if self._current_active_step == "achievements":
+                self._current_active_step = None
+            QMetaObject.invokeMethod(
+                self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+            )
 
     def _on_achievement_task_cleanup(self):
         self.achievement_task_runner = None

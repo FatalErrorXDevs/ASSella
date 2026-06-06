@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 class DepotSelectionDialog(QDialog):
-    def __init__(self, app_id, game_name, depots, header_url, parent=None):
+    def __init__(self, app_id, game_name, depots, header_url, parent=None, selected_depots=None):
         super().__init__(parent)
         self.setWindowTitle("Select Depots to Download")
         self.depots = depots
         self.game_name = game_name
         self.header_url = header_url
+        self.selected_depots = selected_depots
         self.resize(485, 520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 10)
@@ -149,7 +150,12 @@ class DepotSelectionDialog(QDialog):
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, depot_id)
-            item.setCheckState(Qt.CheckState.Unchecked)
+            
+            if self.selected_depots is not None:
+                is_checked = depot_id in self.selected_depots
+                item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
 
             # Removes ItemIsUserCheckable flag to disable internal checkbox handling, handled manually in self.on_depot_item_clicked
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
