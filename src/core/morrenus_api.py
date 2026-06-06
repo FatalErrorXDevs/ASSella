@@ -14,7 +14,21 @@ from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://hubcapmanifest.com/api/v1"
+_use_proxy_fallback = False
+
+def is_using_proxy() -> bool:
+    """Returns True if the proxy is currently being used (either forced in settings or due to fallback)."""
+    # Deactivated for now as per website team feedback. Always returns False.
+    return False
+
+def _get_base_url(force_direct: bool = False) -> str:
+    """Gets the base API URL dynamically, checking for Wirecutter proxy settings."""
+    if not force_direct and is_using_proxy():
+        settings = get_settings()
+        proxy_url = settings.value("wirecutter_url", "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev", type=str).strip()
+        if proxy_url:
+            return proxy_url.rstrip("/")
+    return "https://hubcapmanifest.com/api/v1"
 DEFAULT_SEARCH_LIMIT = 100
 MAX_SEARCH_LIMIT = 100
 
@@ -111,11 +125,12 @@ def _make_json_request(
     Returns the JSON data (dict or list) on success.
     Returns a dict with {"error": msg} on failure.
     """
+    global _use_proxy_fallback
     headers = _get_headers()
     if not headers:
         return {"error": "API Key is not set. Please set it in Settings."}
 
-    url = f"{BASE_URL}{endpoint}"
+    url = f"{_get_base_url()}{endpoint}"
 
     try:
         response = get_session().request(
@@ -123,6 +138,23 @@ def _make_json_request(
         )
         response.raise_for_status()
         return response.json()
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        if False: # was: if not is_using_proxy():
+            logger.warning(f"Direct connection to {url} failed: {e}. Attempting auto-fallback to Wirecutter proxy...")
+            _use_proxy_fallback = True
+            url = f"{_get_base_url()}{endpoint}"
+            try:
+                response = get_session().request(
+                    method, url, headers=headers, params=params, timeout=10
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as retry_e:
+                error_msg = _handle_request_exception(retry_e, f"API {method} to {endpoint} (Proxied Fallback)")
+                return {"error": error_msg}
+        else:
+            error_msg = _handle_request_exception(e, f"API {method} to {endpoint}")
+            return {"error": error_msg}
     except Exception as e:
         error_msg = _handle_request_exception(e, f"API {method} to {endpoint}")
         return {"error": error_msg}
@@ -205,11 +237,27 @@ def check_health() -> Dict:
     Checks if the Hubcab API is healthy.
     Note: Health check often doesn't need Auth, but we use the shared session.
     """
-    url = f"{BASE_URL}/health"
+    global _use_proxy_fallback
+    url = f"{_get_base_url()}/health"
     try:
         response = get_session().get(url, timeout=5)
         response.raise_for_status()
         return response.json()
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        if False: # was: if not is_using_proxy():
+            logger.warning(f"Health check direct connection failed: {e}. Retrying via proxy fallback...")
+            _use_proxy_fallback = True
+            url = f"{_get_base_url()}/health"
+            try:
+                response = get_session().get(url, timeout=5)
+                response.raise_for_status()
+                return response.json()
+            except Exception as retry_e:
+                error_msg = _handle_request_exception(retry_e, "Health check (Proxied Fallback)")
+                return {"status": "unhealthy", "error": error_msg}
+        else:
+            error_msg = _handle_request_exception(e, "Health check")
+            return {"status": "unhealthy", "error": error_msg}
     except Exception as e:
         error_msg = _handle_request_exception(e, "Health check")
         return {"status": "unhealthy", "error": error_msg}
@@ -220,11 +268,12 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
     Downloads a manifest zip.
     Returns (filepath, None) on success, or (None, error_message) on failure.
     """
+    global _use_proxy_fallback
     headers = _get_headers()
     if not headers:
         return None, "API Key is not set. Please set it in Settings."
 
-    url = f"{BASE_URL}/manifest/{app_id}"
+    url = f"{_get_base_url()}/manifest/{app_id}"
     manifests_dir = Path(get_base_path()) / "hubcap_manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
     save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
@@ -232,13 +281,25 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
     logger.info(f"Downloading manifest {app_id} to {save_path}")
 
     try:
-        with get_session().get(url, headers=headers, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(save_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        def do_download(download_url):
+            with get_session().get(download_url, headers=headers, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(save_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
 
-        return str(save_path), None
+        try:
+            do_download(url)
+            return str(save_path), None
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if False: # was: if not is_using_proxy():
+                logger.warning(f"Download manifest direct connection failed: {e}. Retrying via proxy fallback...")
+                _use_proxy_fallback = True
+                url = f"{_get_base_url()}/manifest/{app_id}"
+                do_download(url)
+                return str(save_path), None
+            else:
+                raise e
 
     except Exception as e:
         # Cleanup partial download

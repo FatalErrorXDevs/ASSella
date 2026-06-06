@@ -619,6 +619,44 @@ class SettingsDialog(QDialog):
         key_group.setLayout(key_layout)
         layout.addWidget(key_group)
 
+        # Proxy Settings Group
+        proxy_group = QGroupBox("Wirecutter Proxy (ISP Bypass)")
+        proxy_layout = QVBoxLayout()
+        proxy_layout.setSpacing(10)
+
+        self.use_wirecutter_checkbox = create_checkbox_setting(
+            "Use Wirecutter Proxy",
+            "use_wirecutter",
+            False,
+            self,
+            "Bypass ISP blocks by proxying Hubcap API requests through a Cloudflare Worker."
+        )
+        proxy_layout.addWidget(self.use_wirecutter_checkbox)
+
+        # Proxy URL input
+        url_layout = QHBoxLayout()
+        url_layout.setSpacing(5)
+        url_layout.addWidget(QLabel("Proxy URL:"))
+        self.wirecutter_url_input = QLineEdit()
+        self.wirecutter_url_input.setPlaceholderText("https://your-worker.workers.dev")
+        self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
+        current_url = self.settings.value("wirecutter_url", "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev", type=str)
+        self.wirecutter_url_input.setText(current_url)
+        url_layout.addWidget(self.wirecutter_url_input)
+
+        self.show_url_btn = QPushButton("Show")
+        self.show_url_btn.clicked.connect(self._toggle_proxy_url_visibility)
+        url_layout.addWidget(self.show_url_btn)
+
+        proxy_layout.addLayout(url_layout)
+
+        # Connect checkbox to toggle URL editability
+        self.wirecutter_url_input.setEnabled(self.use_wirecutter_checkbox.isChecked())
+        self.use_wirecutter_checkbox.checkbox.toggled.connect(self.wirecutter_url_input.setEnabled)
+
+        proxy_group.setLayout(proxy_layout)
+        # layout.addWidget(proxy_group)
+
         # Stats Group
         stats_group = QGroupBox("Hubcap Stats")
         stats_layout = QVBoxLayout()
@@ -637,6 +675,23 @@ class SettingsDialog(QDialog):
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         self.tab_widget.addTab(tab, "Integrations")
+
+    def _toggle_proxy_url_visibility(self) -> None:
+        """Toggles the visibility of the Wirecutter proxy URL, prompting with confirmation on show."""
+        if self.wirecutter_url_input.echoMode() == QLineEdit.EchoMode.Password:
+            reply = QMessageBox.question(
+                self,
+                "Show Proxy URL",
+                "Warning: Exposing your proxy URL could lead to third-party abuse and exhaust your daily request limits.\n\nAre you sure you want to show it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Normal)
+                self.show_url_btn.setText("Hide")
+        else:
+            self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.show_url_btn.setText("Show")
 
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
@@ -1382,6 +1437,8 @@ class SettingsDialog(QDialog):
     def _save_general_settings(self) -> None:
         api_key = self.api_key_input.text().strip()
         self.settings.setValue("morrenus_api_key", api_key)
+        self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
+        self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
