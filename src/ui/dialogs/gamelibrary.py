@@ -138,8 +138,15 @@ class GameItemWidget(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
 
-        # --- Checkbox (select mode only) ---
-        if self._select_mode:
+        # Check setting
+        applist_2_0_enabled = True
+        from utils.settings import get_settings
+        settings = get_settings()
+        if settings:
+            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+
+        # --- Checkbox (select mode only, old style) ---
+        if not applist_2_0_enabled and self._select_mode:
             self.checkbox = QCheckBox()
             self.checkbox.setChecked(self._is_selected)
             self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -161,6 +168,29 @@ class GameItemWidget(QWidget):
             f"border-radius: 4px; "
         )
         layout.addWidget(self.image_label)
+
+        # --- Checkbox Overlay (new style) ---
+        if applist_2_0_enabled:
+            self.checkbox = QCheckBox(self.image_label)
+            self.checkbox.setChecked(self._is_selected)
+            self.checkbox.move(10, 10)
+            self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self.checkbox.setStyleSheet(
+                f"""
+                QCheckBox::indicator {{
+                    width: 20px;
+                    height: 20px;
+                    border: 2px solid rgba(255, 255, 255, 180);
+                    border-radius: 10px;
+                    background-color: rgba(0, 0, 0, 150);
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: {self.accent_color};
+                    border-color: {self.accent_color};
+                }}
+                """
+            )
+            self.checkbox.setVisible(self._select_mode)
 
         # --- Info Section (Vertical) ---
         info_layout = QVBoxLayout()
@@ -194,9 +224,15 @@ class GameItemWidget(QWidget):
         update_status = self.game_data.get("update_status", "cannot_determine")
         status_label = QLabel()
 
+        applist_2_0_enabled = True
+        from utils.settings import get_settings
+        settings = get_settings()
+        if settings:
+            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+
         status_map = {
-            "update_available": ("New version available", self.accent_color),
-            "up_to_date": ("Up to date", "#00FF00"),
+            "update_available": ("New version available", "#E05A47" if applist_2_0_enabled else self.accent_color),
+            "up_to_date": ("Up to date", "#8AE08A" if applist_2_0_enabled else "#00FF00"),
             "checking": ("Checking for updates...", "#FFA500"),
         }
 
@@ -213,6 +249,12 @@ class GameItemWidget(QWidget):
         appid = self.game_data.get("appid", "0")
         update_status = self.game_data.get("update_status", "cannot_determine")
         self.manifest_label = QLabel()
+
+        applist_2_0_enabled = True
+        from utils.settings import get_settings
+        settings = get_settings()
+        if settings:
+            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
@@ -241,7 +283,10 @@ class GameItemWidget(QWidget):
                     age_str = f"{days}d ago"
 
                 self.manifest_label.setText(f"Manifest: Cached ({age_str})")
-                self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
+                if applist_2_0_enabled:
+                    self.manifest_label.setStyleSheet("color: rgba(130, 195, 130, 0.85); font-style: italic; font-size: 10px;")
+                else:
+                    self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
 
         layout.addWidget(self.manifest_label)
 
@@ -275,7 +320,7 @@ class GameLibraryDialog(QDialog):
     manifest_download_complete = pyqtSignal(str, str, dict)  # fpath, error, game_data
     uninstall_complete = pyqtSignal(bool, str)  # success, error_message
 
-    def __init__(self, main_window):
+    def __init__(self, main_window, show_details_for_appid=None):
         super().__init__(main_window)
         self.main_window = main_window
         self.game_manager = getattr(main_window, "game_manager", None)
@@ -315,6 +360,10 @@ class GameLibraryDialog(QDialog):
 
         # Initial Load
         self._refresh_game_list()
+
+        if show_details_for_appid:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._show_details_for_appid(show_details_for_appid))
 
     def _setup_window(self) -> None:
         """Configure main window properties and styles."""
@@ -362,26 +411,19 @@ class GameLibraryDialog(QDialog):
         """Create and arrange UI elements."""
         layout = QVBoxLayout(self)
 
+        applist_2_0_enabled = True
+        if self.settings:
+            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+
         # --- Top Bar ---
         top_layout = QHBoxLayout()
 
         self.scan_button = QPushButton("Scan Libraries")
         self.scan_button.clicked.connect(self._scan_for_games)
-        top_layout.addWidget(self.scan_button)
 
-        top_layout.addStretch()
-
-        # Search Box
-        search_label = QLabel("Search:")
-        top_layout.addWidget(search_label)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter games...")
-        self.search_input.setFixedWidth(150)
+        self.search_input.setPlaceholderText("Search games..." if applist_2_0_enabled else "Filter games...")
         self.search_input.textChanged.connect(self._on_search_changed)
-        top_layout.addWidget(self.search_input)
-
-        sort_label = QLabel("Sort by:")
-        top_layout.addWidget(sort_label)
 
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Recently Installed", "recently_installed")
@@ -392,13 +434,78 @@ class GameLibraryDialog(QDialog):
         self.sort_combo.addItem("Size (Largest)", "size_desc")
         self.sort_combo.addItem("AppID", "appid")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
-        top_layout.addWidget(self.sort_combo)
 
         self.select_mode_button = QPushButton("☑ Select")
         self.select_mode_button.setCheckable(True)
         self.select_mode_button.setFixedWidth(80)
         self.select_mode_button.clicked.connect(self._toggle_select_mode)
-        top_layout.addWidget(self.select_mode_button)
+
+        if applist_2_0_enabled:
+            self.search_input.setFixedWidth(200)
+            self.search_input.setStyleSheet(
+                f"""
+                QLineEdit {{
+                    background-color: #111111;
+                    color: {self.accent_color};
+                    border: 1px solid #333333;
+                    border-radius: 6px;
+                    padding: 5px 10px;
+                    font-size: 11px;
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {self.accent_color};
+                }}
+                """
+            )
+            self.sort_combo.setStyleSheet(
+                f"""
+                QComboBox {{
+                    background-color: #111111;
+                    color: {self.accent_color};
+                    border: 1px solid #333333;
+                    border-radius: 6px;
+                    padding: 5px 10px;
+                    font-size: 11px;
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                }}
+                """
+            )
+            self.select_mode_button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: #111111;
+                    color: {self.accent_color};
+                    border: 1px solid #333333;
+                    border-radius: 6px;
+                    padding: 5px 10px;
+                    font-size: 11px;
+                }}
+                QPushButton:hover {{
+                    background-color: #222222;
+                }}
+                QPushButton:checked {{
+                    background-color: {self.accent_color};
+                    color: #000000;
+                    font-weight: bold;
+                }}
+                """
+            )
+            top_layout.addWidget(self.search_input)
+            top_layout.addStretch()
+            top_layout.addWidget(QLabel("Sort by:"))
+            top_layout.addWidget(self.sort_combo)
+            top_layout.addWidget(self.select_mode_button)
+        else:
+            self.search_input.setFixedWidth(150)
+            top_layout.addWidget(self.scan_button)
+            top_layout.addStretch()
+            top_layout.addWidget(QLabel("Search:"))
+            top_layout.addWidget(self.search_input)
+            top_layout.addWidget(QLabel("Sort by:"))
+            top_layout.addWidget(self.sort_combo)
+            top_layout.addWidget(self.select_mode_button)
 
         layout.addLayout(top_layout)
 
@@ -1014,8 +1121,17 @@ class GameLibraryDialog(QDialog):
                 "cannot_determine": "?  Status unknown",
             }.get(status, "?  Unknown")
 
+        applist_2_0_enabled = True
+        from utils.settings import get_settings
+        settings = get_settings()
+        if settings:
+            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+
         status_lbl = QLabel(_status_text(game_data.get("update_status")))
-        status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
+        if applist_2_0_enabled and game_data.get("update_status") == "update_available":
+            status_lbl.setStyleSheet("color: #E05A47; font-style: italic;")
+        else:
+            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
 
         # "Check for Updates" button - only shown for games with valid appids
         appid = game_data.get("appid", "0")
@@ -1456,7 +1572,8 @@ class GameLibraryDialog(QDialog):
                             f"depot_selection/{appid}",
                             json.dumps({
                                 "selected": selected_depots,
-                                "all_available": list(depots.keys())
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
                             })
                         )
                     except Exception as e:
@@ -1601,7 +1718,31 @@ class GameLibraryDialog(QDialog):
                 import json
                 data = json.loads(val)
                 selected = data.get("selected", [])
-                self.depot_status_lbl.setText(f"Status: {len(selected)} depot(s) manually chosen.")
+                descriptions = data.get("descriptions", {})
+                
+                depot_names = []
+                for d_id in selected:
+                    desc = descriptions.get(d_id, "")
+                    if not desc:
+                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                        if fpath.exists():
+                             try:
+                                 from core.tasks.process_zip_task import ProcessZipTask
+                                 zip_task = ProcessZipTask()
+                                 parsed_data = zip_task.run(str(fpath))
+                                 desc = parsed_data.get("depots", {}).get(d_id, {}).get("desc", "")
+                             except Exception:
+                                 pass
+                    
+                    if desc:
+                        import re
+                        desc_clean = re.sub(r"\s*-\s*Depot\s*" + re.escape(d_id), "", desc, flags=re.IGNORECASE).strip()
+                        depot_names.append(f"{d_id} ({desc_clean})")
+                    else:
+                        depot_names.append(d_id)
+                
+                names_str = ", ".join(depot_names)
+                self.depot_status_lbl.setText(f"Status: {len(selected)} depot(s) manually chosen:\n{names_str}")
             except Exception:
                 self.depot_status_lbl.setText("Status: Error reading saved selection.")
         else:
@@ -1674,7 +1815,8 @@ class GameLibraryDialog(QDialog):
                             f"depot_selection/{appid}",
                             json.dumps({
                                 "selected": chosen,
-                                "all_available": list(depots.keys())
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
                             })
                         )
                         self._update_depot_status_label(appid)
@@ -1693,6 +1835,13 @@ class GameLibraryDialog(QDialog):
         self._active_fetchers.clear()
         self.executor.shutdown(wait=False)
         super().closeEvent(event)
+
+    def _show_details_for_appid(self, appid: str) -> None:
+        if not self.game_manager:
+            return
+        game_data = self.game_manager.get_game(appid)
+        if game_data:
+            self._show_game_details_dialog(game_data)
 
 
 class _ActionToggle(QPushButton):
@@ -2023,7 +2172,8 @@ class BatchQueueDialog(QDialog):
                         f"depot_selection/{appid}",
                         json.dumps({
                             "selected": selected_depots,
-                            "all_available": list(depots.keys())
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
                         })
                     )
                 except Exception as e:

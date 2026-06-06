@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -132,6 +132,17 @@ class FetchManifestDialog(QDialog):
         self.setMinimumWidth(600)
         self.setMinimumHeight(500)
 
+        self.settings = getattr(parent, "settings", None)
+        if not self.settings:
+            from utils.settings import get_settings
+            self.settings = get_settings()
+
+        self.accent_color = "#C06C84"
+        self.background_color = "#000000"
+        if self.settings:
+            self.accent_color = self.settings.value("accent_color", "#C06C84")
+            self.background_color = self.settings.value("background_color", "#000000")
+
         self.task_runner = TaskRunner()
         self._active_image_fetchers = {}
 
@@ -142,6 +153,53 @@ class FetchManifestDialog(QDialog):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
+
+        applist_2_0_enabled = True
+        if self.settings:
+            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+
+        if applist_2_0_enabled:
+            self.setStyleSheet(
+                f"""
+                QDialog {{
+                    background-color: {self.background_color};
+                    color: {self.accent_color};
+                }}
+                QLabel {{
+                    color: {self.accent_color};
+                }}
+                QLineEdit {{
+                    background-color: #111111;
+                    color: {self.accent_color};
+                    border: 1px solid #333333;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-size: 12px;
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {self.accent_color};
+                }}
+                QListWidget {{
+                    background-color: {self.background_color};
+                    border: 1px solid #333333;
+                    border-radius: 6px;
+                }}
+                QListWidget::item {{
+                    background-color: {self.background_color};
+                    border-bottom: 1px solid #222222;
+                    color: {self.accent_color};
+                    padding: 6px;
+                    border-radius: 4px;
+                }}
+                QListWidget::item:hover {{
+                    background-color: #111111;
+                }}
+                QListWidget::item:selected {{
+                    background-color: #1a1a1a;
+                    color: {self.accent_color};
+                }}
+                """
+            )
 
         # 1. API Status Bar
         self._create_api_status_bar(layout)
@@ -490,7 +548,21 @@ class FetchManifestDialog(QDialog):
 
         name = self._extract_game_name(game) or "Unknown"
 
-        item = QListWidgetItem(f"{name} (AppID: {app_id})")
+        applist_2_0_enabled = True
+        if self.settings:
+            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+
+        in_library = False
+        if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
+            if self.parent_window.game_manager.get_game(app_id) is not None:
+                in_library = True
+
+        if applist_2_0_enabled and in_library:
+            item = QListWidgetItem(f"{name} [In Library] (AppID: {app_id})")
+            item.setForeground(QColor("#77DD77"))
+        else:
+            item = QListWidgetItem(f"{name} (AppID: {app_id})")
+
         item.setData(Qt.ItemDataRole.UserRole, app_id)
         self.results_list.addItem(item)
 
@@ -533,6 +605,22 @@ class FetchManifestDialog(QDialog):
     def on_item_double_clicked(self, item):
         app_id = item.data(Qt.ItemDataRole.UserRole)
         if not app_id:
+            return
+
+        applist_2_0_enabled = True
+        if self.settings:
+            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+
+        in_library = False
+        if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
+            if self.parent_window.game_manager.get_game(app_id) is not None:
+                in_library = True
+
+        if applist_2_0_enabled and in_library:
+            self.accept()
+            from ui.dialogs.gamelibrary import GameLibraryDialog
+            dialog = GameLibraryDialog(self.parent_window, show_details_for_appid=app_id)
+            dialog.exec()
             return
 
         self._toggle_inputs(False)
