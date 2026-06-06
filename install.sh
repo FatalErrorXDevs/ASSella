@@ -3,6 +3,10 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 set -eu
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+BRANCH="beta"
+CHANNEL="beta" # e.g. "stable", "beta", "testing"
+
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,8 +19,8 @@ NC='\033[0m'
 INSTALL_DIR="$HOME/.local/share/ACCELA"
 DESKTOP_ENTRY="$HOME/.local/share/applications/accela.desktop"
 ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
-# Fetch latest version tag from the beta branch dynamically
-VERSION_STR=$(curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/src/res/version 2>/dev/null || true)
+# Fetch latest version tag from the target branch dynamically
+VERSION_STR=$(curl -fsSL "https://raw.githubusercontent.com/niwia/ASSella/${BRANCH}/src/res/version" 2>/dev/null || true)
 TAG="v1.9c-rc1"
 if [ -n "$VERSION_STR" ]; then
     if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z0-9]+)?)$ ]]; then
@@ -24,7 +28,7 @@ if [ -n "$VERSION_STR" ]; then
     fi
 fi
 ASSELA_URL="https://github.com/niwia/ASSella/releases/download/${TAG}/ASSella.AppImage"
-ICON_URL="https://raw.githubusercontent.com/niwia/ASSella/beta/src/res/logo/icon.png"
+ICON_URL="https://raw.githubusercontent.com/niwia/ASSella/${BRANCH}/src/res/logo/icon.png"
 HEADCRAB_DIR="$HOME/.headcrab"
 HEADCRAB_DESKTOP="$HOME/.local/share/applications/headcrab.desktop"
 
@@ -34,6 +38,7 @@ print_header() {
     echo -e "${YELLOW}╔══════════════════════════════════════════╗${NC}"
     echo -e "${YELLOW}║${NC}  ${BOLD}${CYAN}ASSella Installer Menu${NC}                  ${YELLOW}║${NC}"
     echo -e "${YELLOW}╚══════════════════════════════════════════╝${NC}"
+    echo -e "  Channel: ${BOLD}${CYAN}${CHANNEL}${NC}"
     echo -e ""
 }
 
@@ -53,7 +58,7 @@ refresh_desktop() {
 # ── Actions ────────────────────────────────────────────────────────────────────
 
 do_install_assela() {
-    echo -e "${YELLOW}[INFO] Installing ASSella (pre-release / beta)...${NC}"
+    echo -e "${YELLOW}[INFO] Installing ASSella (${CHANNEL})...${NC}"
     mkdir -p "$INSTALL_DIR"
 
     # Back up original ACCELA if it's not a symlink and not already backed up
@@ -209,7 +214,7 @@ do_run_headcrab() {
 
 print_header
 
-echo -e "  ${BOLD}1)${NC} Install / Update ASSella"
+echo -e "  ${BOLD}1)${NC} Install / Update ASSella (${CHANNEL})"
 echo -e "  ${BOLD}2)${NC} Uninstall ASSella (+ restore ACCELA if backup exists)"
 echo -e "  ${BOLD}3)${NC} Install / Run Headcrab"
 echo -e "  ${BOLD}q)${NC} Quit"
