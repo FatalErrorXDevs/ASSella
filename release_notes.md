@@ -1,9 +1,14 @@
-## ASSella v1.9b — Changes from v1.9a
+## ASSella v1.9c (Release candidate 1) — Changes from v1.9b
 
 *   **Manifest Cache Age & Status Display**: The Game Library screen now displays the age and status of cached game manifests (e.g., `Manifest: Cached (1-24hrs ago)`, `Manifest: Cached (1-3days ago)`, or `Manifest: Fetching...` if it is currently updating or missing).
 *   **Automatic Cache Refresh**: Completing a download or update now automatically refreshes the local SQLite manifest cache timestamp, updating the manifest age status instantly in the Game Library screen.
 *   **Thread-Safe Download Speed Monitor**: Reworked the speed monitor task to connect directly to the GUI elements via `Qt.ConnectionType.QueuedConnection`, securing the app against PyQt cross-thread abort crashes.
 *   **Simplified Download Display**: Completely removed ETA and size progress calculation logic to maintain a clean layout displaying only the download speed alongside play/pause/stop controls.
+
+---
+
+## ASSella v1.9b (Release candidate 1) — Changes from v1.9a
+
 *   **Unrestricted Fetching**: Removed the blacklist filtering for manifest downloading. Tags and media variants previously restricted are now available to fetch.
 *   **Minimal Boot Window**: Resized the initial application window upon startup to be significantly smaller and less intrusive instead of displaying all prior update history prominently at boot.
 *   **Config Resilience**: The config parser relies natively on `QSettings` ignoring keys that are not requested. It is fully backwards-compatible with ACCELA's config layout and gracefully handles and ignores obsolete `[GIFs]` and audio settings. Transitioning from ACCELA to ASSella is completely conflict-free.
