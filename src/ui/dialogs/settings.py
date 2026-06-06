@@ -1447,8 +1447,14 @@ class SettingsDialog(QDialog):
     def _save_general_settings(self) -> None:
         api_key = self.api_key_input.text().strip()
         self.settings.setValue("morrenus_api_key", api_key)
-        self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
-        self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
+        try:
+            self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
+        except RuntimeError:
+            pass
+        try:
+            self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
+        except RuntimeError:
+            pass
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:

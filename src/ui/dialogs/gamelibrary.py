@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -1105,13 +1106,168 @@ class GameLibraryDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
 
-        # Header Info
+        appid = str(game_data.get("appid", "0"))
+
+        # --- 1. Header Layout (Horizontal) ---
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(15)
+
+        # Left: Thumbnail image
+        image_lbl = QLabel()
+        image_lbl.setFixedSize(230, 108)
+        image_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_lbl.setStyleSheet(
+            f"border: 1px solid #333333; "
+            f"border-radius: 6px; "
+            f"background-color: {self.background_color};"
+        )
+
+        # Try to set cached image or download it
+        cached_image = self._image_cache.get(appid)
+        if cached_image:
+            pixmap = QPixmap()
+            pixmap.loadFromData(cached_image)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    image_lbl.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                image_lbl.setPixmap(scaled)
+        else:
+            if appid not in ("0", "N/A", "unknown"):
+                if ImageFetcher:
+                    url = ImageFetcher.get_header_image_url(appid)
+                    fetcher = ImageFetcher(url)
+                    fetcher.setProperty("app_id", appid)
+                    
+                    def _on_details_img_ready(data, label=image_lbl):
+                        if data:
+                            px = QPixmap()
+                            px.loadFromData(data)
+                            if not px.isNull():
+                                sc = px.scaled(
+                                    label.size(),
+                                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                    Qt.TransformationMode.SmoothTransformation,
+                                )
+                                label.setPixmap(sc)
+                    
+                    fetcher.finished.connect(_on_details_img_ready)
+                    fetcher.start()
+                    # Cache the fetcher to avoid garbage collection
+                    self._active_fetchers[f"details_{appid}"] = fetcher
+                    fetcher.finished.connect(lambda _, aid=appid: self._cleanup_fetcher(f"details_{aid}"))
+
+        if not image_lbl.pixmap():
+            # Initials placeholder
+            name = game_data.get("game_name", "Unknown")
+            image_lbl.setText(name[:2].upper())
+            image_lbl.setStyleSheet(
+                f"border: 1px solid #333333; "
+                f"border-radius: 6px; "
+                f"background-color: #111111; "
+                f"color: {self.accent_color}; "
+                f"font-size: 24px; "
+                f"font-weight: bold;"
+            )
+
+        header_layout.addWidget(image_lbl)
+
+        # Right: Game Title & Meta (Vertical)
+        title_meta_layout = QVBoxLayout()
+        title_meta_layout.setSpacing(5)
+
         name_lbl = QLabel(format_game_display_name(game_data))
         name_lbl.setStyleSheet(
-            f"font-size: 20px; font-weight: bold; color: {self.accent_color};"
+            f"font-size: 18px; font-weight: bold; color: {self.accent_color};"
         )
-        layout.addWidget(name_lbl)
+        name_lbl.setWordWrap(True)
+        title_meta_layout.addWidget(name_lbl)
+
+        def _lbl(text, style=None):
+            label = QLabel(text)
+            if style:
+                label.setStyleSheet(style)
+            else:
+                label.setStyleSheet(f"color: {self.accent_color};")
+            return label
+
+        title_meta_layout.addWidget(_lbl(f"App ID: {appid}", "color: #888888; font-size: 12px;"))
+        title_meta_layout.addWidget(_lbl(f"Source: {game_data.get('source', 'Steam')}", "color: #888888; font-size: 12px;"))
+        title_meta_layout.addStretch()
+
+        header_layout.addLayout(title_meta_layout, 1)
+        layout.addLayout(header_layout)
+
+        # Divider line
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        line.setStyleSheet("background-color: #222222; max-height: 1px; border: none;")
+        layout.addWidget(line)
+
+        # --- 2. Information Grid ---
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        # Size on disk
+        size = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
+        form.addRow(_lbl("Size:"), _lbl(size))
+
+        # Install path
+        form.addRow(_lbl("Path:"), _lbl(str(game_data.get("install_path"))))
+
+        # Manifest Age Calculation
+        manifest_age_value = "Not Cached / N/A"
+        if DatabaseManager and appid not in ("0", "N/A", "unknown"):
+            db = DatabaseManager()
+            last_updated = db.get_cache_time(appid)
+            if last_updated:
+                import datetime
+                dt = datetime.datetime.fromtimestamp(last_updated)
+                formatted_date = dt.strftime("%Y-%m-%d %H:%M:%S")
+                import time
+                age_seconds = time.time() - last_updated
+                if age_seconds < 0:
+                    age_seconds = 0
+                hours = age_seconds / 3600
+                if hours <= 24:
+                    age_str = f"{int(hours)}h ago"
+                elif hours <= 72:
+                    age_str = f"{int(hours/24)}d ago"
+                else:
+                    days = int(age_seconds / 86400)
+                    age_str = f"{days}d ago"
+                manifest_age_value = f"Cached ({age_str} - {formatted_date})"
+        form.addRow(_lbl("Manifest Age:"), _lbl(manifest_age_value))
+
+        # Last Checked for Updates Calculation
+        last_check_value = "Never"
+        if appid not in ("0", "N/A", "unknown"):
+            from utils.update_status_cache import get_update_cache
+            cache = get_update_cache()
+            if cache:
+                cache_entry = cache._cache.get(str(appid))
+                if cache_entry and cache_entry.get("updated_at"):
+                    import datetime
+                    dt = datetime.datetime.fromtimestamp(cache_entry.get("updated_at"))
+                    last_check_value = dt.strftime("%Y-%m-%d %H:%M:%S")
+        form.addRow(_lbl("Last Update Check:"), _lbl(last_check_value))
+
+        layout.addLayout(form)
+
+        # Linux FakeAppID
+        if platform.system() == "Linux":
+            self._add_fake_appid_controls(layout, game_data)
+
+        # --- 3. Update Controls Section ---
+        update_group = QGroupBox()
+        update_group.setStyleSheet("QGroupBox { border: 1px solid #222222; border-radius: 6px; padding: 10px; margin-top: 5px; }")
+        update_group_layout = QVBoxLayout(update_group)
+        update_group_layout.setSpacing(10)
 
         def _status_text(status):
             return {
@@ -1129,15 +1285,40 @@ class GameLibraryDialog(QDialog):
 
         status_lbl = QLabel(_status_text(game_data.get("update_status")))
         if applist_2_0_enabled and game_data.get("update_status") == "update_available":
-            status_lbl.setStyleSheet("color: #E05A47; font-style: italic;")
+            status_lbl.setStyleSheet("color: #E05A47; font-weight: bold;")
         else:
-            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
+            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-weight: bold;")
+        update_group_layout.addWidget(status_lbl)
 
-        # "Check for Updates" button - only shown for games with valid appids
-        appid = game_data.get("appid", "0")
+        # Row with Check button and Auto-update checkbox
+        check_row = QHBoxLayout()
         check_btn = QPushButton("Check for Updates")
         check_btn.setToolTip("Manually re-check for an update for this game")
+        check_row.addWidget(check_btn)
 
+        self.update_manifest_checkbox = QCheckBox("Auto-update manifest if update found")
+        self.update_manifest_checkbox.setStyleSheet(f"color: {self.accent_color};")
+        self.update_manifest_checkbox.setChecked(
+            self.settings.value("auto_update_manifest_on_check", False, type=bool) if self.settings else False
+        )
+        self.update_manifest_checkbox.stateChanged.connect(
+            lambda state: self.settings.setValue("auto_update_manifest_on_check", bool(state)) if self.settings else None
+        )
+        check_row.addWidget(self.update_manifest_checkbox)
+        update_group_layout.addLayout(check_row)
+
+        layout.addWidget(update_group)
+
+        # Validate/Update Button
+        validate_btn = QPushButton()
+        is_update = game_data.get("update_status") == "update_available"
+        validate_btn.setText("Download Update" if is_update else "Validate Files")
+        validate_btn.clicked.connect(
+            lambda: self._fetch_game_manifest(game_data, dialog)
+        )
+        layout.addWidget(validate_btn)
+
+        # Signals for checking updates
         def _on_check_clicked():
             if self.game_manager:
                 check_btn.setEnabled(False)
@@ -1153,6 +1334,10 @@ class GameLibraryDialog(QDialog):
             is_update = new_status == "update_available"
             validate_btn.setText("Download Update" if is_update else "Validate Files")
 
+            # Check if auto-update is enabled
+            if self.update_manifest_checkbox.isChecked() and is_update:
+                self._fetch_game_manifest(game_data, dialog)
+
         check_btn.clicked.connect(_on_check_clicked)
 
         if self.game_manager:
@@ -1162,40 +1347,6 @@ class GameLibraryDialog(QDialog):
                 lambda: self.game_manager.game_update_status_changed.disconnect(_on_status_changed)
                 if self.game_manager else None
             )
-
-        status_row = QHBoxLayout()
-        status_row.addWidget(status_lbl, 1)
-        if appid not in ("0", "N/A", "unknown"):
-            status_row.addWidget(check_btn)
-        layout.addLayout(status_row)
-
-        # Info Grid
-        form = QFormLayout()
-
-        def _lbl(text):
-            label = QLabel(text)
-            label.setStyleSheet(f"color: {self.accent_color};")
-            return label
-
-        form.addRow(_lbl("App ID:"), _lbl(str(game_data.get("appid"))))
-        form.addRow(_lbl("Source:"), _lbl(str(game_data.get("source", "Steam"))))
-        size = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
-        form.addRow(_lbl("Size:"), _lbl(size))
-        form.addRow(_lbl("Path:"), _lbl(str(game_data.get("install_path"))))
-        layout.addLayout(form)
-
-        # Linux FakeAppID
-        if platform.system() == "Linux":
-            self._add_fake_appid_controls(layout, game_data)
-
-        # Validate/Update Button
-        validate_btn = QPushButton()
-        is_update = game_data.get("update_status") == "update_available"
-        validate_btn.setText("Download Update" if is_update else "Validate Files")
-        validate_btn.clicked.connect(
-            lambda: self._fetch_game_manifest(game_data, dialog)
-        )
-        layout.addWidget(validate_btn)
 
         # Footer Actions
         btn_layout = QHBoxLayout()
