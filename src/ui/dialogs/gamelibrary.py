@@ -1330,7 +1330,7 @@ class GameLibraryDialog(QDialog):
 
             # Check if auto-update is enabled
             if self.update_manifest_checkbox.isChecked() and is_update:
-                self._fetch_game_manifest(game_data, dialog)
+                self._fetch_game_manifest(game_data, dialog, download_only=True)
 
         check_btn.clicked.connect(_on_check_clicked)
 
@@ -1570,7 +1570,7 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog) -> None:
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog, download_only: bool = False) -> None:
         app_id = str(game_data.get("appid", "0"))
 
         if app_id in ("0", "N/A", "unknown"):
@@ -1592,9 +1592,13 @@ class GameLibraryDialog(QDialog):
             local_path = None
 
         if not local_path:
+            if download_only:
+                game_data = game_data.copy()
+                game_data["_download_only"] = True
             self._handle_download_manifest(app_id, name, game_data, dialog)
         else:
-            self._submit_job(local_path, game_data, dialog)
+            if not download_only:
+                self._submit_job(local_path, game_data, dialog)
 
     def _handle_download_manifest(self, app_id, name, game_data, dialog):
         """Logic separated to flatten nesting in fetch_game_manifest."""
@@ -1602,11 +1606,14 @@ class GameLibraryDialog(QDialog):
             QMessageBox.critical(self, "Error", "API module missing.")
             return
 
-        self._download_progress_dialog = QProgressDialog(
-            f"Downloading {name}...", "Cancel", 0, 0, self
-        )
-        self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self._download_progress_dialog.show()
+        download_only = game_data.get("_download_only", False)
+
+        if not download_only:
+            self._download_progress_dialog = QProgressDialog(
+                f"Downloading {name}...", "Cancel", 0, 0, self
+            )
+            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self._download_progress_dialog.show()
 
         # Start async download
         self.executor.submit(self._download_manifest_async, app_id, game_data)
@@ -1629,29 +1636,43 @@ class GameLibraryDialog(QDialog):
             self._download_progress_dialog.close()
             self._download_progress_dialog = None
 
+        download_only = game_data.get("_download_only", False)
+
         if hasattr(self, "_configure_depots_after_download") and self._configure_depots_after_download:
             target_game = self._configure_depots_after_download
             self._configure_depots_after_download = None
             if fpath:
                 appid = str(target_game.get("appid"))
                 self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                if latest_id:
+                    self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
                 self._show_depot_selection_dialog(fpath, target_game)
             else:
-                QMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
+                if not download_only:
+                    QMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
+                else:
+                    logger.error(f"Background manifest download failed: {error}")
             return
 
         if fpath:
             # Mark manifest as fresh now
             appid = str(game_data.get("appid"))
             self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+            latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+            if latest_id:
+                self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
             
             # If we have a valid path, submit the job
             # We need to access the dialog passed to _fetch_game_manifest, but it's not stored.
             # However, we stored _details_dialog in _show_game_details_dialog.
-            if self._details_dialog:
+            if not download_only and self._details_dialog:
                 self._submit_job(fpath, game_data, self._details_dialog)
         else:
-            QMessageBox.critical(self, "Error", f"Failed: {error}")
+            if not download_only:
+                QMessageBox.critical(self, "Error", f"Failed: {error}")
+            else:
+                logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
 
     def _submit_job(self, filepath: str, game_data: dict, dialog: QDialog) -> None:
         """Submit the job to the main window queue."""
@@ -2253,6 +2274,9 @@ class BatchQueueDialog(QDialog):
                 local_path = str(fpath)
                 # Manifest is fresh now
                 settings.setValue(f"manifest_is_fresh/{appid}", True)
+                latest_id = settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                if latest_id:
+                    settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
 
             # Parse for depots
             from core.tasks.process_zip_task import ProcessZipTask

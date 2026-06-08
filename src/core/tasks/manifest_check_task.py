@@ -5,6 +5,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from utils.helpers import get_base_path
+from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class ManifestCheckTask(QObject):
 
             # Read tokens from depot files for token-gated apps
             access_tokens = {}
+            additional_appids = set()
             for game in valid_games:
                 appid = game.get("appid")
                 depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
@@ -80,13 +82,20 @@ class ManifestCheckTask(QObject):
                     try:
                         content = depot_file.read_text().strip()
                         parts = content.split(":", 2)
+                        
+                        if parts and parts[0].strip():
+                            main_depot_id = parts[0].strip()
+                            additional_appids.add(main_depot_id)
+                            
                         if len(parts) >= 3 and parts[2].strip():
                             access_tokens[appid] = parts[2].strip()
+                            if 'main_depot_id' in locals():
+                                access_tokens[main_depot_id] = parts[2].strip()
                     except OSError:
                         pass
 
-            # Use batched API call for all valid games
-            appid_list = [game["appid"] for game in valid_games]
+            # Use batched API call for all valid games and any DLC depot IDs
+            appid_list = list({game["appid"] for game in valid_games} | additional_appids)
             batch_size = 20
             rate_limit_delay = 0.3
 
@@ -201,32 +210,52 @@ class ManifestCheckTask(QObject):
         # Get current manifest from batched results
         try:
             # Look for the appid in batched results
-            if appid not in batched_results:
-                logger.debug(f"App {appid} not found in batched results")
+            steam_client_data = batched_results.get(appid, {})
+            depots = steam_client_data.get("depots", {})
+            
+            # If depot isn't in base game, try falling back to the DLC AppID (which is queried via saved_main_depot_id)
+            if saved_main_depot_id not in depots and saved_main_depot_id in batched_results:
+                dlc_data = batched_results[saved_main_depot_id]
+                dlc_depots = dlc_data.get("depots", {})
+                if saved_main_depot_id in dlc_depots:
+                    depots = dlc_depots
+                    logger.debug(f"Resolved depot {saved_main_depot_id} via DLC info instead of base game {appid}")
+                    
+            if not depots:
+                logger.debug(f"No depot info found for app {appid} or its depot {saved_main_depot_id}")
                 return "cannot_determine"
 
-            steam_client_data = batched_results[appid]
+            # Find the matching depot
+            if saved_main_depot_id in depots:
+                depot_info = depots[saved_main_depot_id]
+                current_manifest_id = depot_info.get("manifest_id")
 
-            # Look for the manifest ID in the response
-            if steam_client_data and steam_client_data.get("depots"):
-                depots = steam_client_data.get("depots", {})
+                if current_manifest_id:
+                    # Save the latest manifest ID to settings for tracking
+                    settings = get_settings()
+                    settings.setValue(f"latest_steam_manifest_id/{appid}", current_manifest_id)
 
-                # Find the matching depot
-                if saved_main_depot_id in depots:
-                    depot_info = depots[saved_main_depot_id]
-                    current_manifest_id = depot_info.get("manifest_id")
-
-                    if current_manifest_id:
-                        # Compare manifest IDs
-                        if saved_manifest_id != current_manifest_id:
+                    # If this game is already marked as update available, check if the pre-fetched manifest is stale
+                    if game_data.get("update_status") == "update_available":
+                        fetched_id = settings.value(f"fetched_manifest_id/{appid}", "", type=str)
+                        if fetched_id and fetched_id != current_manifest_id:
                             logger.info(
-                                f"Update available for app {appid}: saved={saved_manifest_id}, current={current_manifest_id}"
+                                f"App {appid} has a newer update on Steam ({current_manifest_id}) "
+                                f"than the pre-fetched manifest ({fetched_id}). Marking manifest as stale."
                             )
-                            return "update_available"
-                        else:
-                            return "up_to_date"
+                            settings.setValue(f"manifest_is_fresh/{appid}", False)
+                        elif not fetched_id:
+                            # Seed fetched_manifest_id with current manifest for future checks
+                            settings.setValue(f"fetched_manifest_id/{appid}", current_manifest_id)
+
+                    # Compare manifest IDs
+                    if saved_manifest_id != current_manifest_id:
+                        logger.info(
+                            f"Update available for app {appid}: saved={saved_manifest_id}, current={current_manifest_id}"
+                        )
+                        return "update_available"
                     else:
-                        return "cannot_determine"
+                        return "up_to_date"
                 else:
                     return "cannot_determine"
             else:

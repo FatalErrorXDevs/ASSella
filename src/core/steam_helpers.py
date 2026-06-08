@@ -89,6 +89,14 @@ def get_steam_libraries():
     return list(all_libraries)
 
 
+def is_steam_running():
+    process_name = "steam.exe" if sys.platform == "win32" else "steam"
+    return any(
+        (p.info.get("name") or "").lower() == process_name
+        for p in psutil.process_iter(["name"])
+    )
+
+
 def kill_steam_process():
     global _slssteam_so_path_cache, _library_inject_so_path_cache
     _slssteam_so_path_cache = None

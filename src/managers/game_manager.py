@@ -201,7 +201,7 @@ class GameManager(QObject):
             self.cancel_update_checks()
 
         # Smart filter: skip games whose status is already conclusively known
-        SKIP_STATUSES = ("update_available", "up_to_date")
+        SKIP_STATUSES = ("up_to_date",)
         self._games_to_check = [
             g for g in self.games
             if g.get("appid") not in ("0", "N/A", "unknown")
@@ -295,6 +295,10 @@ class GameManager(QObject):
             # If a new update is detected, invalidate the manifest freshness cache
             if update_status == UPDATE_STATUS["UPDATE_AVAILABLE"] and old_status != UPDATE_STATUS["UPDATE_AVAILABLE"]:
                 self.settings.setValue(f"manifest_is_fresh/{appid}", False)
+            elif update_status == UPDATE_STATUS["UP_TO_DATE"]:
+                self.settings.remove(f"manifest_is_fresh/{appid}")
+                self.settings.remove(f"fetched_manifest_id/{appid}")
+                self.settings.remove(f"latest_steam_manifest_id/{appid}")
 
     @staticmethod
     def _on_update_check_progress(current, total):
@@ -705,6 +709,30 @@ class GameManager(QObject):
                 "accela_marker_path": marker_path or "",
                 "appmanifest_path": appmanifest_path or "",
             }
+
+            # Detect DLC-only installations by comparing the saved main depot against base game depots
+            if is_accela_install and appid and appid not in ("0", "N/A", "unknown"):
+                depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                if depot_file.exists():
+                    try:
+                        content = depot_file.read_text().strip()
+                        parts = content.split(":", 2)
+                        if parts and parts[0].strip():
+                            main_depot_id = parts[0].strip()
+                            from managers.db_manager import DatabaseManager
+                            db = DatabaseManager()
+                            app_info = db.get_app_info(appid)
+                            if app_info and app_info.get("depots"):
+                                if main_depot_id not in app_info["depots"]:
+                                    # It's not in the base game depots -> it's a DLC
+                                    game_data["is_dlc_only"] = True
+                                    dlc_info = db.get_app_info(main_depot_id)
+                                    if dlc_info and dlc_info.get("name"):
+                                        game_data["game_name"] = f"{dlc_info['name']} [DLC]"
+                                    else:
+                                        game_data["game_name"] = f"{game_name} [DLC]"
+                    except Exception as e:
+                        logger.error(f"Error checking DLC-only status for {appid}: {e}")
 
             # Load persisted wrapper metadata (selected DLC IDs) for uninstall cleanup.
             if is_accela_install:

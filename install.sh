@@ -21,7 +21,7 @@ DESKTOP_ENTRY="$HOME/.local/share/applications/accela.desktop"
 ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
 # Fetch latest version tag from the target branch dynamically
 VERSION_STR=$(curl -fsSL "https://raw.githubusercontent.com/niwia/ASSella/${BRANCH}/src/res/version" 2>/dev/null || true)
-TAG="v1.9c-rc1"
+TAG="v1.9g-rc1"
 if [ -n "$VERSION_STR" ]; then
     if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z0-9]+)?)$ ]]; then
         TAG="v${BASH_REMATCH[1]}"

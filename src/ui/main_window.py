@@ -1043,6 +1043,9 @@ class MainWindow(QMainWindow):
                     fpath, error = morrenus_api.download_manifest(appid)
                     if fpath and not error:
                         self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                        latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                        if latest_id:
+                            self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
                         logger.info(f"Auto-fetch background: successfully downloaded manifest for {name} ({appid})")
                     else:
                         logger.warning(f"Auto-fetch background: failed for {name} ({appid}): {error}")

@@ -21,6 +21,7 @@ except ImportError:
 
 from core import steam_helpers
 from core.tasks.download_depots_task import DownloadDepotsTask
+from core.tasks.download_workshop_task import DownloadWorkshopTask
 from core.tasks.generate_achievements_task import GenerateAchievementsTask
 from core.tasks.monitor_speed_task import SpeedMonitorTask
 from core.tasks.process_zip_task import ProcessZipTask
@@ -61,6 +62,9 @@ class TaskManager(QObject):
         self.download_task = None
         self.download_runner = None
         self.is_awaiting_download_stop = False
+        self.workshop_task = None
+        self.workshop_runner = None
+        self.is_awaiting_workshop_stop = False
         self.achievement_task = None
         self.achievement_task_runner = None
         self.achievement_worker = None
@@ -474,6 +478,61 @@ class TaskManager(QObject):
         self.download_runner = None
         self.is_awaiting_download_stop = False
         self.main_window.job_queue.check_if_safe_to_start_next_job()
+
+    def _on_workshop_task_stopped(self):
+        self.workshop_runner = None
+        self.is_awaiting_workshop_stop = False
+        self.main_window.job_queue.check_if_safe_to_start_next_job()
+
+    def _on_workshop_download_complete(self):
+        if self.is_cancelling:
+            self.job_finished()
+            return
+        self.main_window.progress_bar.setValue(100)
+        self.job_finished()
+
+    def start_workshop_download(self, workshop_data):
+        self.is_processing = True
+        self.current_job = "Workshop Items"
+        self.current_job_metadata = {"game_name": "Workshop Items"}
+        self.game_data = {"game_name": "Workshop Items", "appid": "Workshop"}
+        self._job_steps_completed.clear()
+
+        self._init_simplified_stages()
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
+            self.main_window.simplified_terminal.show_active_job("Workshop Items")
+
+        self.main_window.progress_bar.setVisible(True)
+        self.main_window.progress_bar.setValue(0)
+        self.main_window.speed_label.setVisible(False)
+
+        self.workshop_task = DownloadWorkshopTask()
+        self.workshop_task.progress.connect(logger.info)
+        self.workshop_task.progress_percentage.connect(
+            self.main_window.progress_bar.setValue,
+            Qt.ConnectionType.QueuedConnection
+        )
+        self.workshop_task.completed.connect(
+            self._on_workshop_download_complete,
+            Qt.ConnectionType.QueuedConnection
+        )
+        self.workshop_task.error.connect(
+            self._handle_task_error,
+            Qt.ConnectionType.QueuedConnection
+        )
+
+        self.workshop_runner = TaskRunner()
+        self.is_awaiting_workshop_stop = True
+        self.workshop_runner.cleanup_complete.connect(self._on_workshop_task_stopped)
+        worker = self.workshop_runner.run(
+            self.workshop_task.run, workshop_data
+        )
+        worker.error.connect(self._handle_task_error)
+
+        self.is_download_paused = False
+        self.main_window.ui_state.set_download_controls_visible(True)
+        self.main_window.ui_state.set_pause_button_text("Pause")
 
     def _on_download_complete(self):
         """Handle download completion"""
@@ -1789,6 +1848,11 @@ class TaskManager(QObject):
         if self.download_runner is None:
             self.is_awaiting_download_stop = False
 
+        if self.workshop_runner is None:
+            self.is_awaiting_workshop_stop = False
+
+        self.workshop_task = None
+
         if self.zip_task_runner is None:
             self.is_awaiting_zip_task_stop = False
 
@@ -1852,6 +1916,24 @@ class TaskManager(QObject):
             logger.error(f"Failed to toggle pause: {e}")
 
     def cancel_current_job(self):
+        if self.workshop_task and self.current_job:
+            reply = QMessageBox.question(
+                self.main_window,
+                "Cancel Job",
+                "Are you sure you want to cancel the Workshop download?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+            logger.info("--- Cancelling Workshop job ---")
+            self.is_cancelling = True
+            if self.workshop_runner is not None:
+                self.is_awaiting_workshop_stop = True
+            if self.workshop_task:
+                self.workshop_task.stop()
+            return
+
         if not self.download_task or not self.current_job:
             return
 
