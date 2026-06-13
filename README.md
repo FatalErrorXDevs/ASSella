@@ -2,119 +2,76 @@
   <img src="src/res/logo/icon.png" width="128" height="128" alt="ASSella Logo" />
 </p>
 
-# ASSella
+# ASSella (Beta Branch)
 
-ASSella is a personal fork of ACCELA — a Steam game downloader and launcher for Linux and Steam Deck — bundling quality-of-life improvements, extra tools, and backend fixes on top of the original.
+ASSella is a powerful, feature-rich fork of ACCELA — a Steam game downloader and launcher designed for Linux and Steam Deck. It bundles crucial quality-of-life additions, automated game post-processing tools, and thread-safe backend improvements.
 
 ![ASSella Banner](./assela_banner_v2.png)
 
 ---
 
-## Installation (Stable/Beta)
+## 🚀 Key Features (ASSella vs. 1.0 Stable ACCELA)
 
-Install or update ASSella with a single command:
+### 📥 Core Downloading & Rollbacks
+* **Version Rollback (Build History)**: Automatically retains backup manifests for the last `N` builds (configurable, defaults to 3). Rollback to previous builds using a simple dropdown in the Game Details panel.
+* **Smart Depot Memory (Smart Selection)**: Remembers your selected depots (such as language files or DLCs) and automatically applies them to future game updates. You are only prompted if new depots are added.
+* **Auto-Skip Single Depot**: Skips the depot selection pop-up entirely when a game has only one depot, speeding up installations.
+* **Pause, Resume & Stop Controls**: Pause, resume, or terminate active downloads directly from the home screen.
+* **Modern Download Interface (Screen 2.0)**: A clean, card-based checklist showing active game names (instead of raw depot IDs), download speeds, remaining queue count, and active stage indicators.
+
+### ⚙️ Post-Processing & Steam Integration
+* **Steam Workshop Downloader**: Search and download Steam Workshop items directly within the client.
+* **Automated Achievement Generation**: Integrates SLScheevo to generate Steam achievements and statistics upon download completion. Displays exact counts of generated or up-to-date achievements.
+* **One-Click DRM Removal**: Automates DRM patching using Steamless and Steamless-AIO for downloaded game binaries.
+* **Linux Compatibility Features**: 
+  * Automatically sets binary execution permissions (`chmod +x`).
+  * Displays native Linux status (`No DRM (Linux)`) when downloading Linux-native depots.
+* **GreenLuma Configurator**: Generates and manages GreenLuma AppList directories automatically.
+* **Steam Auto-Update Blocker Monitor**: Displays if Steam auto-updates are blocked via `/home/deck/.steam/steam/steam.cfg`.
+
+### 🗃️ Library Management & Performance
+* **Thread-Safe Library Scanning**: Replaced list mutations with atomic operations, eliminating UI flickering or blank lists when the manager scans Steam folders.
+* **Exclusions Support**:
+  * Exclude specific games from background auto-update checks.
+  * Exclude specific games from the global **"Update All"** queue.
+* **Live Manifest Age Tracking**: Displays precise, human-readable manifest ages (in minutes, hours, days, or months) calculated directly from the manifest files on disk.
+* **Hubcap API Dashboard**: Shows daily API usage limits, remaining key expiration, and reset details.
+
+---
+
+## 📦 Installation & Setup
+
+Install or update ASSella on your system (such as Steam Deck) with a single command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 ```
 
-The installer presents a menu with the following options:
-
-- Install / Update ASSella
-- Uninstall ASSella (restores original ACCELA if a backup is present)
-- Install / Run Headcrab (installs the tools required for ASSella to work)
+The installer script provides interactive menus to:
+1. Install / Update ASSella (packaged as a local AppImage).
+2. Uninstall ASSella (restores original ACCELA configurations if backups are found).
+3. Install or run **Headcrab** (sets up SLSsteam and patches Steam for compatibility).
 
 ---
 
-## Testing / Alpha (Remote Web UI & Headless Mode)
+## 🛠️ Testing & Web UI (Alpha/Remote Features)
 
-The **alpha** branch introduces remote WiFi control via a Web UI and a headless background mode designed for gaming mode. 
-
-Install and manage the testing version:
+The testing branch introduces a **remote WiFi Web UI** and a **headless mode** to control game downloads from other devices:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/alpha/install_testing.sh | bash
 ```
 
-The testing installer installs an **extracted source + virtualenv** version to `~/.local/share/assella_testing` and provides options to:
-- Install or update the testing files.
-- Enable/Disable a **systemd user service** to run the headless server in the background automatically.
-- Launch the testing GUI.
-- Uninstall the testing files.
+* **Remote Web UI**: Access game grids, triggers updates, and check status from your phone or tablet on the same local network.
+* **Offscreen Headless Mode**: Runs ASSella as a user service in the background using the systemd runtime.
 
 ---
 
-## What's New: Remote Web UI & Headless Mode
-
-### 📱 Remote Web UI
-Access and manage your game library from your phone or any device on the same WiFi network!
-- **Library Grid**: View all installed games with name, update status, and Steam header images.
-- **Search**: Fast local filter to search your games by name.
-- **Queue Control**: Trigger updates for single games, check for library updates, or click **Update All** to download all pending updates.
-- **Live Progress Monitor**: Docked at the bottom, showing the active download name, current stage (manifest check, downloading, removing DRM), speed, and queue count.
-
-### ⚙️ Headless Mode
-Run ASSella silently in the background without opening the desktop GUI window:
-- Run via CLI: `/path/to/venv/bin/python src/main.py --headless --port 8765`
-- Runs in the background (using Qt offscreen platform) so downloads and tools work flawlessly.
-- Exposes Web UI on port `8765` (customizable with `--port`).
-- Configurable as a systemd user service via the `install_testing.sh` menu.
-
----
-
-## What ASSella adds over ACCELA
-
-### Downloads
-
-- **Smart Selection** — remembers which depots you chose for each game and automatically reuses them on future updates. Only prompts again when a new depot appears since your last selection.
-- **Download Screen 2.0 (Beta)** — redesigned download screen with game names in the queue instead of raw depot IDs. Toggle in Settings > ASSella.
-- **Pause / Stop controls** — flat clickable text controls below the download progress bar for pausing, resuming, and stopping the current download.
-- **Post-download status fix** — after downloading a game update, the library status correctly reflects the updated state without requiring a manual recheck.
-- **Linux DRM detection** — if all downloading depots are Linux-native, ASSella shows "No DRM (Linux)" in the post-download stats instead of an error.
-
-### Library
-
-- Installed Steam games are not shown in the ACCELA library view to reduce noise.
-
-### SLSsteam / Config
-
-- **Fake AppID Database Integration (Highly Experimental)** — toggle in Settings > ASSella. Merges a curated list of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml on every boot.
-- **Steam Update Blocking status** — the home screen shows whether Steam auto-updates are blocked via steam.cfg.
-
-### Home Screen
-
-- Hubcap API stats shown on the home screen: daily usage, key expiry, and a reset indicator.
-- Update All button to queue updates for all games with available updates.
-
-### Tools (Settings > Tools)
-
-- **Configure Achievements** — launch SLScheevo to set up achievement credentials.
-- **Remove DRM** — run Steamless manually on a game executable.
-- **Remove DRM (AIO)** — run Steamless-AIO manually.
-- **Headcrab** — auto-detects whether Headcrab is installed. Shows install status and provides a button to install or re-run Headcrab from within ASSella.
-
-### ASSella Settings Tab
-
-- Smart Selection toggle
-- Auto-fetch update manifests on boot toggle
-- Download Screen 2.0 Beta toggle
-- Fake AppID Database Integration toggle (experimental)
-- **Enable Remote Web UI** — starts/stops the background Web UI server.
-- Uninstall ASSella button — confirms the action, optionally restores the original ACCELA backup, and reverts the desktop shortcut.
-
-### Bundled Tools
-
-- Workshop Downloader (beta) — `workshop_downloader_linux`
-- Steamless AIO (beta) — `steamless-aio.sh`
-
----
-
-## Requirements
-
-- Headcrab (recommended) — installs SLSteam and patches Steam for ASSella compatibility:
+## 📋 Requirements
+* **Headcrab (SLSsteam)**: Required to intercept and download depots:
   `curl -fsSL headcrab.pages.dev | bash`
-- SLSteam — required for depot downloading
-- A valid Hubcap API key
+* **.NET 9 Runtime**: Automatically installed if missing, required for Steamless and DepotDownloader tools.
+* **Hubcap API Key**: Required to query manifest histories.
 
 ---
 
