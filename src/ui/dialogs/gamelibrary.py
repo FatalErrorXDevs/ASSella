@@ -262,29 +262,43 @@ class GameItemWidget(QWidget):
             self.manifest_label.setText("Manifest: N/A")
             self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
         else:
-            db = DatabaseManager() if DatabaseManager else None
+            from utils.helpers import get_base_path
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
             last_updated = None
-            if db:
-                last_updated = db.get_cache_time(appid)
+            if fpath.exists():
+                try:
+                    last_updated = fpath.stat().st_mtime
+                except Exception:
+                    pass
 
-            if update_status == "checking" or not last_updated:
+            if update_status == "checking":
                 self.manifest_label.setText("Manifest: Fetching...")
                 self.manifest_label.setStyleSheet("color: #FFA500; font-style: italic; font-size: 11px;")
+            elif not last_updated:
+                self.manifest_label.setText("Manifest: Not Found")
+                self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
             else:
                 import time
                 age_seconds = time.time() - last_updated
                 if age_seconds < 0:
                     age_seconds = 0
-                hours = age_seconds / 3600
-                if hours <= 24:
-                    age_str = "1-24hrs ago"
-                elif hours <= 72:
-                    age_str = "1-3days ago"
-                else:
-                    days = int(age_seconds / 86400)
-                    age_str = f"{days}d ago"
 
-                self.manifest_label.setText(f"Manifest: Cached ({age_str})")
+                if age_seconds < 60:
+                    age_str = f"{int(age_seconds)}s"
+                elif age_seconds < 3600:
+                    age_str = f"{int(age_seconds // 60)}m"
+                elif age_seconds < 86400:
+                    age_str = f"{int(age_seconds // 3600)}h"
+                else:
+                    days = int(age_seconds // 86400)
+                    if days < 30:
+                        age_str = f"{days}d"
+                    elif days < 365:
+                        age_str = f"{days // 30}mo"
+                    else:
+                        age_str = f"{days // 365}y"
+
+                self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
                 if applist_2_0_enabled:
                     self.manifest_label.setStyleSheet("color: rgba(130, 195, 130, 0.85); font-style: italic; font-size: 10px;")
                 else:
@@ -336,6 +350,7 @@ class GameLibraryDialog(QDialog):
     goldberg_check_complete = pyqtSignal(bool)  # is_applied
     manifest_download_complete = pyqtSignal(str, str, dict)  # fpath, error, game_data
     uninstall_complete = pyqtSignal(bool, str)  # success, error_message
+    zip_parse_complete = pyqtSignal(object, str, dict, object, object)  # parsed_data, filepath, game_data, dialog, parse_progress
 
     def __init__(self, main_window, show_details_for_appid=None):
         super().__init__(main_window)
@@ -623,6 +638,7 @@ class GameLibraryDialog(QDialog):
         self.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.manifest_download_complete.connect(self._on_manifest_download_complete)
         self.uninstall_complete.connect(self._on_uninstall_complete)
+        self.zip_parse_complete.connect(self._on_zip_parse_complete)
 
     # --- Scanning & Updates ---
 
@@ -1216,26 +1232,46 @@ class GameLibraryDialog(QDialog):
 
         # Manifest Age Calculation
         manifest_age_value = "Not Cached / N/A"
-        if DatabaseManager and appid not in ("0", "N/A", "unknown"):
-            db = DatabaseManager()
-            last_updated = db.get_cache_time(appid)
+        if appid not in ("0", "N/A", "unknown"):
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            last_updated = None
+            if fpath.exists():
+                try:
+                    last_updated = fpath.stat().st_mtime
+                except Exception:
+                    pass
             if last_updated:
                 import datetime
+                import time
                 dt = datetime.datetime.fromtimestamp(last_updated)
                 formatted_date = dt.strftime("%Y-%m-%d %H:%M:%S")
-                import time
-                age_seconds = time.time() - last_updated
-                if age_seconds < 0:
-                    age_seconds = 0
-                hours = age_seconds / 3600
-                if hours <= 24:
-                    age_str = f"{int(hours)}h ago"
-                elif hours <= 72:
-                    age_str = f"{int(hours/24)}d ago"
+                
+                age_seconds = int(time.time() - last_updated)
+                if age_seconds < 0: age_seconds = 0
+                
+                if age_seconds < 60:
+                    age_str = f"{age_seconds}s"
+                elif age_seconds < 3600:
+                    age_str = f"{age_seconds // 60}m {age_seconds % 60}s"
+                elif age_seconds < 86400:
+                    hours = age_seconds // 3600
+                    mins = (age_seconds % 3600) // 60
+                    age_str = f"{hours}h {mins}m"
                 else:
-                    days = int(age_seconds / 86400)
-                    age_str = f"{days}d ago"
-                manifest_age_value = f"Cached ({age_str} - {formatted_date})"
+                    days = age_seconds // 86400
+                    hours = (age_seconds % 86400) // 3600
+                    if days < 30:
+                        age_str = f"{days}d {hours}h"
+                    elif days < 365:
+                        months = days // 30
+                        rem_days = days % 30
+                        age_str = f"{months}mo {rem_days}d"
+                    else:
+                        years = days // 365
+                        months = (days % 365) // 30
+                        age_str = f"{years}y {months}mo"
+                    
+                manifest_age_value = f"{age_str} ago ({formatted_date})"
         form.addRow(_lbl("Manifest Age:"), _lbl(manifest_age_value))
 
         # Last Checked for Updates Calculation
@@ -1288,29 +1324,80 @@ class GameLibraryDialog(QDialog):
         update_row.addWidget(check_btn)
         layout.addLayout(update_row)
 
-        # Row with Auto-update checkbox
-        auto_update_row = QHBoxLayout()
+        # Checkboxes for Auto-update and Exclude settings
+        checkbox_layout = QVBoxLayout()
+        checkbox_layout.setSpacing(4)
+        
         self.update_manifest_checkbox = QCheckBox("Auto-update manifest if update found")
         self.update_manifest_checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
         self.update_manifest_checkbox.setChecked(
-            self.settings.value("auto_update_manifest_on_check", False, type=bool) if self.settings else False
+            self.settings.value(f"auto_update_manifest/{appid}", True, type=bool) if self.settings else True
         )
         self.update_manifest_checkbox.stateChanged.connect(
-            lambda state: self.settings.setValue("auto_update_manifest_on_check", bool(state)) if self.settings else None
+            lambda state: self.settings.setValue(f"auto_update_manifest/{appid}", bool(state)) if self.settings else None
         )
-        auto_update_row.addWidget(self.update_manifest_checkbox)
-        auto_update_row.addStretch()
-        layout.addLayout(auto_update_row)
+        checkbox_layout.addWidget(self.update_manifest_checkbox)
 
-        # Validate/Update Button
+        self.exclude_update_all_checkbox = QCheckBox("Exclude from 'Update All'")
+        self.exclude_update_all_checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
+        self.exclude_update_all_checkbox.setChecked(
+            self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool) if self.settings else False
+        )
+        self.exclude_update_all_checkbox.stateChanged.connect(
+            lambda state: self.settings.setValue(f"exclude_from_update_all/{appid}", bool(state)) if self.settings else None
+        )
+        checkbox_layout.addWidget(self.exclude_update_all_checkbox)
+        
+        layout.addLayout(checkbox_layout)
+
+        # Validate/Update Button & Rollback Combo
+        action_layout = QHBoxLayout()
         validate_btn = QPushButton()
         is_update = game_data.get("update_status") == "update_available"
         validate_btn.setText("Download Update" if is_update else "Validate Files")
         validate_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
+        
+        manifests_dir = get_base_path() / "hubcap_manifests"
+        backups = sorted(manifests_dir.glob(f"accela_fetch_{appid}_*.zip"), reverse=True)
+        
+        rollback_combo = QComboBox()
+        rollback_combo.setStyleSheet("font-size: 11px; padding: 2px;")
+        rollback_combo.addItem("Latest Build", None)
+        for b in backups:
+            try:
+                # Format: accela_fetch_{appid}_YYYYMMDD_HHMMSS.zip
+                parts = b.stem.split("_")
+                ts1, ts2 = parts[-2], parts[-1]
+                if len(ts1) == 8 and len(ts2) == 6:
+                    date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]} {ts2[:2]}:{ts2[2:4]}:{ts2[4:]}"
+                    rollback_combo.addItem(f"Backup: {date_str}", str(b))
+                else:
+                    rollback_combo.addItem(f"Backup: {b.name}", str(b))
+            except Exception:
+                rollback_combo.addItem(f"Backup: {b.name}", str(b))
+                
+        if backups:
+            action_layout.addWidget(rollback_combo)
+            
+            def _on_combo_changed():
+                if rollback_combo.currentData() is not None:
+                    validate_btn.setText("Install Selected Build")
+                else:
+                    is_update_now = game_data.get("update_status") == "update_available"
+                    validate_btn.setText("Download Update" if is_update_now else "Validate Files")
+                    
+            rollback_combo.currentIndexChanged.connect(_on_combo_changed)
+        
+        action_layout.addWidget(validate_btn)
+        layout.addLayout(action_layout)
+        
         validate_btn.clicked.connect(
-            lambda: self._fetch_game_manifest(game_data, dialog)
+            lambda *args: self._fetch_game_manifest(
+                game_data, 
+                dialog, 
+                local_path_override=rollback_combo.currentData() if backups else None
+            )
         )
-        layout.addWidget(validate_btn)
 
         # Signals for checking updates
         def _on_check_clicked():
@@ -1382,7 +1469,6 @@ class GameLibraryDialog(QDialog):
         save_btn.setFixedWidth(60)
         save_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         hbox.addWidget(save_btn)
-
         layout.addLayout(hbox)
 
         appid = str(game_data.get("appid", "0"))
@@ -1570,11 +1656,16 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog, download_only: bool = False) -> None:
-        app_id = str(game_data.get("appid", "0"))
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog, download_only: bool = False, local_path_override: str = None) -> None:
+        """Trigger background manifest download and show progress."""
+        api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
+        if not api_key:
+            QMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
+            return
 
+        app_id = str(game_data.get("appid"))
         if app_id in ("0", "N/A", "unknown"):
-            QMessageBox.warning(self, "Error", "Invalid App ID.")
+            QMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
             return
 
         name = game_data.get("game_name", "Unknown")
@@ -1586,10 +1677,14 @@ class GameLibraryDialog(QDialog):
         )
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
-        if fpath.exists() and (status != "update_available" or is_fresh):
+        # Flag rollback so downstream won't mark manifest as fresh
+        is_rollback = local_path_override is not None
+
+        local_path = None
+        if is_rollback and Path(local_path_override).exists():
+            local_path = local_path_override
+        elif fpath.exists() and (status != "update_available" or is_fresh):
             local_path = str(fpath)
-        else:
-            local_path = None
 
         if not local_path:
             if download_only:
@@ -1598,6 +1693,10 @@ class GameLibraryDialog(QDialog):
             self._handle_download_manifest(app_id, name, game_data, dialog)
         else:
             if not download_only:
+                # For rollback builds, mark game data so we don't clear update_available
+                if is_rollback:
+                    game_data = game_data.copy()
+                    game_data["_is_rollback"] = True
                 self._submit_job(local_path, game_data, dialog)
 
     def _handle_download_manifest(self, app_id, name, game_data, dialog):
@@ -1675,85 +1774,126 @@ class GameLibraryDialog(QDialog):
                 logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
 
     def _submit_job(self, filepath: str, game_data: dict, dialog: QDialog) -> None:
-        """Submit the job to the main window queue."""
+        """Submit the job to the main window queue.
+
+        The zip is parsed in a background thread so the main thread stays
+        responsive. A loading dialog is shown while parsing runs.
+
+        IMPORTANT: parse_progress must never be touched from the background
+        thread — Qt widgets are not thread-safe. The reference is passed through
+        the signal so the main-thread slot (_on_zip_parse_complete) closes it.
+        """
+        # Show a transient loading indicator while parsing happens in background
+        parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
+        parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        parse_progress.setMinimumDuration(200)  # only show if parse takes > 200 ms
+        parse_progress.setCancelButton(None)
+        parse_progress.show()
+
+        def _parse_in_background():
+            try:
+                from core.tasks.process_zip_task import ProcessZipTask
+                zip_task = ProcessZipTask()
+                parsed = zip_task.run(filepath)
+            except Exception as e:
+                logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+                parsed = None
+            # Emit the signal — the main-thread slot will close parse_progress safely.
+            # Never call parse_progress.close() here; Qt widgets must only be
+            # touched from the main thread, and doing so from a background thread
+            # will deadlock or corrupt the UI.
+            self.zip_parse_complete.emit(parsed, filepath, game_data, dialog, parse_progress)
+
+        self.executor.submit(_parse_in_background)
+
+    def _on_zip_parse_complete(
+        self, parsed_data: object, filepath: str, game_data: dict, dialog: QDialog,
+        parse_progress: object = None
+    ) -> None:
+        """Slot called on the main thread when background zip parsing is done.
+
+        parse_progress is closed here (on the main thread) — it must never be
+        closed from the background thread that performed the parsing.
+        """
+        if parse_progress is not None:
+            try:
+                parse_progress.close()
+            except Exception:
+                pass
         metadata = {
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
             "game_name": game_data.get("game_name", "Unknown"),
         }
-        
-        try:
-            from core.tasks.process_zip_task import ProcessZipTask
-            zip_task = ProcessZipTask()
-            parsed_data = zip_task.run(filepath)
-            
-            if parsed_data and parsed_data.get("depots"):
-                from ui.dialogs.depotselection import DepotSelectionDialog
-                from utils.settings import get_settings
-                settings = get_settings()
-                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
-                depots = parsed_data.get("depots")
-                appid = str(parsed_data["appid"])
-                
-                selected_depots = None
-                
-                # Smart selection logic
-                import json
-                smart_active = settings.value("smart_depot_selection", False, type=bool)
-                val = settings.value(f"depot_selection/{appid}", "", type=str)
-                should_prompt = True
-                
-                if smart_active and val:
-                    try:
-                        data = json.loads(val)
-                        cached_selected = data.get("selected", [])
-                        cached_all = data.get("all_available", [])
-                        current_depots = list(depots.keys())
-                        has_new_depot = any(d not in cached_all for d in current_depots)
-                        if not has_new_depot:
-                            selected_depots = [d for d in cached_selected if d in depots]
-                            should_prompt = False
-                            logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
-                    except Exception as e:
-                        logger.warning(f"Error parsing cached depot selection: {e}")
-                
-                if should_prompt:
-                    if auto_skip and len(depots) == 1:
-                        selected_depots = list(depots.keys())
-                    else:
-                        depot_dialog = DepotSelectionDialog(
-                            parsed_data["appid"],
-                            parsed_data.get("game_name", ""),
-                            depots,
-                            parsed_data.get("header_url"),
-                            self.main_window,
-                        )
-                        if depot_dialog.exec():
-                            selected_depots = depot_dialog.get_selected_depots()
-                
-                if selected_depots:
-                    metadata["selected_depots_list"] = selected_depots
-                    # Cache the choice
-                    try:
-                        settings.setValue(
-                            f"depot_selection/{appid}",
-                            json.dumps({
-                                "selected": selected_depots,
-                                "all_available": list(depots.keys()),
-                                "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
-                            })
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to cache depot selection: {e}")
+        # Propagate rollback flag so task_manager won't mark game as up_to_date
+        if game_data.get("_is_rollback"):
+            metadata["_is_rollback"] = True
+
+        if parsed_data and parsed_data.get("depots"):
+            from ui.dialogs.depotselection import DepotSelectionDialog
+            from utils.settings import get_settings
+            import json
+            settings = get_settings()
+            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            depots = parsed_data.get("depots")
+            appid = str(parsed_data["appid"])
+
+            selected_depots = None
+
+            # Smart selection logic
+            smart_active = settings.value("smart_depot_selection", False, type=bool)
+            val = settings.value(f"depot_selection/{appid}", "", type=str)
+            should_prompt = True
+
+            if smart_active and val:
+                try:
+                    data = json.loads(val)
+                    cached_selected = data.get("selected", [])
+                    cached_all = data.get("all_available", [])
+                    current_depots = list(depots.keys())
+                    has_new_depot = any(d not in cached_all for d in current_depots)
+                    if not has_new_depot:
+                        selected_depots = [d for d in cached_selected if d in depots]
+                        should_prompt = False
+                        logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
+                except Exception as e:
+                    logger.warning(f"Error parsing cached depot selection: {e}")
+
+            if should_prompt:
+                if auto_skip and len(depots) == 1:
+                    selected_depots = list(depots.keys())
                 else:
-                    # User cancelled depot selection, don't submit job
-                    logger.info("User cancelled depot selection.")
-                    dialog.accept()
-                    self.accept()
-                    return
-        except Exception as e:
-            logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+                    depot_dialog = DepotSelectionDialog(
+                        parsed_data["appid"],
+                        parsed_data.get("game_name", ""),
+                        depots,
+                        parsed_data.get("header_url"),
+                        self.main_window,
+                    )
+                    if depot_dialog.exec():
+                        selected_depots = depot_dialog.get_selected_depots()
+
+            if selected_depots:
+                metadata["selected_depots_list"] = selected_depots
+                # Cache the choice
+                try:
+                    settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                        })
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
+            else:
+                # User cancelled depot selection, don't submit job
+                logger.info("User cancelled depot selection.")
+                dialog.accept()
+                self.accept()
+                return
 
         self.main_window.job_queue.add_job(filepath, metadata)
         dialog.accept()

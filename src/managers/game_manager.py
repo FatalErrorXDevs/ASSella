@@ -337,10 +337,6 @@ class GameManager(QObject):
         # Reset cancel flag
         self._scan_cancelled = False
 
-        # Clear existing games before scanning
-        self.games.clear()
-        self.filtered_games.clear()
-
         # Create a worker function that does the scanning
         def do_scan():
             return self._perform_scan()
@@ -378,6 +374,9 @@ class GameManager(QObject):
         # Cache the main Steam installation path to avoid repeated lookups
         steam_install_path = find_steam_install()
 
+        # Thread-safe local list to collect scanned games
+        scanned_games = []
+
         for library_path in steam_libraries:
             if self._scan_cancelled:
                 logger.info("Scan cancelled before scanning remaining libraries")
@@ -385,10 +384,10 @@ class GameManager(QObject):
             logger.info(f"Scanning library: {library_path}")
             scanned_libraries += 1
 
-            games_found += self._scan_library(library_path, steam_install_path)
+            games_found += self._scan_library(library_path, steam_install_path, scanned_games)
 
         accela_games_found = sum(
-            1 for game in self.games if game.get("is_accela_install")
+            1 for game in scanned_games if game.get("is_accela_install")
         )
         logger.info(
             "Scan complete. Scanned %s library location(s), found %s installed Steam "
@@ -398,7 +397,8 @@ class GameManager(QObject):
             accela_games_found,
         )
         # Sort games after scanning
-        self.games = self._get_sorted_games(self.games)
+        self.games = self._get_sorted_games(scanned_games)
+        self.filtered_games.clear()
         self._apply_filters()
 
         # Rebuild O(1) appid lookup dict after scan
@@ -425,7 +425,7 @@ class GameManager(QObject):
 
         return games_found
 
-    def _scan_library(self, library_path, steam_install_path):
+    def _scan_library(self, library_path, steam_install_path, scanned_games):
         """Scan a single Steam library for games."""
         games_found = 0
         steamapps_path = os.path.join(library_path, "steamapps")
@@ -438,7 +438,7 @@ class GameManager(QObject):
             logger.warning(f"Common directory not found at: {common_path}")
             return 0
 
-        seen_paths = {game.get("install_path") for game in self.games}
+        seen_paths = {game.get("install_path") for game in scanned_games}
 
         # Scan all installed Steam game directories in this library.
         try:
@@ -475,7 +475,7 @@ class GameManager(QObject):
                             marker_path=marker_path,
                         )
                         if game_data:
-                            self.games.append(game_data)
+                            scanned_games.append(game_data)
                             seen_paths.add(game_path)
                             games_found += 1
                             logger.debug(

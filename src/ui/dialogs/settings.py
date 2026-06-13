@@ -296,7 +296,7 @@ class SettingsDialog(QDialog):
         self._create_assela_tab()
         self._create_downloads_tab()
         self._create_morrenus_tab()
-        self._create_webui_tab()
+        # self._create_webui_tab()
         self._create_steam_tab()
         self._create_tools_tab()
         self._create_style_tab()
@@ -411,17 +411,45 @@ class SettingsDialog(QDialog):
         )
         group_layout.addWidget(self.applist_2_0_beta_checkbox)
 
-        self.fakeappid_db_integration_checkbox = create_checkbox_setting(
-            "Fake AppID Database Integration",
-            "fakeappid_db_integration",
-            False,
-            self,
-            "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
-        )
-        group_layout.addWidget(self.fakeappid_db_integration_checkbox)
+        # self.fakeappid_db_integration_checkbox = create_checkbox_setting(
+        #     "Fake AppID Database Integration",
+        #     "fakeappid_db_integration",
+        #     False,
+        #     self,
+        #     "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
+        # )
+        # group_layout.addWidget(self.fakeappid_db_integration_checkbox)
 
         group.setLayout(group_layout)
         layout.addWidget(group)
+        
+        # Rollback / Manifest Backups Group
+        rollback_group = QGroupBox("Manifest Rollback Settings")
+        rollback_layout = QVBoxLayout()
+        
+        self.save_old_manifests_checkbox = QCheckBox("Keep old manifests (Rollback)")
+        self.save_old_manifests_checkbox.setToolTip("Save older manifest versions to allow rolling back to previous builds.")
+        self.save_old_manifests_checkbox.setChecked(
+            self.settings.value("save_old_manifests", True, type=bool)
+        )
+        rollback_layout.addWidget(self.save_old_manifests_checkbox)
+        
+        limit_layout = QHBoxLayout()
+        rollback_limit_label = QLabel("Max to keep:")
+        rollback_limit_label.setToolTip("Maximum number of older manifests to keep per game.")
+        self.max_old_manifests_spinbox = QSpinBox()
+        self.max_old_manifests_spinbox.setRange(1, 100)
+        current_rollback_max = self.settings.value("max_old_manifests", 3, type=int)
+        self.max_old_manifests_spinbox.setValue(current_rollback_max)
+        
+        limit_layout.addWidget(rollback_limit_label)
+        limit_layout.addWidget(self.max_old_manifests_spinbox)
+        limit_layout.addStretch()
+        rollback_layout.addLayout(limit_layout)
+        
+        rollback_group.setLayout(rollback_layout)
+        layout.addWidget(rollback_group)
+
         layout.addStretch()
 
         # ── Uninstall (Linux only) ────────────────────────────────────────
@@ -1500,7 +1528,7 @@ class SettingsDialog(QDialog):
 
         # Check if the toggle changed
         old_val = self.settings.value("fakeappid_db_integration", False, type=bool)
-        new_val = self.fakeappid_db_integration_checkbox.isChecked()
+        new_val = self.fakeappid_db_integration_checkbox.isChecked() if self.fakeappid_db_integration_checkbox is not None else False
         self.settings.setValue("fakeappid_db_integration", new_val)
 
         if old_val != new_val:
@@ -1518,10 +1546,10 @@ class SettingsDialog(QDialog):
 
         # Check if Remote Web UI toggle changed
         old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
-        new_web_ui = self.remote_web_ui_checkbox.isChecked()
+        new_web_ui = self.remote_web_ui_checkbox.isChecked() if self.remote_web_ui_checkbox is not None else False
         
         old_port = self.settings.value("web_ui_port", 8765, type=int)
-        new_port = self.web_ui_port_spinbox.value()
+        new_port = self.web_ui_port_spinbox.value() if hasattr(self, "web_ui_port_spinbox") and self.web_ui_port_spinbox is not None else old_port
         
         self.settings.setValue("enable_remote_web_ui", new_web_ui)
         self.settings.setValue("web_ui_port", new_port)
@@ -1551,6 +1579,11 @@ class SettingsDialog(QDialog):
             except (ValueError, TypeError):
                 pass
         self.settings.setValue("max_downloads", val)
+
+        if hasattr(self, "save_old_manifests_checkbox"):
+            self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
+        if hasattr(self, "max_old_manifests_spinbox"):
+            self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
 
 
 

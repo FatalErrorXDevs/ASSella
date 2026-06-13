@@ -5,7 +5,7 @@ import sys
 from collections import deque
 from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QMetaObject
 from PyQt6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
@@ -52,6 +52,7 @@ from utils.settings import get_settings
 from utils.task_runner import TaskRunner
 from core.morrenus_api import get_user_stats
 from datetime import datetime, timezone
+from utils.version import app_version
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +396,7 @@ class SimplifiedTerminalWidget(QWidget):
         dl_card_layout.setContentsMargins(12, 6, 12, 6)
         self.dl_text_2_0 = QLabel("Downloading Game Files")
         self.dl_badge_2_0 = QLabel("Pending")
-        self.dl_badge_2_0.setFixedWidth(80)
+        self.dl_badge_2_0.setMinimumWidth(60)
         self.dl_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
         dl_card_layout.addWidget(self.dl_text_2_0, 1)
         dl_card_layout.addWidget(self.dl_badge_2_0)
@@ -407,7 +408,7 @@ class SimplifiedTerminalWidget(QWidget):
         ach_card_layout.setContentsMargins(12, 6, 12, 6)
         self.ach_text_2_0 = QLabel("Generating Achievements")
         self.ach_badge_2_0 = QLabel("Pending")
-        self.ach_badge_2_0.setFixedWidth(80)
+        self.ach_badge_2_0.setMinimumWidth(60)
         self.ach_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ach_card_layout.addWidget(self.ach_text_2_0, 1)
         ach_card_layout.addWidget(self.ach_badge_2_0)
@@ -419,7 +420,7 @@ class SimplifiedTerminalWidget(QWidget):
         drm_card_layout.setContentsMargins(12, 6, 12, 6)
         self.drm_text_2_0 = QLabel("Removing Steam DRM")
         self.drm_badge_2_0 = QLabel("Pending")
-        self.drm_badge_2_0.setFixedWidth(80)
+        self.drm_badge_2_0.setMinimumWidth(60)
         self.drm_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drm_card_layout.addWidget(self.drm_text_2_0, 1)
         drm_card_layout.addWidget(self.drm_badge_2_0)
@@ -639,8 +640,11 @@ class SimplifiedTerminalWidget(QWidget):
 
         # Re-apply 2.0 stages style if statuses exist
         if hasattr(self, "_stage_statuses"):
-            for stage, status in self._stage_statuses.items():
-                self.set_stage_status(stage, status)
+            for stage, val in self._stage_statuses.items():
+                if isinstance(val, tuple):
+                    self.set_stage_status(stage, val[0], val[1])
+                else:
+                    self.set_stage_status(stage, val)
 
     def update_stage_style(self, icon_label: QLabel, status: str):
         # Green for completed, yellow/orange for active, red for error, gray/accent for pending/skipped
@@ -660,7 +664,7 @@ class SimplifiedTerminalWidget(QWidget):
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {color};")
 
-    def update_2_0_stage_style(self, card_widget: QFrame, badge_widget: QLabel, status: str):
+    def update_2_0_stage_style(self, card_widget: QFrame, badge_widget: QLabel, status: str, count: Optional[int] = None):
         accent = self.main_window.accent_color or "#C06C84"
         
         def hex_to_rgba(hex_color, alpha):
@@ -678,12 +682,12 @@ class SimplifiedTerminalWidget(QWidget):
         accent_alpha = hex_to_rgba(accent, 20)
 
         if status == "completed":
-            badge_text = "Completed"
-            badge_style = "background-color: #2ECC71; color: #FFFFFF; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            badge_text = f"Done ({count})" if count is not None else "Done"
+            badge_style = "background-color: #2ECC71; color: #FFFFFF; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
             card_style = "background-color: rgba(46, 204, 113, 15); border: 1px solid rgba(46, 204, 113, 40); border-radius: 6px;"
         elif status == "in_progress":
-            badge_text = "Active"
-            badge_style = f"background-color: {accent}; color: #000000; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            badge_text = f"Active ({count})" if count is not None else "Active"
+            badge_style = f"background-color: {accent}; color: #000000; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
             card_style = f"background-color: {accent_alpha}; border: 1px solid {accent}; border-radius: 6px;"
         elif status == "error":
             badge_text = "Failed"
@@ -692,6 +696,14 @@ class SimplifiedTerminalWidget(QWidget):
         elif status == "skipped":
             badge_text = "Skipped"
             badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
+        elif status == "skipped_linux":
+            badge_text = "Linux Skip"
+            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
+            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
+        elif status == "skipped_no_achievements":
+            badge_text = "N/A"
+            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
             card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
         else:  # "pending"
             badge_text = "Queued"
@@ -702,32 +714,44 @@ class SimplifiedTerminalWidget(QWidget):
         badge_widget.setStyleSheet(badge_style)
         card_widget.setStyleSheet(card_style)
 
-    def set_stage_status(self, stage: str, status: str):
+    def set_stage_status(self, stage: str, status: str, count: Optional[int] = None):
         if not hasattr(self, "_stage_statuses"):
             self._stage_statuses = {}
-        self._stage_statuses[stage] = status
+        self._stage_statuses[stage] = (status, count)
 
         status_map = {
             "pending": "○",
             "in_progress": "▶",
             "completed": "✓",
             "error": "✗",
-            "skipped": "~"
+            "skipped": "~",
+            "skipped_linux": "~",
+            "skipped_no_achievements": "~"
         }
         symbol = status_map.get(status, status)
 
         if stage == "download":
             self.update_stage_style(self.dl_status_icon, symbol)
             if hasattr(self, "dl_card") and self.dl_card:
-                self.update_2_0_stage_style(self.dl_card, self.dl_badge_2_0, status)
+                self.update_2_0_stage_style(self.dl_card, self.dl_badge_2_0, status, count)
         elif stage == "achievements":
             self.update_stage_style(self.ach_status_icon, symbol)
+            if status == "skipped_no_achievements":
+                self.ach_text.setText("Generating Steam Achievements (No Achievements)")
+            elif count is not None:
+                self.ach_text.setText(f"Generating Steam Achievements ({count} achievements)")
+            else:
+                self.ach_text.setText("Generating Steam Achievements")
             if hasattr(self, "ach_card") and self.ach_card:
-                self.update_2_0_stage_style(self.ach_card, self.ach_badge_2_0, status)
+                self.update_2_0_stage_style(self.ach_card, self.ach_badge_2_0, status, count)
         elif stage == "steamless":
             self.update_stage_style(self.steam_status_icon, symbol)
+            if status == "skipped_linux":
+                self.steam_text.setText("Removing Steam DRM (Linux Skip)")
+            else:
+                self.steam_text.setText("Removing Steam DRM (Steamless)")
             if hasattr(self, "drm_card") and self.drm_card:
-                self.update_2_0_stage_style(self.drm_card, self.drm_badge_2_0, status)
+                self.update_2_0_stage_style(self.drm_card, self.drm_badge_2_0, status, count)
 
     def reset_stages(self):
         self.set_stage_status("download", "pending")
@@ -737,6 +761,8 @@ class SimplifiedTerminalWidget(QWidget):
     def show_idle(self):
         self.layout.setCurrentIndex(0)
         self.update_stats()
+        if hasattr(self.main_window, "_update_tool_update_visibility"):
+            self.main_window._update_tool_update_visibility()
 
     def show_active_job(self, game_name: str = "Installing Game..."):
         self.game_title_label.setText(game_name)
@@ -750,6 +776,8 @@ class SimplifiedTerminalWidget(QWidget):
             self.active_checklist_stack.setCurrentIndex(0)
 
         self.layout.setCurrentIndex(1)
+        if hasattr(self.main_window, "_update_tool_update_visibility"):
+            self.main_window._update_tool_update_visibility()
 
 
 class MainWindow(QMainWindow):
@@ -802,6 +830,10 @@ class MainWindow(QMainWindow):
         self._autofetch_runner = None
 
         self.update_check_timer = None
+        self._tool_update_available_flag = False
+        self._tool_update_check_running = False
+        # Track appids whose manifests have already been auto-fetched in this session
+        self._autofetched_appids: set = set()
 
         self._setup_window_properties()
         self._initialize_managers()
@@ -813,6 +845,7 @@ class MainWindow(QMainWindow):
         self._setup_key_sequence_detector()
         self._setup_exit_shortcut()
         self._setup_update_timer()
+        self.check_tool_updates()
 
         # Start Web Server on startup if enabled
         enable_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
@@ -1006,13 +1039,18 @@ class MainWindow(QMainWindow):
             self.game_manager.check_game_updates_async()
 
     def _on_boot_autofetch_manifests(self) -> None:
-        """Sequential background fetch of update manifests on startup."""
-        if self._autofetch_on_boot_done:
-            return
-        self._autofetch_on_boot_done = True
+        """Sequential background fetch of update manifests whenever all_updates_checked fires.
 
+        Runs on the first batch check (boot) and also on any subsequent check triggered by
+        the periodic timer, ensuring newly-detected updates get their manifest downloaded
+        automatically without requiring a tool restart.
+        """
         if not self.settings.value("autofetch_manifests_on_boot", False, type=bool):
             return
+
+        # Guard: only mark boot done after the first run, but keep running for periodic checks
+        if not self._autofetch_on_boot_done:
+            self._autofetch_on_boot_done = True
 
         from utils.helpers import get_base_path
         games_to_fetch = []
@@ -1020,14 +1058,23 @@ class MainWindow(QMainWindow):
             appid = game.get("appid")
             status = game.get("update_status")
             if appid and appid not in ("0", "N/A", "unknown") and status == "update_available":
-                # Check if we already have a fresh manifest
+                # Check if this game is excluded from background auto-update manifest
+                if not self.settings.value(f"auto_update_manifest/{appid}", True, type=bool):
+                    logger.debug(f"Auto-fetch background: AppID {appid} is excluded from manifest auto-fetch.")
+                    continue
+                # Skip if already fetched this session and the file is still fresh
                 fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
                 is_fresh = self.settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
-                if not (fpath.exists() and is_fresh):
-                    games_to_fetch.append((appid, game.get("game_name", "Unknown")))
+                if fpath.exists() and is_fresh:
+                    continue
+                if appid in self._autofetched_appids:
+                    # Already attempted in this session but file is not fresh — retry
+                    self._autofetched_appids.discard(appid)
+                games_to_fetch.append((appid, game.get("game_name", "Unknown")))
+                self._autofetched_appids.add(appid)
 
         if not games_to_fetch:
-            logger.info("Auto-fetch on boot: no update manifests need downloading.")
+            logger.info("Auto-fetch: no update manifests need downloading.")
             return
 
         logger.info(f"Auto-fetch on boot: starting background fetch for {len(games_to_fetch)} games.")
@@ -1077,6 +1124,7 @@ class MainWindow(QMainWindow):
             # 'update_available' games are left as-is (status won't change until downloaded).
             self.game_manager.reset_up_to_date_for_recheck()
             self.game_manager.check_game_updates_async()
+        self.check_tool_updates()
 
     def _setup_ui(self) -> None:
         """Setup the main UI components."""
@@ -1626,7 +1674,13 @@ class MainWindow(QMainWindow):
             return
 
         games = self.game_manager.get_all_games()
-        updateable_games = [g for g in games if g.get("update_status") == "update_available"]
+        updateable_games = []
+        for g in games:
+            if g.get("update_status") == "update_available":
+                appid = str(g.get("appid", ""))
+                if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
+                    continue
+                updateable_games.append(g)
 
         if not updateable_games:
             QMessageBox.information(
@@ -1646,7 +1700,13 @@ class MainWindow(QMainWindow):
             return
 
         games = self.game_manager.get_all_games()
-        updateable_games = [g for g in games if g.get("update_status") == "update_available"]
+        updateable_games = []
+        for g in games:
+            if g.get("update_status") == "update_available":
+                appid = str(g.get("appid", ""))
+                if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
+                    continue
+                updateable_games.append(g)
         count = len(updateable_games)
 
         if count > 0:
@@ -1713,6 +1773,67 @@ class MainWindow(QMainWindow):
 
         self.titlebar_position = position
         logger.info(f"Titlebar repositioned to: {position}")
+
+    def check_tool_updates(self) -> None:
+        """Start a background thread to check for tool self-updates from GitHub."""
+        import threading
+        import urllib.request
+
+        # Prevent multiple concurrent checks from running at the same time
+        if self._tool_update_check_running:
+            logger.debug("Tool update check already in progress, skipping.")
+            return
+        self._tool_update_check_running = True
+
+        def _extract_semver(raw: str) -> str:
+            """Strip build-date prefix (e.g. '20260608+ASSella-') returning just the version tag."""
+            # Format: YYYYMMDD+ASSella-<version>  OR  <version>
+            if "+ASSella-" in raw:
+                return raw.split("+ASSella-", 1)[1].strip()
+            return raw.strip()
+
+        def _check_sync():
+            try:
+                # Check beta branch if local version is pre-release/beta
+                local_clean = _extract_semver(app_version)
+                branch = "beta" if any(x in local_clean.lower() for x in ("beta", "rc")) else "main"
+                url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
+                logger.info(f"Checking for tool updates from branch: {branch}")
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "ASSella-Updater"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    remote_raw = response.read().decode("utf-8").strip()
+                    remote_clean = _extract_semver(remote_raw)
+                    logger.info(
+                        f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
+                    )
+                    if remote_clean and remote_clean != local_clean:
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_on_tool_update_available",
+                            Qt.ConnectionType.QueuedConnection
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to check tool updates from GitHub: {e}")
+            finally:
+                self._tool_update_check_running = False
+
+        t = threading.Thread(target=_check_sync, daemon=True)
+        t.start()
+
+    @pyqtSlot()
+    def _on_tool_update_available(self) -> None:
+        """Slot triggered when a tool update is available."""
+        self._tool_update_available_flag = True
+        self._update_tool_update_visibility()
+
+    def _update_tool_update_visibility(self) -> None:
+        """Only show the update label when we are on the main/idle screen (layout index 0)."""
+        if hasattr(self, "bottom_titlebar") and self.bottom_titlebar:
+            show = getattr(self, "_tool_update_available_flag", False) and getattr(self, "simplified_terminal", None) and self.simplified_terminal.layout.currentIndex() == 0
+            self.bottom_titlebar.show_update_indicator(show)
 
     @staticmethod
     def _cleanup_logging() -> None:

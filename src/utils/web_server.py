@@ -557,7 +557,15 @@ class WebServerManager:
                 return
 
             games = self.main_window.game_manager.get_all_games()
-            updateable = [g for g in games if g.get("update_status") == "update_available"]
+            settings = get_settings()
+            updateable = []
+            for g in games:
+                if g.get("update_status") == "update_available":
+                    appid = str(g.get("appid", ""))
+                    if settings and settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
+                        continue
+                    updateable.append(g)
+
             if not updateable:
                 logger.info("Web UI: Update All triggered, but no games need updates.")
                 return

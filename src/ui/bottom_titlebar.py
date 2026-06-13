@@ -1,7 +1,7 @@
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer, QPropertyAnimation
 from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QWidget,
+    QGraphicsOpacityEffect,
 )
 
 from utils.helpers import get_base_path
@@ -70,6 +71,8 @@ class BottomTitleBar(QFrame):
         self.maximize_button: Optional[QPushButton] = None
         self.close_button: Optional[QPushButton] = None
 
+        self.update_arrow_label: Optional[QLabel] = None
+
         self._setup_ui()
         self._apply_style()
         logger.debug("CustomTitleBar initialized.")
@@ -109,6 +112,22 @@ class BottomTitleBar(QFrame):
         version_label.setStyleSheet("color: #888888;")
         version_label.setToolTip("View credits")
         layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.update_arrow_label = QLabel(" ⬆ Update Available")
+        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold;")
+        self.update_arrow_label.setVisible(False)
+        layout.addWidget(self.update_arrow_label, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # Pulse fading effect using QGraphicsOpacityEffect & QPropertyAnimation
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.update_arrow_label.setGraphicsEffect(self.opacity_effect)
+
+        self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_animation.setDuration(3000) # Super slow 3-second cycle
+        self.fade_animation.setKeyValueAt(0, 0.15) # Pulse start (almost invisible)
+        self.fade_animation.setKeyValueAt(0.5, 0.75) # Pulse peak (75% opacity)
+        self.fade_animation.setKeyValueAt(1, 0.15) # Pulse end
+        self.fade_animation.setLoopCount(-1) # Infinite looping
 
         widget.setMinimumSize(widget.sizeHint())
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -402,6 +421,15 @@ class BottomTitleBar(QFrame):
             window.startSystemMove()
 
         event.accept()
+
+    def show_update_indicator(self, show: bool) -> None:
+        """Show or hide the update indicator and start/stop the pulse animation."""
+        if hasattr(self, "update_arrow_label") and self.update_arrow_label:
+            self.update_arrow_label.setVisible(show)
+            if show:
+                self.fade_animation.start()
+            else:
+                self.fade_animation.stop()
 
 
 """

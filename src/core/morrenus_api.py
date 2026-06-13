@@ -281,6 +281,39 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
     logger.info(f"Downloading manifest {app_id} to {save_path}")
 
     try:
+        from utils.settings import get_settings
+        import datetime
+        settings = get_settings()
+        if settings and settings.value("save_old_manifests", True, type=bool):
+            if save_path.exists():
+                mod_time = save_path.stat().st_mtime
+                dt = datetime.datetime.fromtimestamp(mod_time)
+                ts_str = dt.strftime("%Y%m%d_%H%M%S")
+                backup_path = manifests_dir / f"accela_fetch_{app_id}_{ts_str}.zip"
+                try:
+                    os.rename(save_path, backup_path)
+                    logger.info(f"Backed up previous manifest to {backup_path.name}")
+                except OSError as e:
+                    logger.warning(f"Failed to backup old manifest: {e}")
+                
+                # Cleanup older backups to respect the limit
+                limit = settings.value("max_old_manifests", 3, type=int)
+                backups = list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
+                if len(backups) > limit:
+                    # Sort by modification time (oldest first)
+                    backups.sort(key=lambda p: p.stat().st_mtime)
+                    to_delete = len(backups) - limit
+                    for b in backups[:to_delete]:
+                        try:
+                            os.remove(b)
+                            logger.info(f"Deleted old manifest backup {b.name}")
+                        except OSError as e:
+                            logger.warning(f"Failed to delete old manifest backup {b.name}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error during manifest backup routine: {e}")
+
+    try:
         def do_download(download_url):
             with get_session().get(download_url, headers=headers, stream=True, timeout=60) as r:
                 r.raise_for_status()

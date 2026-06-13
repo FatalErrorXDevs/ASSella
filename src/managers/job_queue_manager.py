@@ -164,18 +164,8 @@ class JobQueueManager(QObject):
                     logger.info(
                         "Steam restart prompt disabled by settings. Skipping prompt."
                     )
-                    if self.jobs_completed_count > 0:
-                        QMessageBox.information(
-                            self.main_window,
-                            "Queue Finished",
-                            f"All {self.jobs_completed_count} job(s) have finished successfully!",
-                        )
             elif self.jobs_completed_count > 0:
-                QMessageBox.information(
-                    self.main_window,
-                    "Queue Finished",
-                    f"All {self.jobs_completed_count} job(s) have finished successfully!",
-                )
+                logger.info(f"Queue Finished: All {self.jobs_completed_count} job(s) have finished successfully!")
 
             self.jobs_completed_count = 0
         finally:

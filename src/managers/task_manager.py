@@ -9,9 +9,12 @@ import threading
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, List
+import json
+import urllib.request
+import urllib.error
 
 # QObject and pyqtSlot for robust threading
-from PyQt6.QtCore import QTimer, QMetaObject, Qt, QObject, pyqtSlot
+from PyQt6.QtCore import QTimer, QMetaObject, Qt, QObject, pyqtSlot, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 try:
@@ -45,10 +48,16 @@ logger = logging.getLogger(__name__)
 
 
 class TaskManager(QObject):
+    achievements_checked = pyqtSignal(bool, int)
+
     def __init__(self, main_window):
         super().__init__(parent=main_window)
         self.main_window = main_window
         self.settings = main_window.settings
+
+        self.achievements_checked.connect(
+            self._on_achievements_checked, Qt.ConnectionType.QueuedConnection
+        )
 
         # Task state
         self.speed_monitor_task = None
@@ -103,6 +112,7 @@ class TaskManager(QObject):
         self._slscheevo_error = False
         self._slscheevo_completed = False
         self._waiting_for_achievements = False
+        self._game_achievements_count = None
 
         self._last_ddm_status = "not_run"
         self._last_ddm_status_text = "N/A"
@@ -136,7 +146,32 @@ class TaskManager(QObject):
     def last_installed_game(self):
         return self._last_installed_game
 
-    def _init_simplified_stages(self):
+    def _is_selected_depots_linux(self, selected_depots) -> bool:
+        if not self.game_data or not selected_depots:
+            return False
+        depots = self.game_data.get("depots") or {}
+        found_any = False
+        for d_id in selected_depots:
+            d_data = depots.get(str(d_id)) or {}
+            if not d_data:
+                # Depot not found in game_data — cannot confirm Linux, skip it
+                continue
+            found_any = True
+            oslist = (d_data.get("oslist") or "").lower()
+            desc = (d_data.get("desc") or "").lower()
+            is_linux = (oslist == "linux") or ("[linux]" in desc) or ("linux" in desc)
+            if not is_linux:
+                return False
+        # Only return True if we actually verified at least one depot is Linux
+        return found_any
+
+    def _is_current_job_linux(self) -> bool:
+        if not self.game_data:
+            return False
+        selected_depots = self.game_data.get("selected_depots_list")
+        return self._is_selected_depots_linux(selected_depots)
+
+    def _init_simplified_stages(self, selected_depots=None):
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             st = self.main_window.simplified_terminal
             st.reset_stages()
@@ -144,8 +179,13 @@ class TaskManager(QObject):
             # Check Steamless status
             steamless_enabled = self.settings.value("use_steamless", False, type=bool)
             steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+            
+            depots_to_check = selected_depots or (self.game_data.get("selected_depots_list") if self.game_data else None)
+            
             if not (steamless_enabled or steamless_aio_enabled):
                 st.set_stage_status("steamless", "skipped")
+            elif depots_to_check and self._is_selected_depots_linux(depots_to_check):
+                st.set_stage_status("steamless", "skipped_linux")
             else:
                 st.set_stage_status("steamless", "pending")
 
@@ -361,6 +401,7 @@ class TaskManager(QObject):
         self._slscheevo_error = False
         self._slscheevo_completed = False
         self._waiting_for_achievements = False
+        self._game_achievements_count = None
 
         # Reset per-job finalize guards
         self._current_active_step = None
@@ -384,7 +425,7 @@ class TaskManager(QObject):
             f"Downloading: {self.game_data.get('game_name', '')}"
         )
 
-        self._init_simplified_stages()
+        self._init_simplified_stages(selected_depots)
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             game_name = self.game_data.get("game_name", "Game")
             self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
@@ -738,7 +779,7 @@ class TaskManager(QObject):
 
         steamless_enabled = self.settings.value("use_steamless", False, type=bool)
         steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
-        if (steamless_enabled or steamless_aio_enabled) and not self.is_cancelling:
+        if (steamless_enabled or steamless_aio_enabled) and not self.is_cancelling and not self._is_current_job_linux():
             if "steamless" not in self._job_steps_completed:
                 self._job_steps_completed.add("steamless")
                 self._current_active_step = "steamless"
@@ -756,7 +797,7 @@ class TaskManager(QObject):
                 if not self._slscheevo_completed:
                     logger.info("Waiting for parallel Steam achievement generation to complete...")
                     if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-                        self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
+                        self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress", getattr(self, "_game_achievements_count", None))
                     self.main_window.drop_text_label.setText(
                         f"Waiting for achievements: {self.game_data.get('game_name', '')}"
                     )
@@ -781,10 +822,15 @@ class TaskManager(QObject):
                     # at "checking" indefinitely because _on_initial_scan_complete
                     # (the only slot that calls check_game_updates_async) disconnects
                     # itself after boot and never runs again for subsequent rescans.
-                    cache = get_update_cache()
-                    cache.set_status(appid, "up_to_date")
-                    cache.save_async()
-                    logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+                    # Skip for rollback installs — user chose an older build, so keep
+                    # the game showing "update_available".
+                    if not self.game_data.get("_is_rollback"):
+                        cache = get_update_cache()
+                        cache.set_status(appid, "up_to_date")
+                        cache.save_async()
+                        logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+                    else:
+                        logger.debug(f"Rollback install for appid={appid} — keeping current update status")
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
@@ -1515,7 +1561,133 @@ class TaskManager(QObject):
             self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
         )
 
+    def _check_appdetails(self, appid: str) -> tuple[Optional[bool], int]:
+        url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=achievements"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                if data and str(appid) in data:
+                    app_res = data[str(appid)]
+                    if not app_res.get("success"):
+                        return False, 0
+                    app_data = app_res.get("data", {})
+                    if "achievements" in app_data:
+                        total = app_data["achievements"].get("total", 0)
+                        if total > 0:
+                            return True, total
+                    return False, 0
+                return False, 0
+        except Exception as e:
+            logger.warning(f"AppDetails API check failed for {appid}: {e}")
+            return None, 0
+
+    def _check_steamcommunity(self, appid: str) -> tuple[Optional[bool], int]:
+        url = f"https://steamcommunity.com/stats/{appid}/achievements/"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode("utf-8")
+                title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+                title = title_match.group(1) if title_match else ""
+                if "Error" in title:
+                    return False, 0
+                
+                count_match = re.search(r"Total achievements:\s*<span class=\"wt\">(\d+)</span>", html, re.IGNORECASE)
+                if count_match:
+                    total = int(count_match.group(1))
+                    if total > 0:
+                        return True, total
+                
+                if "Achievements" in title or "achievements" in html.lower():
+                    return True, 0
+                return False, 0
+        except Exception as e:
+            logger.warning(f"Steam Community page check failed for {appid}: {e}")
+            return None, 0
+
+    def _check_game_achievements_info(self, appid: str) -> tuple[bool, int]:
+        ad_res, ad_count = self._check_appdetails(appid)
+        if ad_res is True:
+            logger.info(f"[Store API] Confirmed game has achievements: {ad_count}")
+            return True, ad_count
+
+        sc_res, sc_count = self._check_steamcommunity(appid)
+        if sc_res is True:
+            logger.info(f"[Steam Community] Confirmed game has achievements: {sc_count}")
+            return True, sc_count
+
+        if ad_res is False and sc_res is False:
+            logger.info(f"Both API and Community check confirmed game {appid} has NO achievements.")
+            return False, 0
+
+        logger.warning(f"Could not determine achievements status for appid {appid} due to network errors. Defaulting to True.")
+        return True, 0
+
     def _start_achievement_generation(self):
+        if not self.game_data:
+            self._finalize_job_logic()
+            return
+
+        app_id = self.game_data.get("appid")
+        if not app_id:
+            self._finalize_job_logic()
+            return
+
+        logger.info(f"Checking achievements availability for AppID: {app_id}...")
+
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
+
+        def check_thread():
+            has_ach, count = self._check_game_achievements_info(str(app_id))
+            self.achievements_checked.emit(has_ach, count)
+
+        threading.Thread(target=check_thread, daemon=True).start()
+
+    @pyqtSlot(bool, int)
+    def _on_achievements_checked(self, has_achievements: bool, count: int):
+        if not self.is_processing:
+            return
+
+        if not has_achievements:
+            logger.info("Game has no achievements. Skipping achievements generation step.")
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.set_stage_status("achievements", "skipped_no_achievements")
+
+            self._slscheevo_ran = False
+            self._slscheevo_error = False
+            self._slscheevo_completed = True
+            self._last_slscheevo_status = "skipped_no_ach"
+            self._last_slscheevo_status_text = "No Achievements"
+
+            if self._current_active_step == "achievements":
+                # We are in the sequential (post-download) phase — unblock finalization
+                self._current_active_step = None
+                self._waiting_for_achievements = False
+                self._finalize_job_logic()
+            elif self._waiting_for_achievements:
+                # Parallel mode: achievements check finished while download was still running,
+                # but we set _waiting_for_achievements=True when finalize tried to wait for us.
+                # Unblock finalization now.
+                self._waiting_for_achievements = False
+                QMetaObject.invokeMethod(
+                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+                )
+            # else: download still running in parallel — finalize will check
+            # _slscheevo_completed=True and proceed on its own when download finishes.
+        else:
+            logger.info(f"Game has achievements (count: {count}). Starting achievements generation...")
+            self._game_achievements_count = count if count > 0 else None
+            self._run_slscheevo_task()
+
+    def _run_slscheevo_task(self):
         if not self.game_data:
             self._finalize_job_logic()
             return
@@ -1529,7 +1701,9 @@ class TaskManager(QObject):
         logger.info("Starting Steam Achievement Generation...")
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
+            self.main_window.simplified_terminal.set_stage_status(
+                "achievements", "in_progress", self._game_achievements_count
+            )
 
         self.achievement_task = GenerateAchievementsTask()
         self.achievement_task.progress.connect(logger.info)
@@ -1563,14 +1737,18 @@ class TaskManager(QObject):
         if success:
             logger.info(f"Achievement generation completed: {message}")
             self._last_slscheevo_status = "ok"
-            self._last_slscheevo_status_text = "Completed"
+            ach_count = getattr(self, "_game_achievements_count", None)
+            if "already exist" in message.lower() or "no missing stats" in message.lower() or "already exists" in message.lower():
+                self._last_slscheevo_status_text = f"Up-to-date ({ach_count})" if ach_count else "Up-to-date"
+            else:
+                self._last_slscheevo_status_text = f"Generated ({ach_count})" if ach_count else "Generated"
         else:
             logger.info(f"Achievement generation failed: {message}")
             self._last_slscheevo_status = "error"
             self._last_slscheevo_status_text = "Failed"
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("achievements", "completed" if success else "error")
+            self.main_window.simplified_terminal.set_stage_status("achievements", "completed" if success else "error", getattr(self, "_game_achievements_count", None))
 
         self._slscheevo_completed = True
 
@@ -1592,7 +1770,7 @@ class TaskManager(QObject):
         self._last_slscheevo_status_text = "Failed"
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("achievements", "error")
+            self.main_window.simplified_terminal.set_stage_status("achievements", "error", getattr(self, "_game_achievements_count", None))
 
         self._slscheevo_completed = True
 
@@ -1626,8 +1804,7 @@ class TaskManager(QObject):
 
             selected_dlcs = self.game_data.get("selected_dlcs", [])
             dlcs = self.game_data.get("dlcs", {})
-
-            if main_appid and selected_dlcs and len(selected_dlcs) > 64:
+            if main_appid and selected_dlcs:
                 for dlc_id in selected_dlcs:
                     dlc_name = dlcs.get(dlc_id, "")
                     add_dlc_data(config_path, str(main_appid), str(dlc_id), dlc_name)
@@ -1792,14 +1969,21 @@ class TaskManager(QObject):
             self._last_download_avg_speed = 0.0
 
             # Format achievements
-            if not self._slscheevo_ran:
+            last_ach_status = getattr(self, "_last_slscheevo_status", "")
+            ach_count = getattr(self, "_game_achievements_count", None)
+            if last_ach_status == "skipped_no_ach":
+                ach_status = "N/A"
+            elif not self._slscheevo_ran:
                 ach_status = "Skipped"
             else:
-                ach_status = "Generated" if self._last_slscheevo_success else "Failed"
+                if self._last_slscheevo_success:
+                    ach_status = f"Generated ({ach_count})" if ach_count else "Generated"
+                else:
+                    ach_status = "Failed"
                 # Check for "no missing stats files"
                 sl_msg = getattr(self, "_last_slscheevo_message", "")
                 if "no missing stats" in sl_msg.lower() or "already exist" in sl_msg.lower():
-                    ach_status = "Up-to-date"
+                    ach_status = f"Up-to-date ({ach_count})" if ach_count else "Up-to-date"
 
             # Format steamless
             steamless_status = self.parse_steamless_result()
@@ -2234,7 +2418,15 @@ class TaskManager(QObject):
             self._last_slscheevo_status_text = "N/A"
         else:
             self._last_slscheevo_status = "ok" if slscheevo_ok else "error"
-            self._last_slscheevo_status_text = "Completed" if slscheevo_ok else "Failed"
+            if slscheevo_ok:
+                ach_count = getattr(self, "_game_achievements_count", None)
+                sl_msg = getattr(self, "_last_slscheevo_message", "")
+                if "already exist" in sl_msg.lower() or "no missing stats" in sl_msg.lower() or "already exists" in sl_msg.lower():
+                    self._last_slscheevo_status_text = f"Up-to-date ({ach_count})" if ach_count else "Up-to-date"
+                else:
+                    self._last_slscheevo_status_text = f"Generated ({ach_count})" if ach_count else "Generated"
+            else:
+                self._last_slscheevo_status_text = "Failed"
 
         if steamless_ok is None:
             self._last_steamless_status = "not_run"
