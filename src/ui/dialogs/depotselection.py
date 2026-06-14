@@ -20,6 +20,49 @@ from ui.dialogs.dialog_helpers import create_standard_buttons
 logger = logging.getLogger(__name__)
 
 
+def _depot_matches_platform(depot_data: dict, platform: str) -> bool:
+    """Check if a depot matches the given platform (linux/windows).
+
+    A depot matches if:
+    - Its oslist contains the platform name, OR
+    - Its description tags contain [PLATFORM], OR
+    - It has no oslist set (shared/common depot)
+    """
+    oslist = (depot_data.get("oslist") or "").lower()
+    desc = (depot_data.get("desc") or "").lower()
+    platform = platform.lower()
+
+    # No oslist means it's a shared depot (common to all platforms)
+    if not oslist:
+        return True
+
+    # Check oslist field (can be "windows", "linux", "windows,linux", etc.)
+    if platform in oslist:
+        return True
+
+    # Check description tags like [LINUX], [WINDOWS]
+    if f"[{platform}]" in desc:
+        return True
+
+    return False
+
+
+def _depot_is_macos(depot_data: dict) -> bool:
+    """Check if a depot is macOS-only."""
+    oslist = (depot_data.get("oslist") or "").lower()
+    desc = (depot_data.get("desc") or "").lower()
+
+    # Check oslist
+    if oslist in ("macosx", "macos"):
+        return True
+
+    # Check description tags
+    if "[macos]" in desc or "[macosx]" in desc:
+        return True
+
+    return False
+
+
 class DepotSelectionDialog(QDialog):
     def __init__(self, app_id, game_name, depots, header_url, parent=None, selected_depots=None):
         super().__init__(parent)
@@ -34,6 +77,14 @@ class DepotSelectionDialog(QDialog):
         layout.setSpacing(10)
 
         self.anchor_row = -1
+
+        # Check if we should hide macOS depots
+        try:
+            from utils.settings import get_settings
+            settings = get_settings()
+            self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
+        except Exception:
+            self._hide_macos = True
 
         self.header_label = QLabel("Loading header image...")
         self.header_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -106,6 +157,11 @@ class DepotSelectionDialog(QDialog):
         is_first_depot = True
 
         for depot_id, depot_data in sorted_depots:
+            # Filter out macOS depots if setting is enabled
+            if self._hide_macos and _depot_is_macos(depot_data):
+                logger.debug(f"Hiding macOS depot {depot_id}")
+                continue
+
             original_desc = depot_data["desc"]
 
             original_desc = re.sub(
@@ -150,7 +206,9 @@ class DepotSelectionDialog(QDialog):
 
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, depot_id)
-            
+            # Store the depot_data reference for platform selection
+            item.setData(Qt.ItemDataRole.UserRole + 1, depot_id)
+
             if self.selected_depots is not None:
                 is_checked = depot_id in self.selected_depots
                 item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
@@ -168,14 +226,27 @@ class DepotSelectionDialog(QDialog):
 
         self.list_widget.itemClicked.connect(self.on_depot_item_clicked)
 
+        # Platform + Select/Deselect buttons in a single row
         button_layout = QHBoxLayout()
-        select_all_button = QPushButton("Select All")
+        button_layout.setSpacing(4)
+
+        linux_button = QPushButton("Linux")
+        linux_button.setToolTip("Select all Linux-compatible depots (including shared)")
+        linux_button.clicked.connect(lambda: self._select_platform("linux"))
+        button_layout.addWidget(linux_button)
+
+        windows_button = QPushButton("Windows")
+        windows_button.setToolTip("Select all Windows-compatible depots (including shared)")
+        windows_button.clicked.connect(lambda: self._select_platform("windows"))
+        button_layout.addWidget(windows_button)
+
+        select_all_button = QPushButton("All")
         select_all_button.clicked.connect(
             lambda: self._toggle_all_checkboxes(check=True)
         )
         button_layout.addWidget(select_all_button)
 
-        deselect_all_button = QPushButton("Deselect All")
+        deselect_all_button = QPushButton("None")
         deselect_all_button.clicked.connect(
             lambda: self._toggle_all_checkboxes(check=False)
         )
@@ -235,6 +306,22 @@ class DepotSelectionDialog(QDialog):
                 row_item.setCheckState(state)
         self.list_widget.blockSignals(False)
 
+        self.anchor_row = -1
+
+    def _select_platform(self, platform: str):
+        """Select depots matching a platform (linux/windows), including shared depots."""
+        self.list_widget.blockSignals(True)
+        for i in range(self.list_widget.count()):
+            row_item = self.list_widget.item(i)
+            if row_item is None:
+                continue
+            depot_id = row_item.data(Qt.ItemDataRole.UserRole)
+            depot_data = self.depots.get(depot_id, {})
+            if _depot_matches_platform(depot_data, platform):
+                row_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                row_item.setCheckState(Qt.CheckState.Unchecked)
+        self.list_widget.blockSignals(False)
         self.anchor_row = -1
 
     def _fetch_header_image(self, app_id):

@@ -1099,6 +1099,21 @@ class GameLibraryDialog(QDialog):
 
     def _show_game_details_dialog(self, game_data: dict) -> None:
         """Show detailed game info in a tabbed dialog."""
+        use_v2 = False
+        if self.settings:
+            use_v2 = self.settings.value("game_details_2_0", False, type=bool)
+
+        if use_v2:
+            try:
+                from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+                dialog = GameDetailsDialogV2(self, game_data)
+                self._details_dialog = dialog
+                dialog.exec()
+                self._details_dialog = None
+                return
+            except Exception as e:
+                logger.error(f"Failed to load Game Details V2, falling back: {e}", exc_info=True)
+
         self._details_dialog = QDialog(self)
         self._details_dialog.setWindowTitle("Game Details")
         self._details_dialog.setMinimumWidth(500)

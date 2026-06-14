@@ -210,6 +210,7 @@ class SettingsDialog(QDialog):
         self.autofetch_manifests_checkbox = None
         self.download_screen_2_0_beta_checkbox = None
         self.applist_2_0_beta_checkbox = None
+        self.game_details_2_0_checkbox = None
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
@@ -411,6 +412,15 @@ class SettingsDialog(QDialog):
         )
         group_layout.addWidget(self.applist_2_0_beta_checkbox)
 
+        self.game_details_2_0_checkbox = create_checkbox_setting(
+            "Game Details 2.0 Beta",
+            "game_details_2_0",
+            False,
+            self,
+            "Enable the modern, redesigned Game Details dialog.",
+        )
+        group_layout.addWidget(self.game_details_2_0_checkbox)
+
         # self.fakeappid_db_integration_checkbox = create_checkbox_setting(
         #     "Fake AppID Database Integration",
         #     "fakeappid_db_integration",
@@ -525,6 +535,14 @@ class SettingsDialog(QDialog):
         update_interval_layout.addWidget(update_interval_label)
         update_interval_layout.addWidget(self.update_interval_spinbox)
         dl_layout.addLayout(update_interval_layout)
+
+        self.hide_macos_depots_checkbox = create_checkbox_setting(
+            "Hide macOS depots in depot selection",
+            "hide_macos_depots",
+            True,
+            self,
+        )
+        dl_layout.addWidget(self.hide_macos_depots_checkbox)
 
         dl_group.setLayout(dl_layout)
         layout.addWidget(dl_group)
@@ -1513,6 +1531,10 @@ class SettingsDialog(QDialog):
             self.applist_2_0_beta_checkbox.isChecked(),
         )
         self.settings.setValue(
+            "game_details_2_0",
+            self.game_details_2_0_checkbox.isChecked(),
+        )
+        self.settings.setValue(
             "prompt_steam_restart",
             self.prompt_steam_restart_checkbox.isChecked(),
         )
@@ -1584,6 +1606,8 @@ class SettingsDialog(QDialog):
             self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
         if hasattr(self, "max_old_manifests_spinbox"):
             self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
+        if hasattr(self, "hide_macos_depots_checkbox"):
+            self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
 
 
 

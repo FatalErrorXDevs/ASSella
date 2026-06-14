@@ -602,6 +602,111 @@ class FetchManifestDialog(QDialog):
     # Download Logic
     # --------------------------
 
+    def check_and_download_manifest(self, app_id):
+        """
+        Worker function to check if cached manifest zip exists and is up to date with Steam.
+        If up to date, returns (cached_path, None).
+        Otherwise, downloads the manifest via morrenus_api.download_manifest and returns the result.
+        """
+        try:
+            import os
+            import zipfile
+            from pathlib import Path
+            from utils.helpers import get_base_path
+            from core.steam_api import _fetch_with_steam_client, _fetch_with_web_api
+            from managers.db_manager import DatabaseManager
+
+            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+            cached_path = manifests_dir / f"accela_fetch_{app_id}.zip"
+
+            if cached_path.exists():
+                logger.info(f"Checking updates for cached manifest {app_id}")
+                # 1. Parse the zip to find the manifests inside it and the app token
+                local_manifests = {}
+                app_token = None
+                try:
+                    with zipfile.ZipFile(cached_path, "r") as zip_ref:
+                        # Find LUA file for token
+                        lua_files = [f for f in zip_ref.namelist() if f.endswith(".lua")]
+                        if lua_files:
+                            try:
+                                lua_content = zip_ref.read(lua_files[0]).decode("utf-8", errors="ignore")
+                                token_match = re.search(r'addtoken\s*\(\s*\d+\s*,\s*"([^"]+)"\s*\)', lua_content, re.IGNORECASE)
+                                if token_match:
+                                    app_token = token_match.group(1)
+                            except Exception as e:
+                                logger.debug(f"Failed to read LUA from cached zip: {e}")
+
+                        # Find manifest files
+                        manifest_files = [
+                            os.path.basename(f)
+                            for f in zip_ref.namelist()
+                            if f.endswith(".manifest")
+                        ]
+                        for filename in manifest_files:
+                            parts = filename.replace(".manifest", "").split("_")
+                            if len(parts) == 2:
+                                local_manifests[parts[0]] = parts[1]
+                except Exception as e:
+                    logger.warning(f"Failed to parse cached zip {cached_path}: {e}. Will redownload.")
+                    return morrenus_api.download_manifest(app_id)
+
+                if not local_manifests:
+                    logger.warning(f"No manifests found in cached zip {cached_path}. Will redownload.")
+                    return morrenus_api.download_manifest(app_id)
+
+                # 2. Get current depot info from Steam API (bypassing DB cache)
+                try:
+                    steam_client_data = _fetch_with_steam_client(app_id, app_token)
+                    if not steam_client_data or not steam_client_data.get("depots"):
+                        logger.debug("steam.client fetch failed or empty depots, falling back to Web API")
+                        steam_client_data = _fetch_with_web_api(app_id)
+                    
+                    if steam_client_data:
+                        # Update database with the latest info
+                        try:
+                            db = DatabaseManager()
+                            db.upsert_app_info(app_id, steam_client_data)
+                        except Exception as db_err:
+                            logger.debug(f"Failed to update database with fresh app info: {db_err}")
+                            
+                    api_depots = steam_client_data.get("depots", {}) if steam_client_data else {}
+                except Exception as e:
+                    logger.error(f"Failed to fetch depot info from Steam API for {app_id}: {e}")
+                    api_depots = {}
+
+                if not api_depots:
+                    # If we couldn't get API data, we cannot verify if there was an update.
+                    # In this case, to be safe and avoid unnecessary downloads, use the cached manifest.
+                    logger.info(f"Could not check Steam API for updates. Reusing cached manifest for {app_id}.")
+                    return str(cached_path), None
+
+                # 3. Compare local manifests with API manifests
+                is_up_to_date = True
+                for depot_id, local_manifest_id in local_manifests.items():
+                    if depot_id in api_depots:
+                        current_manifest_id = api_depots[depot_id].get("manifest_id")
+                        if current_manifest_id and local_manifest_id != current_manifest_id:
+                            logger.info(
+                                f"Update detected for depot {depot_id} of app {app_id}: "
+                                f"cached={local_manifest_id}, current={current_manifest_id}"
+                            )
+                            is_up_to_date = False
+                            break
+
+                if is_up_to_date:
+                    logger.info(f"Cached manifest for {app_id} is up-to-date. Using cache.")
+                    return str(cached_path), None
+                else:
+                    logger.info(f"Cached manifest for {app_id} is stale. Redownloading.")
+            else:
+                logger.info(f"No cached manifest found for {app_id}. Downloading.")
+
+        except Exception as e:
+            logger.error(f"Error checking manifest cache for {app_id}: {e}", exc_info=True)
+
+        return morrenus_api.download_manifest(app_id)
+
     def on_item_double_clicked(self, item):
         app_id = item.data(Qt.ItemDataRole.UserRole)
         if not app_id:
@@ -624,9 +729,9 @@ class FetchManifestDialog(QDialog):
             return
 
         self._toggle_inputs(False)
-        self.status_label.setText(f"Downloading manifest for App ID {app_id}...")
+        self.status_label.setText(f"Checking for updates and fetching manifest for App ID {app_id}...")
 
-        worker = self.task_runner.run(morrenus_api.download_manifest, app_id)
+        worker = self.task_runner.run(self.check_and_download_manifest, app_id)
         worker.finished.connect(self.on_download_finished)
         worker.error.connect(self.on_task_error)
 
@@ -656,7 +761,20 @@ class FetchManifestDialog(QDialog):
                     
                     selected_depots = None
                     if auto_skip and len(depots) == 1:
-                        selected_depots = list(depots.keys())
+                        reply = QMessageBox.question(
+                            self,
+                            "Single Depot Option",
+                            "Game has only one depot.\n\nProceed to download and add it to queue?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes,
+                        )
+                        if reply == QMessageBox.StandardButton.Yes:
+                            selected_depots = list(depots.keys())
+                        else:
+                            logger.info("User cancelled single-depot download from search window.")
+                            self._toggle_inputs(True)
+                            self.status_label.setText("Download cancelled.")
+                            return
                     else:
                         depot_dialog = DepotSelectionDialog(
                             parsed_data["appid"],
