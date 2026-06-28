@@ -955,12 +955,12 @@ class CLITaskManager:
                 self.logger.info(
                     f"Achievement generation failed: {result.get('message') if result else 'Unknown error'}"
                 )
-            loop.quit()
 
         achievement_runner = TaskRunner()
         achievement_runner.run(achievement_task.run, app_id).finished.connect(
             lambda r: on_achievement_complete(r)
         )
+        achievement_runner.cleanup_complete.connect(loop.quit)
         loop.exec()
 
     def _create_greenluma_files(self):

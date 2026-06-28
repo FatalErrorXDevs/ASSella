@@ -14,7 +14,7 @@ from utils.helpers import get_base_path
 
 # Constants
 APP_NAME = "accela"
-MAX_PREVIOUS_LOGS = 4
+MAX_PREVIOUS_LOGS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -61,23 +61,116 @@ _current_log_name: Optional[str] = None
 _log_dir = get_base_path() / "logs"
 
 
-# Cap per-session log file at 5 MB; keep up to 3 rotated backups per session.
-_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
-_LOG_BACKUP_COUNT = 3
+class LineRotatingFileHandler(logging.FileHandler):
+    """
+    Handler that rotates logs based on maximum line count.
+    Keeps at most max_lines in the file, dropping older lines.
+    """
+    def __init__(self, filename, mode='a', encoding=None, delay=False, max_lines=10000):
+        super().__init__(filename, mode, encoding, delay)
+        self.max_lines = max_lines
+        self._emit_count = 0
+
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+        self._emit_count += 1
+        # Truncate every 20 log records to keep disk I/O low
+        if self._emit_count >= 20:
+            self._emit_count = 0
+            try:
+                self.rotate_by_lines()
+            except Exception:
+                pass
+
+    def rotate_by_lines(self):
+        if not os.path.exists(self.baseFilename):
+            return
+        try:
+            with open(self.baseFilename, 'r', encoding=self.encoding or 'utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            if len(lines) > self.max_lines:
+                keep_lines = lines[-self.max_lines:]
+                with open(self.baseFilename, 'w', encoding=self.encoding or 'utf-8') as f:
+                    f.writelines(keep_lines)
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self.rotate_by_lines()
+        except Exception:
+            pass
+        super().close()
 
 
-def _create_file_handler(log_path: Path) -> Optional[RotatingFileHandler]:
-    """Attempt to create a rotating file handler at the specified path."""
+class LogCategoryFilter(logging.Filter):
+    def __init__(self, level_str="DEBUG", category_str="All Modules"):
+        super().__init__()
+        self.level = getattr(logging, level_str.upper(), logging.DEBUG)
+        self.category = category_str
+
+    def filter(self, record):
+        # 1. Filter by level
+        if record.levelno < self.level:
+            return False
+
+        # 2. Filter by category
+        if self.category == "All Modules":
+            return True
+        elif self.category == "Only Steam Client & API":
+            name = record.name.lower()
+            return "steam" in name or "client" in name or "scheevo" in name
+        elif self.category == "Only Downloads & Manifests":
+            name = record.name.lower()
+            return "download" in name or "manifest" in name or "task" in name or "job" in name
+        elif self.category == "Only Database & Library":
+            name = record.name.lower()
+            return "db_manager" in name or "database" in name or "game_manager" in name or "library" in name
+
+        return True
+
+
+def update_log_filters():
+    """Update active log filters from current settings."""
+    try:
+        from utils.settings import get_settings
+        settings = get_settings()
+        if not settings:
+            return
+        
+        level_str = settings.value("log_filter_level", "DEBUG", type=str)
+        category_str = settings.value("log_filter_category", "All Modules", type=str)
+        
+        # Find and update our filter
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers:
+            # Remove any existing LogCategoryFilters
+            for filt in handler.filters[:]:
+                if isinstance(filt, LogCategoryFilter):
+                    handler.removeFilter(filt)
+            # Add updated filter
+            handler.addFilter(LogCategoryFilter(level_str, category_str))
+            
+            # Update the level of the handler
+            level_num = getattr(logging, level_str.upper(), logging.DEBUG)
+            handler.setLevel(level_num)
+            
+    except Exception as e:
+        print(f"Error updating log filters: {e}", file=sys.stderr)
+
+
+def _create_file_handler(log_path: Path) -> Optional[LineRotatingFileHandler]:
+    """Attempt to create a line rotating file handler at the specified path."""
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     try:
-        handler = RotatingFileHandler(
+        handler = LineRotatingFileHandler(
             log_path,
-            mode="w",  # Start fresh for each session; rotation is within the session
+            mode="w",  # Start fresh for each session
             encoding="utf-8",
-            maxBytes=_LOG_MAX_BYTES,
-            backupCount=_LOG_BACKUP_COUNT,
+            max_lines=10000,
             delay=False,
         )
         handler.setLevel(logging.DEBUG)
@@ -142,6 +235,9 @@ def setup_logging() -> logging.Logger:
     # Add new handlers
     for handler in handlers:
         root_logger.addHandler(handler)
+
+    # Apply log filters
+    update_log_filters()
 
     # Re-acquire logger after config
     local_logger = logging.getLogger(__name__)

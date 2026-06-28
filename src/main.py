@@ -79,10 +79,16 @@ def main():
     logger.info(f"ASSELA {app_version} starting...")
     logger.info("========================================")
 
-    # Pre-scan for headless mode to set environment variable before QApplication is created
-    headless_mode = "--headless" in sys.argv
+    # Pre-scan for headless/helper mode to set environment variable before QApplication is created
+    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
+    if not headless_mode:
+        for arg in sys.argv:
+            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg):
+                headless_mode = True
+                break
+
     if headless_mode:
-        logger.info("Headless mode requested. Setting QT_QPA_PLATFORM=offscreen")
+        logger.info("Headless/Helper mode requested. Setting QT_QPA_PLATFORM=offscreen")
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     # People only have substance within the memories of other people.
@@ -100,6 +106,8 @@ def main():
     # Argument Parsing
     # -------------------------------------------------------------------------
     cli_mode = False
+    helper_mode = False
+    check_updates_mode = False
     command_line_zips = []
     command_line_appid = None
 
@@ -115,12 +123,15 @@ def main():
         return False
 
     def _parse_url_action(url: str):
-        nonlocal cli_mode, command_line_appid
+        nonlocal cli_mode, command_line_appid, helper_mode
         try:
             url_content = url[9:]  # Remove 'accela://'
             if url_content.startswith("cli/"):
                 cli_mode = True
                 rest = url_content[4:]
+            elif url_content.startswith("helper/"):
+                helper_mode = True
+                rest = url_content[7:]
             else:
                 rest = url_content
 
@@ -133,12 +144,12 @@ def main():
 
             if action == "download" and param_val and param_val.isdigit():
                 command_line_appid = int(param_val)
-                mode_str = "CLI" if cli_mode else "GUI"
+                helper_mode = True
                 logger.info(
-                    f"Found accela://{action} URL for AppID: {param_val} ({mode_str} mode)"
+                    f"Found accela://{action} URL for AppID: {param_val} (Helper mode)"
                 )
             elif action == "zip" and param_val:
-                _add_zip_from_url(param_val, "(GUI mode)" if not cli_mode else "")
+                _add_zip_from_url(param_val, "(Helper mode)" if helper_mode else "(GUI mode)")
             else:
                 logger.warning(f"Invalid accela:// URL format: {url}")
         except ValueError as ve:
@@ -152,6 +163,10 @@ def main():
         arg = args[i]
         if arg in ("-cli", "--cli"):
             cli_mode = True
+        elif arg in ("-helper", "--helper"):
+            helper_mode = True
+        elif arg == "--check-updates":
+            check_updates_mode = True
         elif arg == "--headless":
             # Already handled in pre-scan
             pass
@@ -182,6 +197,19 @@ def main():
     if command_line_appid and command_line_zips:
         logger.error("Cannot use --appid and .zip files together. Choose one.")
         return None
+
+    # -------------------------------------------------------------------------
+    # Helper / Check Updates Mode Execution
+    # -------------------------------------------------------------------------
+    if check_updates_mode:
+        logger.info("Will perform headless update check...")
+        from managers.helper_manager import run_headless_update_check
+        return run_headless_update_check(logger)
+
+    if helper_mode and command_line_appid:
+        logger.info(f"Will process AppID {command_line_appid} via Headless Helper")
+        from managers.helper_manager import run_headless_helper
+        return run_headless_helper(command_line_appid, logger)
 
     # -------------------------------------------------------------------------
     # CLI Mode Execution

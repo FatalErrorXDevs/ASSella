@@ -310,6 +310,17 @@ class DepotSelectionDialog(QDialog):
 
     def _select_platform(self, platform: str):
         """Select depots matching a platform (linux/windows), including shared depots."""
+        # Check if there is any depot explicitly designated for this platform
+        has_explicit_platform_depot = False
+        for d_id, d_data in self.depots.items():
+            oslist = (d_data.get("oslist") or "").lower()
+            desc = (d_data.get("desc") or "").lower()
+            if self._hide_macos and _depot_is_macos(d_data):
+                continue
+            if platform in oslist or f"[{platform}]" in desc:
+                has_explicit_platform_depot = True
+                break
+
         self.list_widget.blockSignals(True)
         for i in range(self.list_widget.count()):
             row_item = self.list_widget.item(i)
@@ -317,7 +328,7 @@ class DepotSelectionDialog(QDialog):
                 continue
             depot_id = row_item.data(Qt.ItemDataRole.UserRole)
             depot_data = self.depots.get(depot_id, {})
-            if _depot_matches_platform(depot_data, platform):
+            if has_explicit_platform_depot and _depot_matches_platform(depot_data, platform):
                 row_item.setCheckState(Qt.CheckState.Checked)
             else:
                 row_item.setCheckState(Qt.CheckState.Unchecked)

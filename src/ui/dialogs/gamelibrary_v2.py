@@ -276,7 +276,7 @@ class GameDetailsDialogV2(QDialog):
             
             /* Specific Card Styling */
             QFrame#card1, QFrame#card2, QFrame#card3, QFrame#card4, QFrame#uninstall_card,
-            QFrame#drm_card, QFrame#gb_card, QFrame#depot_card, QFrame#fix_card {{
+            QFrame#drm_card, QFrame#gb_card, QFrame#depot_card, QFrame#fix_card, QFrame#log_card {{
                 background-color: #151518;
                 border: 1px solid #242428;
                 border-radius: 6px;
@@ -453,7 +453,7 @@ class GameDetailsDialogV2(QDialog):
         path_layout = QHBoxLayout()
         path_lbl = QLabel("Installation Path:")
         path_lbl.setStyleSheet("color: #8a8a93; font-weight: bold; font-size: 11px;")
-        browse_btn = QPushButton("Browse...")
+        browse_btn = QPushButton("Browse")
         browse_btn.setFixedSize(70, 24)
         browse_btn.setStyleSheet(f"""
             QPushButton {{
@@ -642,7 +642,7 @@ class GameDetailsDialogV2(QDialog):
         c3_layout.addSpacing(10)
 
         pref2_layout = QHBoxLayout()
-        pref2_lbl = QLabel("Exclude from all")
+        pref2_lbl = QLabel("Exclude from update all")
         pref2_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px;")
         self.pref2_toggle = SwitchToggle(active_color="#e05a47")
         self.pref2_toggle.setChecked(
@@ -1063,6 +1063,71 @@ class GameDetailsDialogV2(QDialog):
         row2_layout.addWidget(fix_card, 1)
 
         layout.addLayout(row2_layout)
+
+        # Row 3: Log Configuration Card
+        row3_layout = QHBoxLayout()
+        log_card = QFrame()
+        log_card.setObjectName("log_card")
+        log_layout = QVBoxLayout(log_card)
+        log_layout.setContentsMargins(10, 10, 10, 10)
+        log_layout.setSpacing(6)
+
+        log_title = QLabel("Log Configuration")
+        log_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
+        log_layout.addWidget(log_title)
+        
+        log_layout.addStretch(1)
+
+        combos_layout = QHBoxLayout()
+        combos_layout.setSpacing(10)
+
+        level_lbl = QLabel("Level:")
+        level_lbl.setStyleSheet("color: #a0a0ab;")
+        self.log_level_combo = CenteredComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+        self.log_level_combo.setFixedHeight(28)
+        self.log_level_combo.setCurrentText(
+            self.settings.value("log_filter_level", "DEBUG", type=str) if self.settings else "DEBUG"
+        )
+
+        category_lbl = QLabel("Filter:")
+        category_lbl.setStyleSheet("color: #a0a0ab;")
+        self.log_category_combo = CenteredComboBox()
+        self.log_category_combo.addItems([
+            "All Modules",
+            "Only Steam Client & API",
+            "Only Downloads & Manifests",
+            "Only Database & Library"
+        ])
+        self.log_category_combo.setFixedHeight(28)
+        self.log_category_combo.setCurrentText(
+            self.settings.value("log_filter_category", "All Modules", type=str) if self.settings else "All Modules"
+        )
+
+        combos_layout.addWidget(level_lbl)
+        combos_layout.addWidget(self.log_level_combo, 1)
+        combos_layout.addWidget(category_lbl)
+        combos_layout.addWidget(self.log_category_combo, 1)
+
+        log_layout.addLayout(combos_layout)
+        log_layout.addStretch(1)
+
+        row3_layout.addWidget(log_card, 1)
+        layout.addLayout(row3_layout)
+
+        def _on_log_settings_changed():
+            if self.settings:
+                self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
+                self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
+            try:
+                from utils.logger import update_log_filters
+                update_log_filters()
+            except Exception as e:
+                logger.error(f"Failed to update log filters: {e}")
+
+        self.log_level_combo.currentIndexChanged.connect(_on_log_settings_changed)
+        self.log_category_combo.currentIndexChanged.connect(_on_log_settings_changed)
+
         self.stacked_widget.addWidget(page)
 
     def _on_goldberg_check_complete(self, is_applied):
