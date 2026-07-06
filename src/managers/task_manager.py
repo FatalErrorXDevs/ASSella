@@ -391,6 +391,28 @@ class TaskManager(QObject):
         )
         self.is_cancelling = False
 
+        # Determine if this is an update to a pre-existing installation
+        self._pre_existing_install = False
+        if dest_path and self.game_data:
+            try:
+                # Check for appmanifest file
+                steamapps_dir = os.path.join(dest_path, "steamapps")
+                acf_path = os.path.join(
+                    steamapps_dir,
+                    f"appmanifest_{self.game_data.get('appid', '')}.acf",
+                )
+                if os.path.exists(acf_path):
+                    self._pre_existing_install = True
+                else:
+                    # Check if game folder exists and is non-empty
+                    game_dir = get_game_directory(dest_path, self.game_data)
+                    if os.path.isdir(game_dir):
+                        with os.scandir(game_dir) as entries:
+                            if any(entries):
+                                self._pre_existing_install = True
+            except Exception as e:
+                logger.error(f"Error checking pre-existing installation status: {e}")
+
         self._last_steamless_success = None
         self._last_slscheevo_success = None
         self._last_slscheevo_message = ""
@@ -2141,8 +2163,11 @@ class TaskManager(QObject):
         if self.download_runner is not None:
             self.is_awaiting_download_stop = True
 
-        existing_install = self._detect_existing_installation()
-        self._delete_files_on_cancel = self._confirm_delete_on_cancel(existing_install)
+        existing_install = getattr(self, "_pre_existing_install", False)
+        if existing_install:
+            self._delete_files_on_cancel = False
+        else:
+            self._delete_files_on_cancel = self._confirm_delete_on_cancel(existing_install)
 
         if self.download_task:
             self.download_task.stop()
@@ -2224,6 +2249,10 @@ class TaskManager(QObject):
 
     def _cleanup_cancelled_job_files(self):
         if not self.game_data or not self.current_dest_path:
+            return
+
+        if getattr(self, "_pre_existing_install", False):
+            logger.info("Skipping cancelled job file cleanup: Pre-existing installation detected.")
             return
 
         try:

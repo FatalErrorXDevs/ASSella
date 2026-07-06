@@ -1,3 +1,9 @@
+## ASSella v2.0d (Release candidate 3) — Changes from v2.0d RC2
+
+*   **Fixed Update Job Deletion Vulnerability**: Restructured download cancellation behavior to check for pre-existing installations *prior* to starting a download. This ensures canceling an update or additional depot download preserves existing game files and their `.acf` manifests, rather than deleting the entire installation.
+
+---
+
 ## ASSella v2.0d (Release candidate 2) — Changes from v2.0c
 
 *   **One-time Achievements Terminal Setup**: Swapped out the settings GUI textboxes for Steam credentials with a secure interactive terminal window setup button. This aligns with the old SLScheevo workflow and handles Steam Guard (2FA) verification prompts cleanly in a visible terminal.
