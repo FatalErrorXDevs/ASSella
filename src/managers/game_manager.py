@@ -113,7 +113,7 @@ class GameManager(QObject):
     def get_all_games(self):
         """Get all games in the library - returns sorted list"""
         games_to_return = self.filtered_games if self.filtered_games else self.games
-        return self._get_sorted_games(games_to_return)
+        return list(games_to_return)
 
     def select_game(self, game_id):
         """Select a specific game"""

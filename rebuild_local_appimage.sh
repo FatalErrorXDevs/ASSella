@@ -5,7 +5,7 @@ set -euo pipefail
 WORKDIR="/tmp/assella_repack"
 SRC_DIR="/home/deck/Projects/ASSella"
 ACCELA_DIR="/home/deck/.local/share/ACCELA"
-BACKUP_APPIMAGE="$ACCELA_DIR/ASSella.AppImage.bak.1.8e"
+BACKUP_APPIMAGE="$ACCELA_DIR/ASSella.AppImage"
 OUTPUT_APPIMAGE="$ACCELA_DIR/ASSella.AppImage"
 OFFSET=193728
 

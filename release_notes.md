@@ -1,3 +1,14 @@
+## ASSella v2.0d (Release candidate 2) — Changes from v2.0c
+
+*   **One-time Achievements Terminal Setup**: Swapped out the settings GUI textboxes for Steam credentials with a secure interactive terminal window setup button. This aligns with the old SLScheevo workflow and handles Steam Guard (2FA) verification prompts cleanly in a visible terminal.
+*   **Persistent & Sandbox-Resilient Encryption**: Upgraded credentials encryption from using a volatile MAC-address key to deriving keys from a persistent machine ID (`/etc/machine-id` on Linux, `MachineGuid` registry key on Windows). Includes an automatic fallback decryptor for backwards compatibility with existing cached MAC-address credentials.
+*   **Robust .NET 9 Environment Resolution**: Integrated dynamic resolution of locally-installed `.NET` runtimes (e.g., inside `/home/deck/.dotnet` on Steam Deck/SteamOS). Sets `DOTNET_ROOT` and prepends the path to `PATH` dynamically, resolving standard host execution errors inside the AppImage container environment.
+*   **CLI Setup Menu**: Replaced the automated all-games schema download with an interactive 5-option command-line interface. Users can choose to perform setup, download all schemas, download schemas for a specific game, clear stored credentials, or exit.
+*   **Quick Verification AppID**: Changed credentials verification from checking all games to running against Spacewar (AppID `480`), ensuring the login setup finishes successfully in just 2 seconds.
+*   **Aesthetics & Performance Optimizations**: Refactored the new game library view list population, batch-caching search layouts, and connection caching to reduce startup lag and UI interaction lag significantly.
+
+---
+
 ## ASSella v1.9c (Release candidate 1) — Changes from v1.9b
 
 *   **Manifest Cache Age & Status Display**: The Game Library screen now displays the age and status of cached game manifests (e.g., `Manifest: Cached (1-24hrs ago)`, `Manifest: Cached (1-3days ago)`, or `Manifest: Fetching...` if it is currently updating or missing).

@@ -8,10 +8,12 @@ import sys
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from utils.helpers import (
-    get_venv_python,
-    get_slscheevo_path,
     get_slscheevo_save_path,
+    get_schema_grabber_path,
+    get_steam_stats_dir,
+    get_dotnet_env,
 )
+from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ except ImportError:
 
 
 class GenerateAchievementsTask(QObject):
-    """Generate Steam achievement stats using SLScheevo wrapper"""
+    """Generate Steam achievement stats using schema-grabber"""
 
     progress = pyqtSignal(str)
     progress_percentage = pyqtSignal(int)
@@ -37,194 +39,186 @@ class GenerateAchievementsTask(QObject):
         self.process = None
         self.process_pid = None
 
-        # Path to SLScheevo executable
-        self.slscheevo_path = get_slscheevo_path()
-
     def run(self, app_ids=None):
-        """Run SLScheevo to generate achievement stats"""
-        logger.info("Starting achievement generation task")
-        self.progress.emit("Checking SLScheevo script...")
+        """Run schema-grabber to generate achievement stats"""
+        logger.info("Starting achievement generation task using schema-grabber")
+        self.progress.emit("Checking Steam credentials...")
 
         try:
-            # Check if SLScheevo executable exists
-            if not self.slscheevo_path.exists():
+            # Get credentials from settings
+            from utils.settings import get_settings
+            settings = get_settings()
+            settings.sync()
+            username = settings.value("steam_username", "", type=str)
+            from utils.helpers import decrypt_string
+            password = decrypt_string(settings.value("steam_password", "", type=str))
+
+            if not username or not password:
                 error_msg = (
-                    f"SLScheevo executable not found at {self.slscheevo_path}. "
-                    "Please ensure it's properly installed in src/deps/SLScheevo/"
+                    "Steam credentials not configured in settings. "
+                    "Please open Settings -> Tools and set your Steam Username and Password."
                 )
-                self.progress.emit(f"{error_msg}")
+                self.progress.emit(error_msg)
                 self.error.emit(error_msg)
-                result = {
-                    "success": False,
-                    "return_code": -1,
-                    "message": "SLScheevo executable not found",
-                }
+                result = {"success": False, "message": error_msg}
                 self.completed.emit(result)
                 return result
 
-            self.progress.emit("SLScheevo executable found")
-            logger.info(f"SLScheevo executable found at: {self.slscheevo_path}")
+            schema_grabber = get_schema_grabber_path()
+            if not schema_grabber.exists():
+                error_msg = f"schema-grabber binary not found at {schema_grabber}."
+                self.progress.emit(error_msg)
+                self.error.emit(error_msg)
+                result = {"success": False, "message": error_msg}
+                self.completed.emit(result)
+                return result
 
-            save_dir = get_slscheevo_save_path()
+            self.progress.emit("schema-grabber binary found")
+            logger.info(f"schema-grabber binary found at: {schema_grabber}")
 
-            logger.info(f"SLScheevo save directory: {save_dir}")
-
-            # Prepare command
-            # If using Python script, add python executable before the script path
-            if str(self.slscheevo_path).endswith(".py"):
-                python_cmd = self._resolve_python_command()
-                if not python_cmd:
-                    error_msg = (
-                        "Python interpreter not found. "
-                        "Install Python or ensure it is on PATH."
-                    )
-                    self.progress.emit(error_msg)
-                    logger.error(error_msg)
-                    self.error.emit(error_msg)
-                    result = {
-                        "success": False,
-                        "return_code": -1,
-                        "message": error_msg,
-                    }
-                    self.completed.emit(result)
-                    return result
-                command = python_cmd + [str(self.slscheevo_path)]
-            else:
-                command = [str(self.slscheevo_path)]
-
-            # Add save directory
-            # --silent makes SLScheevo automatically use the last saved account
-            command.extend(
-                [
-                    "--noclear",
-                    "--save-dir",
-                    str(save_dir),
-                    "--silent",
-                    "--max-tries",
-                    "101",
-                ]
-            )
-
-            # Add app IDs if provided
+            # Resolve target app IDs
+            target_appids = []
             if app_ids:
                 if isinstance(app_ids, list):
-                    app_ids_str = ",".join(str(app_id) for app_id in app_ids)
+                    target_appids = [str(aid) for aid in app_ids]
                 else:
-                    app_ids_str = str(app_ids)
-                command.extend(["--appid", app_ids_str])
-
-            logger.info(f"Executing command: {command}")
-
-            self.progress.emit("Starting achievement generation...")
-            self.progress.emit(f"Using SLScheevo: {self.slscheevo_path}")
-            self.progress.emit(f"Save directory: {save_dir}")
-            if app_ids:
-                self.progress.emit(f"Target app IDs: {app_ids}")
-            self.progress.emit("Using last saved account")
-
-            # Start process with unbuffered output
-            self.process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                cwd=self.slscheevo_path.parent,
-                bufsize=1,  # Line buffered
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                ),
-            )
-
-            self.process_pid = self.process.pid
-
-            # Read output line by line (simpler approach without QThread)
-            while True:
-                if not self._is_running:
-                    self.process.terminate()
-                    break
-
-                if self.process is None or self.process.stdout is None:
-                    break
-
-                line = self.process.stdout.readline()
-                if not line:
-                    # Check if process has ended
-                    return_code = self.process.poll()
-                    if return_code is not None:
-                        break
-                    continue
-
-                line = line.rstrip()
-                self._handle_output(line)
-
-                # Check for timeout (simple check)
-                if line.startswith("Progress:"):
-                    # Could implement more sophisticated timeout handling here
-                    pass
-
-            # Wait for process to complete
-            return_code = self.process.wait()
-
-            self.process = None
-            self.process_pid = None
-
-            # Emit completion signal and return result
-            # Exit code 0 = success with achievements generated
-            # Exit code 10 = success but no achievements needed (all already exist)
-            if return_code == 0:
-                self.progress.emit("Achievement generation completed successfully")
-                result = {
-                    "success": True,
-                    "return_code": return_code,
-                    "message": "Generation completed",
-                }
-                self.completed.emit(result)
-            elif return_code == 10:
-                self.progress.emit(
-                    "All achievement stats already exist - no generation needed"
-                )
-                result = {
-                    "success": True,
-                    "return_code": return_code,
-                    "message": "No missing stats files to generate",
-                }
-                self.completed.emit(result)
+                    target_appids = [str(app_ids)]
             else:
-                error_msg = f"SLScheevo exited with code {return_code}"
-                self.progress.emit(f"{error_msg}")
-                self.error.emit(error_msg)
-                result = {
-                    "success": False,
-                    "return_code": return_code,
-                    "message": error_msg,
-                }
-                self.completed.emit(result)
+                target_appids = ["0"]
 
-            return result
+            # Run directory
+            cwd = get_slscheevo_save_path() / "data" / "bins"
+            cwd.mkdir(parents=True, exist_ok=True)
 
-        except subprocess.TimeoutExpired:
-            error_msg = "SLScheevo timed out after 30 seconds"
-            self.progress.emit(f"{error_msg}")
-            if self.process:
-                self.process.terminate()
+            success_count = 0
+            failed_count = 0
+            last_error = ""
+
+            for idx, app_id in enumerate(target_appids, 1):
+                self.progress.emit(f"Generating stats schema for game ID {app_id}...")
+                
+                # Command line run: schema-grabber username password appId
+                command = [str(schema_grabber), username, password, app_id]
+                logger.info(f"Executing schema-grabber for AppID {app_id}")
+
+                # Resolve dotnet environment settings (cleaning overrides and setting DOTNET_ROOT)
+                env = get_dotnet_env()
+
+                self.process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    cwd=str(cwd),
+                    env=env,
+                    bufsize=1,  # Line buffered
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
+                )
+                self.process_pid = self.process.pid
+
+                # Read output
+                while True:
+                    if not self._is_running:
+                        self.process.terminate()
+                        break
+
+                    if self.process is None or self.process.stdout is None:
+                        break
+
+                    line = self.process.stdout.readline()
+                    if not line:
+                        return_code = self.process.poll()
+                        if return_code is not None:
+                            break
+                        continue
+
+                    line = line.rstrip()
+                    # Hide password if printed in output
+                    safe_line = line.replace(password, "********")
+                    self.progress.emit(safe_line)
+
+                    # Update percentage roughly
+                    percentage = int((idx / len(target_appids)) * 100)
+                    self.progress_percentage.emit(percentage)
+
+                return_code = self.process.wait()
+                self.process = None
+                self.process_pid = None
+
+                if return_code == 0:
+                    success_count += 1
+                else:
+                    failed_count += 1
+                    last_error = f"schema-grabber exited with code {return_code}"
+
+            # Copy generated files to Steam directory
+            if success_count > 0:
+                # Copy template stats file UserGameStats_{account_id}_{appid}.bin for each logged in account
                 try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-            result = {"success": False, "return_code": -1, "message": error_msg}
-            self.completed.emit(result)
-            return result
-        except FileNotFoundError:
-            error_msg = (
-                "Python interpreter not found. Make sure Python is properly installed."
-            )
-            self.progress.emit(f"{error_msg}")
-            logger.error(error_msg, exc_info=True)
-            self.error.emit(error_msg)
-            result = {"success": False, "return_code": -1, "message": error_msg}
-            self.completed.emit(result)
-            return result
+                    steam_stats_dir = get_steam_stats_dir()
+                    if steam_stats_dir:
+                        login_users_file = steam_stats_dir.parent / "config" / "loginusers.vdf"
+                        if login_users_file.exists():
+                            import vdf
+                            with open(login_users_file, "r", encoding="utf-8") as f:
+                                loginusers = vdf.load(f)
+                            accounts = loginusers.get("users", {})
+
+                            template_path = get_slscheevo_save_path() / "data" / "UserGameStats_TEMPLATE.bin"
+                            if not template_path.exists():
+                                template_path = Paths.deps("SLScheevo/data/UserGameStats_TEMPLATE.bin")
+
+                            if template_path.exists():
+                                for steamid64_str in accounts.keys():
+                                    for app_id in target_appids:
+                                        if app_id == "0":
+                                            continue
+                                        try:
+                                            steamid64 = int(steamid64_str)
+                                            account_id = steamid64 & 0xFFFFFFFF
+                                            stats_name = f"UserGameStats_{account_id}_{app_id}.bin"
+                                            archive_stats = cwd / stats_name
+                                            if not archive_stats.exists():
+                                                shutil.copy2(template_path, archive_stats)
+                                                logger.info(f"Generated user stats from template: {stats_name}")
+                                        except Exception as e:
+                                            logger.warning(f"Failed to generate template stats: {e}")
+                except Exception as e:
+                    logger.warning(f"Template stats generator failed: {e}")
+
+                # Copy all generated bin files to Steam stats
+                try:
+                    steam_stats_dir = get_steam_stats_dir()
+                    if steam_stats_dir:
+                        steam_stats_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    bin_files = list(cwd.glob("**/*.bin"))
+                    for bin_file in bin_files:
+                        if steam_stats_dir:
+                            dest_path = steam_stats_dir / bin_file.name
+                            if bin_file.name.startswith("UserGameStatsSchema_") or not dest_path.exists():
+                                shutil.copy2(bin_file, dest_path)
+                                logger.info(f"Copied {bin_file.name} to {dest_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to copy bins to Steam stats: {e}")
+
+            if failed_count == 0:
+                msg = "Achievement generation completed successfully"
+                self.progress.emit(msg)
+                result = {"success": True, "return_code": 0, "message": msg}
+                self.completed.emit(result)
+                return result
+            else:
+                msg = last_error if last_error else "Achievement generation failed"
+                self.progress.emit(msg)
+                self.error.emit(msg)
+                result = {"success": False, "return_code": -1, "message": msg}
+                self.completed.emit(result)
+                return result
+
         except Exception as e:
             error_msg = f"Unexpected error during achievement generation: {e}"
             self.progress.emit(f"{error_msg}")
@@ -237,47 +231,6 @@ class GenerateAchievementsTask(QObject):
             result = {"success": False, "return_code": -1, "message": error_msg}
             self.completed.emit(result)
             return result
-
-    @staticmethod
-    def _resolve_python_command() -> list[str]:
-        """Resolve a usable Python interpreter command."""
-        venv_python = get_venv_python()
-        if venv_python:
-            return [venv_python]
-
-        exe_name = os.path.basename(sys.executable or "").lower()
-        if exe_name.startswith("python"):
-            return [sys.executable]
-
-        if sys.platform == "win32":
-            py_launcher = shutil.which("py")
-            if py_launcher:
-                return [py_launcher, "-3"]
-
-        for candidate in ("python", "python3"):
-            path = shutil.which(candidate)
-            if path:
-                return [path]
-
-        return []
-
-    def _handle_output(self, line):
-        """Handle output from SLScheevo process"""
-        if not self._is_running:
-            return
-
-        # Emit the line for UI display
-        self.progress.emit(line)
-
-        # Try to extract percentage from progress lines
-        # SLScheevo outputs progress in format like: "[→] Progress: 5/20"
-        progress_match = re.search(r"\[→]\s*Progress:\s*(\d+)/(\d+)", line)
-        if progress_match:
-            current = int(progress_match.group(1))
-            total = int(progress_match.group(2))
-            if total > 0:
-                percentage = int((current / total) * 100)
-                self.progress_percentage.emit(percentage)
 
     def stop(self):
         """Stop the task and terminate the process"""
@@ -303,12 +256,10 @@ class GenerateAchievementsTask(QObject):
                 for p in alive:
                     p.kill()  # Force kill stubborn processes
             except psutil.NoSuchProcess:
-                # Parent process already terminated
                 pass
             except Exception as e:
                 logger.error(f"Error stopping process with psutil: {e}")
         else:
-            # Fallback if psutil is not available
             if self.process:
                 try:
                     self.process.terminate()
@@ -318,8 +269,7 @@ class GenerateAchievementsTask(QObject):
                         self.process.kill()
                         self.process.wait(timeout=3)
                     except (ProcessLookupError, OSError):
-                        pass  # Process already gone
-
-        # Final cleanup
+                        pass
         self.process = None
         self.process_pid = None
+

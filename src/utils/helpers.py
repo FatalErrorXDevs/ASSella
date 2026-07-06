@@ -429,6 +429,15 @@ def get_slscheevo_path() -> Path:
     return _get_slscheevo_path()
 
 
+def get_schema_grabber_path() -> Path:
+    binary_path = Paths.deps("schema-grabber/schema-grabber")
+    if not binary_path.exists():
+        fallback_path = Path("/home/deck/.local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber")
+        if fallback_path.exists():
+            return fallback_path
+    return binary_path
+
+
 def _ensure_template_file(save_dir: Path) -> None:
     """Ensure UserGameStats_TEMPLATE.bin exists in the save directory."""
     template_in_save_dir = save_dir / "data" / "UserGameStats_TEMPLATE.bin"
@@ -876,3 +885,161 @@ def create_font_from_settings(settings) -> QFont:
         font.setItalic(True)
 
     return font
+
+
+def get_machine_id() -> bytes:
+    import os
+    import sys
+    # 1. Try /etc/machine-id (Linux standard)
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        return content.encode("utf-8")
+        except Exception:
+            pass
+
+    # 2. Try Windows registry GUID if on Windows
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography"
+            )
+            machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            if machine_guid:
+                return machine_guid.strip().encode("utf-8")
+        except OSError:
+            pass
+
+    # 3. Fallback to uuid.getnode()
+    import uuid
+    return str(uuid.getnode()).encode("utf-8")
+
+
+def get_encryption_key() -> bytes:
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    # Derive a key from the machine's persistent ID
+    machine_id = get_machine_id()
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b'assella_salt_key_123', # Fixed salt
+        iterations=100000,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(machine_id))
+
+
+def encrypt_string(plain_text: str) -> str:
+    if not plain_text:
+        return ""
+    from cryptography.fernet import Fernet
+    try:
+        key = get_encryption_key()
+        f = Fernet(key)
+        return f.encrypt(plain_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return ""
+
+
+def decrypt_string(encrypted_text: str) -> str:
+    if not encrypted_text:
+        return ""
+    from cryptography.fernet import Fernet
+    
+    # Try decrypting using the new persistent machine ID key
+    try:
+        key = get_encryption_key()
+        f = Fernet(key)
+        return f.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        pass
+
+    # Fallback to the old MAC-address-based key in case they have an old config
+    try:
+        import uuid
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        old_machine_id = str(uuid.getnode()).encode('utf-8')
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b'assella_salt_key_123',
+            iterations=100000,
+        )
+        old_key = base64.urlsafe_b64encode(kdf.derive(old_machine_id))
+        f = Fernet(old_key)
+        return f.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return ""
+
+
+def get_steam_stats_dir() -> Path | None:
+    import sys
+    import os
+    from pathlib import Path
+    if sys.platform == "win32":
+        import winreg
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"
+            )
+            steam_path, _ = winreg.QueryValueEx(key, "SteamPath")
+            winreg.CloseKey(key)
+            dest = Path(os.path.normpath(steam_path)) / "appcache/stats"
+            return dest
+        except OSError:
+            return None
+    else:
+        native_path = Path.home() / ".local/share/Steam"
+        symlink_path = Path.home() / ".steam/steam"
+        flatpak_path = Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam"
+        
+        for path in (native_path, symlink_path, flatpak_path):
+            if path.exists():
+                dest = path / "appcache/stats"
+                return dest
+    return None
+
+
+def get_dotnet_env():
+    import os
+    from pathlib import Path
+    import sys
+    env = os.environ.copy()
+    
+    # 1. Clean AppImage library overrides that break .NET runtime host
+    env.pop("LD_LIBRARY_PATH", None)
+    env.pop("LD_PRELOAD", None)
+    
+    # 2. Find local or system .dotnet directory
+    local_dotnet = Path.home() / ".dotnet"
+    system_dotnet = Path("/usr/share/dotnet")
+    usr_lib_dotnet = Path("/usr/lib/dotnet")
+    
+    dotnet_dir = None
+    if local_dotnet.exists():
+        dotnet_dir = local_dotnet
+    elif system_dotnet.exists():
+        dotnet_dir = system_dotnet
+    elif usr_lib_dotnet.exists():
+        dotnet_dir = usr_lib_dotnet
+        
+    if dotnet_dir:
+        # Set DOTNET_ROOT (required for .NET to find runtimes)
+        env["DOTNET_ROOT"] = str(dotnet_dir)
+        # Prepend to PATH so dotnet executable is found if needed
+        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
+        
+    return env
+
+
+

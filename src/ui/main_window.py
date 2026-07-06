@@ -945,7 +945,7 @@ class MainWindow(QMainWindow):
         self.web_server_manager = WebServerManager(self, self.web_command_queue)
         self.web_command_timer = QTimer(self)
         self.web_command_timer.timeout.connect(self._process_web_commands)
-        self.web_command_timer.start(200)
+        # Timer is started/stopped dynamically when web server starts/stops
 
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
@@ -986,9 +986,11 @@ class MainWindow(QMainWindow):
         if enabled:
             if not self.web_server_manager.is_running():
                 self.web_server_manager.start(port=port)
+                self.web_command_timer.start(200)
         else:
             if self.web_server_manager.is_running():
                 self.web_server_manager.stop()
+                self.web_command_timer.stop()
         self._update_web_ui_status_label()
 
     def _update_web_ui_status_label(self) -> None:

@@ -4,6 +4,7 @@ import os
 import platform
 import subprocess
 import sys
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -124,6 +125,8 @@ class GameItemWidget(QWidget):
         background_color: str,
         select_mode: bool = False,
         is_selected: bool = False,
+        applist_2_0_enabled: bool = True,
+        parent_dialog = None,
     ):
         super().__init__()
         self.game_data = game_data
@@ -132,6 +135,8 @@ class GameItemWidget(QWidget):
         self._select_mode = select_mode
         self._is_selected = is_selected
         self.checkbox = None
+        self.applist_2_0_enabled = applist_2_0_enabled
+        self.parent_dialog = parent_dialog
         self._init_ui(size_str)
 
     def _init_ui(self, size_str: str) -> None:
@@ -141,11 +146,7 @@ class GameItemWidget(QWidget):
         layout.setSpacing(10)
 
         # Check setting
-        applist_2_0_enabled = True
-        from utils.settings import get_settings
-        settings = get_settings()
-        if settings:
-            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+        applist_2_0_enabled = self.applist_2_0_enabled
 
         # --- Checkbox (select mode only, old style) ---
         if not applist_2_0_enabled and self._select_mode:
@@ -216,7 +217,9 @@ class GameItemWidget(QWidget):
         self._add_status_label(info_layout)
 
         # Manifest cache status
-        self._add_manifest_label(info_layout)
+        self.manifest_label = QLabel()
+        info_layout.addWidget(self.manifest_label)
+        self.update_manifest_label()
 
         info_layout.addStretch()
         layout.addLayout(info_layout)
@@ -226,11 +229,7 @@ class GameItemWidget(QWidget):
         update_status = self.game_data.get("update_status", "cannot_determine")
         status_label = QLabel()
 
-        applist_2_0_enabled = True
-        from utils.settings import get_settings
-        settings = get_settings()
-        if settings:
-            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+        applist_2_0_enabled = self.applist_2_0_enabled
 
         status_map = {
             "update_available": ("New version available", "#E05A47" if applist_2_0_enabled else self.accent_color),
@@ -246,65 +245,84 @@ class GameItemWidget(QWidget):
         status_label.setStyleSheet(f"color: {color}; font-style: italic;")
         layout.addWidget(status_label)
 
-    def _add_manifest_label(self, layout: QVBoxLayout) -> None:
-        """Add the manifest cache status label."""
+    def update_manifest_label(self) -> None:
+        """Update the manifest status label in-place."""
+        if not hasattr(self, "manifest_label") or not self.manifest_label:
+            return
+
         appid = self.game_data.get("appid", "0")
         update_status = self.game_data.get("update_status", "cannot_determine")
-        self.manifest_label = QLabel()
-
-        applist_2_0_enabled = True
-        from utils.settings import get_settings
-        settings = get_settings()
-        if settings:
-            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
+        applist_2_0_enabled = self.applist_2_0_enabled
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
             self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
-        else:
+            return
+
+        last_updated = None
+        if self.parent_dialog and hasattr(self.parent_dialog, "_manifest_mtimes"):
+            last_updated = self.parent_dialog._manifest_mtimes.get(appid)
+
+        if last_updated is None:
             from utils.helpers import get_base_path
             fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-            last_updated = None
             if fpath.exists():
                 try:
                     last_updated = fpath.stat().st_mtime
                 except Exception:
                     pass
 
-            if update_status == "checking":
-                self.manifest_label.setText("Manifest: Fetching...")
-                self.manifest_label.setStyleSheet("color: #FFA500; font-style: italic; font-size: 11px;")
-            elif not last_updated:
-                self.manifest_label.setText("Manifest: Not Found")
-                self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
+        if update_status == "checking":
+            self.manifest_label.setText("Manifest: Fetching...")
+            self.manifest_label.setStyleSheet("color: #FFA500; font-style: italic; font-size: 11px;")
+        elif not last_updated:
+            self.manifest_label.setText("Manifest: Not Found")
+            self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
+        else:
+            import time
+            age_seconds = time.time() - last_updated
+            if age_seconds < 0:
+                age_seconds = 0
+
+            if age_seconds < 60:
+                age_str = f"{int(age_seconds)}s"
+            elif age_seconds < 3600:
+                age_str = f"{int(age_seconds // 60)}m"
+            elif age_seconds < 86400:
+                age_str = f"{int(age_seconds // 3600)}h"
             else:
-                import time
-                age_seconds = time.time() - last_updated
-                if age_seconds < 0:
-                    age_seconds = 0
-
-                if age_seconds < 60:
-                    age_str = f"{int(age_seconds)}s"
-                elif age_seconds < 3600:
-                    age_str = f"{int(age_seconds // 60)}m"
-                elif age_seconds < 86400:
-                    age_str = f"{int(age_seconds // 3600)}h"
+                days = int(age_seconds // 86400)
+                if days < 30:
+                    age_str = f"{days}d"
+                elif days < 365:
+                    age_str = f"{days // 30}mo"
                 else:
-                    days = int(age_seconds // 86400)
-                    if days < 30:
-                        age_str = f"{days}d"
-                    elif days < 365:
-                        age_str = f"{days // 30}mo"
-                    else:
-                        age_str = f"{days // 365}y"
+                    age_str = f"{days // 365}y"
 
-                self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
-                if applist_2_0_enabled:
-                    self.manifest_label.setStyleSheet("color: rgba(130, 195, 130, 0.85); font-style: italic; font-size: 10px;")
-                else:
-                    self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
+            self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
+            if applist_2_0_enabled:
+                self.manifest_label.setStyleSheet("color: rgba(130, 195, 130, 0.85); font-style: italic; font-size: 10px;")
+            else:
+                self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
 
-        layout.addWidget(self.manifest_label)
+    def update_status(self, update_status: str) -> None:
+        """Update update and manifest status labels in-place."""
+        self.game_data["update_status"] = update_status
+        status_map = {
+            "update_available": ("New version available", "#E05A47" if self.applist_2_0_enabled else self.accent_color),
+            "up_to_date": ("Up to date", "#8AE08A" if self.applist_2_0_enabled else "#00FF00"),
+            "checking": ("Checking for updates...", "#FFA500"),
+        }
+
+        text, color = status_map.get(
+            update_status, ("Unable to check updates", "#AAAAAA")
+        )
+
+        if hasattr(self, "status_label") and self.status_label:
+            self.status_label.setText(text)
+            self.status_label.setStyleSheet(f"color: {color}; font-style: italic;")
+
+        self.update_manifest_label()
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label, scaling it nicely."""
@@ -366,13 +384,23 @@ class GameLibraryDialog(QDialog):
         if self.settings:
             self.accent_color = self.settings.value("accent_color", "#C06C84")
             self.background_color = self.settings.value("background_color", "#000000")
+            self.applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+        else:
+            self.applist_2_0_enabled = True
+
+        # Search debounce timer
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.timeout.connect(self._refresh_game_list)
 
         # State tracking
         self._active_fetchers = {}
-        self._image_fetch_queue = []
+        self._image_fetch_queue = deque()
         self._max_concurrent_fetches = 5
         self._current_fetches = 0
         self._image_cache = {}
+        self._items_by_appid = {}
+        self._manifest_mtimes = {}
         self._dialog_open = False
         self._refreshing = False
         self._closing = False
@@ -394,7 +422,6 @@ class GameLibraryDialog(QDialog):
         self._refresh_game_list()
 
         if show_details_for_appid:
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: self._show_details_for_appid(show_details_for_appid))
 
     def _setup_window(self) -> None:
@@ -443,9 +470,7 @@ class GameLibraryDialog(QDialog):
         """Create and arrange UI elements."""
         layout = QVBoxLayout(self)
 
-        applist_2_0_enabled = True
-        if self.settings:
-            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
+        applist_2_0_enabled = self.applist_2_0_enabled
 
         # --- Top Bar ---
         top_layout = QHBoxLayout()
@@ -705,23 +730,10 @@ class GameLibraryDialog(QDialog):
         game_data["update_status"] = update_status
         item.setData(Qt.ItemDataRole.UserRole, game_data)
 
-        # Update widget
+        # Update widget in-place directly
         widget = self.games_list.itemWidget(item)
-        if not isinstance(widget, GameItemWidget):
-            return
-
-        size_str = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
-        new_widget = GameItemWidget(
-            game_data, size_str, self.accent_color, self.background_color
-        )
-
-        # Preserve image if it was loaded
-        if appid in self._image_cache:
-            pixmap = QPixmap()
-            pixmap.loadFromData(self._image_cache[appid])
-            new_widget.set_image(pixmap)
-
-        self.games_list.setItemWidget(item, new_widget)
+        if isinstance(widget, GameItemWidget):
+            widget.update_status(update_status)
 
     # --- List Management ---
 
@@ -729,7 +741,7 @@ class GameLibraryDialog(QDialog):
         self._refresh_game_list()
 
     def _on_search_changed(self) -> None:
-        self._refresh_game_list()
+        self.search_timer.start(300)
 
     @staticmethod
     def _get_sort_key(game, sort_option):
@@ -774,6 +786,26 @@ class GameLibraryDialog(QDialog):
 
         self._refreshing = True
         self.games_list.clear()
+        self._items_by_appid.clear()
+        self._manifest_mtimes.clear()
+
+        # Pre-scan manifests directory for mtimes
+        try:
+            from utils.helpers import get_base_path
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            if manifests_dir.exists():
+                with os.scandir(manifests_dir) as entries:
+                    for entry in entries:
+                        if entry.is_file() and entry.name.startswith("accela_fetch_") and entry.name.endswith(".zip"):
+                            parts = entry.name.split("_")
+                            if len(parts) >= 3:
+                                appid_part = parts[2].split(".")[0]
+                                try:
+                                    self._manifest_mtimes[appid_part] = entry.stat().st_mtime
+                                except Exception:
+                                    pass
+        except Exception as e:
+            logger.warning(f"Failed to pre-scan hubcap_manifests: {e}")
 
         if not self.game_manager:
             self._refreshing = False
@@ -814,12 +846,18 @@ class GameLibraryDialog(QDialog):
             self.background_color,
             select_mode=self._select_mode,
             is_selected=is_selected,
+            applist_2_0_enabled=self.applist_2_0_enabled,
+            parent_dialog=self,
         )
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, game)
         item.setSizeHint(widget.sizeHint())
         self.games_list.addItem(item)
         self.games_list.setItemWidget(item, widget)
+
+        # Save to lookup index
+        if appid not in ("0", "N/A", "unknown"):
+            self._items_by_appid[appid] = item
 
         app_id = str(game.get("appid", "0"))
         if app_id in ("0", "N/A", "unknown"):
@@ -865,6 +903,9 @@ class GameLibraryDialog(QDialog):
         if self._closing:
             return
         item.setData(Qt.ItemDataRole.UserRole, game_data)
+        appid = game_data.get("appid")
+        if appid and appid not in ("0", "N/A", "unknown"):
+            self._items_by_appid[appid] = item
         self._fetch_item_image(item, game_data["appid"])
 
     def _on_item_selected(self, item: QListWidgetItem) -> None:
@@ -977,7 +1018,7 @@ class GameLibraryDialog(QDialog):
         if not self._image_fetch_queue:
             return
 
-        app_id = self._image_fetch_queue.pop(0)
+        app_id = self._image_fetch_queue.popleft()
         self._current_fetches += 1
         
         QTimer.singleShot(0, lambda: self._do_fetch_image(app_id))
@@ -1021,9 +1062,9 @@ class GameLibraryDialog(QDialog):
 
         self._image_cache[app_id] = image_data
 
-        # Find item and widget
-        for i in range(self.games_list.count()):
-            item = self.games_list.item(i)
+        # Find item and widget using O(1) lookup index
+        item = self._items_by_appid.get(app_id)
+        if item:
             self._update_item_image_if_match(item, app_id, image_data)
 
     def _check_appid_match(self, data: dict, app_id: str) -> bool:

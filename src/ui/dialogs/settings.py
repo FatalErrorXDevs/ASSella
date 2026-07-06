@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFontDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,7 @@ from utils.helpers import (
     get_base_path,
     get_slscheevo_path,
     get_slscheevo_save_path,
+    get_schema_grabber_path,
     get_venv_python,
 )
 from utils.paths import Paths
@@ -238,6 +240,14 @@ class SettingsDialog(QDialog):
         # Save original API keys for restore on cancel
         self._original_morrenus_key = self.settings.value(
             "morrenus_api_key", "", type=str
+        )
+        self.settings.sync()
+        self._original_steam_username = self.settings.value(
+            "steam_username", "", type=str
+        )
+        from utils.helpers import decrypt_string
+        self._original_steam_password = decrypt_string(
+            self.settings.value("steam_password", "", type=str)
         )
 
         self._user_accent_color = self.settings.value(
@@ -836,8 +846,8 @@ class SettingsDialog(QDialog):
         SettingsDialog._add_tool_button(
             tools_layout,
             "Configure Achievements",
-            "Launch SLScheevo to setup achievement credentials.",
-            self.run_slscheevo,
+            "Perform one-time setup and authenticate Steam for achievements.",
+            self.run_schema_grabber_manually,
         )
 
         SettingsDialog._add_tool_button(
@@ -1501,6 +1511,12 @@ class SettingsDialog(QDialog):
             self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
         except RuntimeError:
             pass
+        if hasattr(self, "steam_username_input") and self.steam_username_input:
+            self.settings.setValue("steam_username", self.steam_username_input.text().strip())
+        if hasattr(self, "steam_password_input") and self.steam_password_input:
+            from utils.helpers import encrypt_string
+            encrypted_pass = encrypt_string(self.steam_password_input.text())
+            self.settings.setValue("steam_password", encrypted_pass)
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -1828,25 +1844,21 @@ class SettingsDialog(QDialog):
                 f"Failed to open external installer page. Please visit:\n{url}",
             )
 
-    def run_slscheevo(self) -> None:
-        """Launch SLScheevo."""
-        path = get_slscheevo_path()
-        if not os.path.exists(path):
-            QMessageBox.critical(self, "Error", f"SLScheevo missing: {path}")
+    def run_schema_grabber_manually(self) -> None:
+        """Launch schema-grabber manually in a terminal."""
+        helper_path = Paths.deps("schema-grabber/login_helper.py")
+        if not helper_path.exists():
+            QMessageBox.critical(self, "Error", f"Achievements helper missing at: {helper_path}")
             return
 
-        save = get_slscheevo_save_path()
         cmd = []
-        if str(path).endswith(".py"):
-            py = get_venv_python()
-            cmd.append(
-                py if py else ("python" if sys.platform == "win32" else "python3")
-            )
-        cmd.extend(
-            [str(path), "--save-dir", str(save), "--noclear", "--max-tries", "101"]
+        py = get_venv_python()
+        cmd.append(
+            py if py else ("python" if sys.platform == "win32" else "python3")
         )
+        cmd.append(str(helper_path))
 
-        SettingsDialog._launch_terminal_command(cmd, os.path.dirname(path))
+        SettingsDialog._launch_terminal_command(cmd, str(helper_path.parent))
 
     @staticmethod
     def _launch_terminal_command(
