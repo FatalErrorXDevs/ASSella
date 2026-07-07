@@ -1731,11 +1731,11 @@ class TaskManager(QObject):
         self.achievement_task.progress.connect(logger.info)
 
         self.achievement_task_runner = TaskRunner()
-        self.achievement_worker = self.achievement_task_runner.run(
-            self.achievement_task.run, app_id
-        )
         self.achievement_task_runner.cleanup_complete.connect(
             self._on_achievement_task_cleanup
+        )
+        self.achievement_worker = self.achievement_task_runner.run(
+            self.achievement_task.run, app_id
         )
 
         self._update_status_button_color()

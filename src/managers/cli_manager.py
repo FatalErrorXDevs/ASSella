@@ -207,13 +207,11 @@ def run_cli_mode(
             game_data_holder[0] = result
             loop.quit()
 
-        # TaskRunner.run() returns the worker
-        zip_task_runner = TaskRunner()
-        zip_task_runner.run(zip_task.run, zip_path).finished.connect(on_zip_processed)
-
         # Create a local event loop to wait for ZIP processing
         loop = QEventLoop()
+        zip_task_runner = TaskRunner()
         zip_task_runner.cleanup_complete.connect(loop.quit)
+        zip_task_runner.run(zip_task.run, zip_path).finished.connect(on_zip_processed)
         loop.exec()
 
         game_data = game_data_holder[0]
@@ -957,10 +955,10 @@ class CLITaskManager:
                 )
 
         achievement_runner = TaskRunner()
+        achievement_runner.cleanup_complete.connect(loop.quit)
         achievement_runner.run(achievement_task.run, app_id).finished.connect(
             lambda r: on_achievement_complete(r)
         )
-        achievement_runner.cleanup_complete.connect(loop.quit)
         loop.exec()
 
     def _create_greenluma_files(self):

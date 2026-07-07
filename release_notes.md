@@ -1,3 +1,9 @@
+## ASSella v2.0d (Release candidate 4) — Changes from v2.0d RC3
+
+*   **Fixed Queue Stuck Race Condition**: Fixed a critical race condition in Qt signal connection order where fast-finishing background tasks (such as Steam achievements generation or ZIP extraction) could complete before their `cleanup_complete` signal handler was connected, causing the job queue to hang indefinitely.
+
+---
+
 ## ASSella v2.0d (Release candidate 3) — Changes from v2.0d RC2
 
 *   **Fixed Update Job Deletion Vulnerability**: Restructured download cancellation behavior to check for pre-existing installations *prior* to starting a download. This ensures canceling an update or additional depot download preserves existing game files and their `.acf` manifests, rather than deleting the entire installation.
