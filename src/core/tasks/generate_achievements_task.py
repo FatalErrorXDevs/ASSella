@@ -119,6 +119,21 @@ class GenerateAchievementsTask(QObject):
                 )
                 self.process_pid = self.process.pid
 
+                # Start a watchdog thread to terminate the process if it hangs (e.g. on 2FA prompts)
+                import threading
+                def watchdog():
+                    import time
+                    start_time = time.time()
+                    while time.time() - start_time < 25:
+                        if self.process is None or self.process.poll() is not None:
+                            return
+                        time.sleep(0.5)
+                    if self.process is not None and self.process.poll() is None:
+                        logger.warning(f"schema-grabber exceeded 25 seconds timeout for AppID {app_id}. Terminating...")
+                        self.stop()
+
+                threading.Thread(target=watchdog, daemon=True).start()
+
                 # Read output
                 while True:
                     if not self._is_running:

@@ -1,3 +1,9 @@
+## ASSella v2.0d (Release candidate 5) — Changes from v2.0d RC4
+
+*   **Fixed Post-Download Achievements Hang**: Added a background watchdog thread with a strict 25-second timeout to the achievements schema extraction task. This prevents unconfigured or expired Steam Guard sessions from hanging the achievements generation process (and the overall installation) indefinitely at "waiting for achievements".
+
+---
+
 ## ASSella v2.0d (Release candidate 4) — Changes from v2.0d RC3
 
 *   **Fixed Queue Stuck Race Condition**: Fixed a critical race condition in Qt signal connection order where fast-finishing background tasks (such as Steam achievements generation or ZIP extraction) could complete before their `cleanup_complete` signal handler was connected, causing the job queue to hang indefinitely.
