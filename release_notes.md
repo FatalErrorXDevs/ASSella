@@ -1,3 +1,11 @@
+## ASSella v2.0d (Release candidate 6) — Changes from v2.0d RC5
+
+*   **Library Scan Performance**: Replaced the O(N×M) nested ACF file scan with a single O(M) pass per Steam library. All `.acf` manifest files in `steamapps/` are now read exactly once at scan start and cached in a lookup dict. Each game directory match is then an instant O(1) lookup. This eliminates the multi-second startup delay before games appear and dramatically reduces the CPU/disk load from the 5-minute periodic update check.
+*   **Fixed "Keep Old Manifests" Setting Not Persisting**: Corrected a PyQt6 QSettings boolean conversion bug on Linux where `type=bool` silently failed to parse the stored string values `"true"`/`"false"`, causing the checkbox to appear unchecked on every open. Now uses explicit string comparison for robust cross-platform loading. Also added `settings.sync()` on dialog accept to guarantee settings are flushed to disk immediately.
+*   **Log Level Configuration**: Added a new "Logging Configuration" section to **Settings → Tools**. Users can now select a log severity level (DEBUG, INFO, WARNING, ERROR, or **NONE** to completely disable logging) and a log category filter. Changes apply immediately when clicking OK.
+
+---
+
 ## ASSella v2.0d (Release candidate 5) — Changes from v2.0d RC4
 
 *   **Fixed Post-Download Achievements Hang**: Added a background watchdog thread with a strict 25-second timeout to the achievements schema extraction task. This prevents unconfigured or expired Steam Guard sessions from hanging the achievements generation process (and the overall installation) indefinitely at "waiting for achievements".

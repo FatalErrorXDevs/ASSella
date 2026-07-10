@@ -13,6 +13,7 @@ from PyQt6.QtGui import QColor, QFont, QDesktopServices
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFontDialog,
@@ -449,9 +450,14 @@ class SettingsDialog(QDialog):
         
         self.save_old_manifests_checkbox = QCheckBox("Keep old manifests (Rollback)")
         self.save_old_manifests_checkbox.setToolTip("Save older manifest versions to allow rolling back to previous builds.")
-        self.save_old_manifests_checkbox.setChecked(
-            self.settings.value("save_old_manifests", True, type=bool)
-        )
+        # Robustly parse bool from QSettings — type=bool can silently fail on
+        # Linux when the stored value is the string "true"/"false".
+        _som_raw = self.settings.value("save_old_manifests", True)
+        if isinstance(_som_raw, str):
+            _som_val = _som_raw.lower() in ("true", "1", "yes")
+        else:
+            _som_val = bool(_som_raw)
+        self.save_old_manifests_checkbox.setChecked(_som_val)
         rollback_layout.addWidget(self.save_old_manifests_checkbox)
         
         limit_layout = QHBoxLayout()
@@ -459,7 +465,10 @@ class SettingsDialog(QDialog):
         rollback_limit_label.setToolTip("Maximum number of older manifests to keep per game.")
         self.max_old_manifests_spinbox = QSpinBox()
         self.max_old_manifests_spinbox.setRange(1, 100)
-        current_rollback_max = self.settings.value("max_old_manifests", 3, type=int)
+        try:
+            current_rollback_max = int(self.settings.value("max_old_manifests", 3))
+        except (ValueError, TypeError):
+            current_rollback_max = 3
         self.max_old_manifests_spinbox.setValue(current_rollback_max)
         
         limit_layout.addWidget(rollback_limit_label)
@@ -937,6 +946,56 @@ class SettingsDialog(QDialog):
 
             reg_group.setLayout(reg_layout)
             layout.addWidget(reg_group)
+
+        layout.addStretch()
+
+        # ── Logging Configuration ─────────────────────────────────────────
+        log_group = QGroupBox("Logging Configuration")
+        log_layout = QVBoxLayout()
+
+        level_row = QHBoxLayout()
+        level_label = QLabel("Log Level:")
+        level_label.setToolTip(
+            "Minimum severity of messages to log.\n"
+            "Select NONE to disable all logging (improves performance)."
+        )
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "NONE"])
+        _current_level = self.settings.value("log_filter_level", "DEBUG") or "DEBUG"
+        idx = self.log_level_combo.findText(_current_level)
+        self.log_level_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        level_row.addWidget(level_label)
+        level_row.addWidget(self.log_level_combo)
+        level_row.addStretch()
+        log_layout.addLayout(level_row)
+
+        cat_row = QHBoxLayout()
+        cat_label = QLabel("Log Filter:")
+        cat_label.setToolTip("Restrict logs to a specific module group.")
+        self.log_category_combo = QComboBox()
+        self.log_category_combo.addItems([
+            "All Modules",
+            "Only Steam Client & API",
+            "Only Downloads & Manifests",
+            "Only Database & Library",
+        ])
+        _current_cat = self.settings.value("log_filter_category", "All Modules") or "All Modules"
+        cat_idx = self.log_category_combo.findText(_current_cat)
+        self.log_category_combo.setCurrentIndex(cat_idx if cat_idx >= 0 else 0)
+        cat_row.addWidget(cat_label)
+        cat_row.addWidget(self.log_category_combo)
+        cat_row.addStretch()
+        log_layout.addLayout(cat_row)
+
+        _log_note = QLabel(
+            "Changes take effect immediately when you click OK."
+        )
+        _log_note.setStyleSheet("color: #888888; font-size: 11px;")
+        _log_note.setWordWrap(True)
+        log_layout.addWidget(_log_note)
+
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Tools")
@@ -1497,6 +1556,7 @@ class SettingsDialog(QDialog):
         self._save_download_settings()
         if not self._save_style_settings():
             return  # Style validation failed
+        self.settings.sync()  # Flush to disk immediately
         logger.info("All settings saved.")
         super().accept()
 
@@ -1624,6 +1684,18 @@ class SettingsDialog(QDialog):
             self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
         if hasattr(self, "hide_macos_depots_checkbox"):
             self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
+
+        if hasattr(self, "log_level_combo"):
+            self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
+        if hasattr(self, "log_category_combo"):
+            self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
+
+        # Apply logging changes immediately
+        try:
+            from utils.logger import update_log_filters
+            update_log_filters()
+        except Exception:
+            pass
 
 
 

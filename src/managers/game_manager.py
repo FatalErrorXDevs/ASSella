@@ -438,6 +438,11 @@ class GameManager(QObject):
             logger.warning(f"Common directory not found at: {common_path}")
             return 0
 
+        # Build ACF lookup cache ONCE for this library instead of re-scanning
+        # all .acf files for every single game folder (eliminates O(N×M) reads).
+        acf_cache = self._build_acf_cache(steamapps_path)
+        logger.debug(f"Built ACF cache with {len(acf_cache)} entries for {library_path}")
+
         seen_paths = {game.get("install_path") for game in scanned_games}
 
         # Scan all installed Steam game directories in this library.
@@ -473,6 +478,7 @@ class GameManager(QObject):
                             library_path,
                             steam_install_path,
                             marker_path=marker_path,
+                            acf_cache=acf_cache,
                         )
                         if game_data:
                             scanned_games.append(game_data)
@@ -491,6 +497,36 @@ class GameManager(QObject):
             logger.error(f"Error scanning {common_path}: {e}")
 
         return games_found
+
+    @staticmethod
+    def _build_acf_cache(steamapps_path):
+        """
+        Scan steamapps/ once and build a dict mapping installdir (lowercased) to
+        (manifest_path, appid). This replaces the per-game ACF scan loop and
+        reduces total file reads from O(N×M) to O(M).
+        """
+        cache = {}  # { installdir_lower: (manifest_path, appid) }
+        try:
+            with os.scandir(steamapps_path) as entries:
+                for entry in entries:
+                    try:
+                        if not (entry.name.startswith("appmanifest_") and entry.name.endswith(".acf")):
+                            continue
+                        manifest_path = entry.path
+                        appid = entry.name.replace("appmanifest_", "").replace(".acf", "")
+                        with open(manifest_path, "r", encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                        match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                        if match:
+                            installdir = match.group(1)
+                            # Store both case-sensitive and lower-cased keys
+                            cache[installdir] = (manifest_path, appid)
+                            cache[installdir.lower()] = (manifest_path, appid)
+                    except (OSError, IOError, PermissionError):
+                        continue
+        except OSError as e:
+            logger.debug(f"Error building ACF cache for {steamapps_path}: {e}")
+        return cache
 
     @staticmethod
     def _has_game_content(game_path):
@@ -670,6 +706,7 @@ class GameManager(QObject):
         library_path,
         steam_path=None,
         marker_path=None,
+        acf_cache=None,
     ):
         """
         Collect game data from installation directory.
@@ -683,7 +720,7 @@ class GameManager(QObject):
             is_accela_install = bool(marker_path)
 
             # Try to read appmanifest to get AppID and other metadata
-            appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name)
+            appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name, acf_cache=acf_cache)
 
             # Warn if AppID could not be determined
             if not appid:
@@ -820,15 +857,30 @@ class GameManager(QObject):
             )
             return None
 
-    def _parse_acf_for_appid(self, library_path, game_name):
-        """Parse ACF files to find the AppID for a given game name."""
+    def _parse_acf_for_appid(self, library_path, game_name, acf_cache=None):
+        """
+        Find the AppID and manifest path for a given game install directory name.
+
+        When acf_cache is provided (built once per library by _build_acf_cache),
+        this is an O(1) dict lookup. Without a cache it falls back to the original
+        O(M) directory scan so callers outside the main scan loop still work.
+        """
+        # Fast path: use the pre-built cache (O(1) lookup)
+        if acf_cache is not None:
+            result = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
+            if result:
+                appmanifest_path, appid = result
+                logger.debug(f"ACF cache hit for '{game_name}': AppID={appid}")
+                return appmanifest_path, appid
+            logger.debug(f"ACF cache miss for '{game_name}' — no matching manifest found")
+            return None, None
+
+        # Slow path fallback: scan directory (used when called without a cache)
         appmanifest_path = None
         appid = None
-
-        # Look for appmanifest files in steamapps
         steamapps_path = os.path.join(library_path, "steamapps")
         if os.path.exists(steamapps_path):
-            logger.debug(f"Looking for ACF match for game: '{game_name}'")
+            logger.debug(f"Looking for ACF match for game (no cache): '{game_name}'")
             try:
                 with os.scandir(steamapps_path) as entries:
                     for entry in entries:
@@ -841,43 +893,18 @@ class GameManager(QObject):
                             ):
                                 continue
                             test_manifest_path = entry.path
-
-                            # Parse ACF to check if this is the right game
                             try:
-                                with open(
-                                    test_manifest_path, "r", encoding="utf-8"
-                                ) as f:
+                                with open(test_manifest_path, "r", encoding="utf-8") as f:
                                     content = f.read()
-                                    # Extract installdir using regex
-                                    match = re.search(
-                                        r'"installdir"\s+"([^"]+)"', content
-                                    )
-                                    if match:
-                                        installdir = match.group(1)
-                                        logger.debug(
-                                            f"  Checking {entry.name}: installdir='{installdir}'"
-                                        )
-
-                                        # Check if this manifest matches the current game
-                                        if installdir == game_name or (
-                                            installdir.lower() == game_name.lower()
-                                        ):
-                                            appmanifest_path = test_manifest_path
-                                            # Extract appid from filename
-                                            appid = entry.name.replace(
-                                                "appmanifest_", ""
-                                            ).replace(".acf", "")
-                                            logger.debug(
-                                                f"  ✓ Match found! AppID: {appid}"
-                                            )
-                                            logger.debug(
-                                                f"Successfully determined AppID for '{game_name}': {appid}"
-                                            )
-                                            break  # Found the right manifest, stop looking
+                                match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                                if match:
+                                    installdir = match.group(1)
+                                    if installdir == game_name or installdir.lower() == game_name.lower():
+                                        appmanifest_path = test_manifest_path
+                                        appid = entry.name.replace("appmanifest_", "").replace(".acf", "")
+                                        logger.debug(f"  ✓ Match found! AppID: {appid}")
+                                        break
                             except (OSError, IOError, PermissionError):
-                                logger.debug(
-                                    f"  Error reading {entry.name}: file may be in use or inaccessible"
-                                )
                                 continue
                         except (OSError, FileNotFoundError, PermissionError):
                             continue

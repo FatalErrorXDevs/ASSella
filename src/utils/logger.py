@@ -107,7 +107,11 @@ class LineRotatingFileHandler(logging.FileHandler):
 class LogCategoryFilter(logging.Filter):
     def __init__(self, level_str="DEBUG", category_str="All Modules"):
         super().__init__()
-        self.level = getattr(logging, level_str.upper(), logging.DEBUG)
+        # "NONE" is a custom level meaning "suppress everything"
+        if level_str.upper() == "NONE":
+            self.level = 100  # Above CRITICAL (50), so nothing passes
+        else:
+            self.level = getattr(logging, level_str.upper(), logging.DEBUG)
         self.category = category_str
 
     def filter(self, record):
@@ -153,7 +157,10 @@ def update_log_filters():
             handler.addFilter(LogCategoryFilter(level_str, category_str))
             
             # Update the level of the handler
-            level_num = getattr(logging, level_str.upper(), logging.DEBUG)
+            if level_str.upper() == "NONE":
+                level_num = 100  # Above CRITICAL — suppresses all output
+            else:
+                level_num = getattr(logging, level_str.upper(), logging.DEBUG)
             handler.setLevel(level_num)
             
     except Exception as e:
