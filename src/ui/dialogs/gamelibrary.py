@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIntValidator, QPixmap
+from PyQt6.QtGui import QAction, QIntValidator, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -384,9 +385,7 @@ class GameLibraryDialog(QDialog):
         if self.settings:
             self.accent_color = self.settings.value("accent_color", "#C06C84")
             self.background_color = self.settings.value("background_color", "#000000")
-            self.applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
-        else:
-            self.applist_2_0_enabled = True
+        self.applist_2_0_enabled = True
 
         # Search debounce timer
         self.search_timer = QTimer(self)
@@ -570,6 +569,7 @@ class GameLibraryDialog(QDialog):
         self.games_list = QListWidget()
         self.games_list.setSpacing(2)
         self.games_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.games_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.games_list)
 
         # --- Selection Pill Bar (hidden by default, floats below game list) ---
@@ -660,6 +660,7 @@ class GameLibraryDialog(QDialog):
         )
 
         self.games_list.itemClicked.connect(self._on_item_selected)
+        self.games_list.customContextMenuRequested.connect(self._show_games_list_context_menu)
         self.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.manifest_download_complete.connect(self._on_manifest_download_complete)
         self.uninstall_complete.connect(self._on_uninstall_complete)
@@ -1139,555 +1140,14 @@ class GameLibraryDialog(QDialog):
     # --- Game Details Dialog ---
 
     def _show_game_details_dialog(self, game_data: dict) -> None:
-        """Show detailed game info in a tabbed dialog."""
-        use_v2 = False
-        if self.settings:
-            use_v2 = self.settings.value("game_details_2_0", False, type=bool)
-
-        if use_v2:
-            try:
-                from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-                dialog = GameDetailsDialogV2(self, game_data)
-                self._details_dialog = dialog
-                dialog.exec()
-                self._details_dialog = None
-                return
-            except Exception as e:
-                logger.error(f"Failed to load Game Details V2, falling back: {e}", exc_info=True)
-
-        self._details_dialog = QDialog(self)
-        self._details_dialog.setWindowTitle("Game Details")
-        self._details_dialog.setMinimumWidth(500)
-        self._details_dialog.setMinimumHeight(390)
-        self._details_dialog.resize(500, 395)
-        self._details_dialog.setModal(True)
-
-        # Consistent styling using background_color
-        self._details_dialog.setStyleSheet(
-            self.styleSheet()
-            + f"""
-            QTabWidget::pane {{ border: none; background-color: {self.background_color}; }}
-            QTabBar::tab {{ 
-                background: {self.background_color}; 
-                color: #888; 
-                padding: 6px 12px; 
-            }}
-            QTabBar::tab:selected {{ 
-                color: {self.accent_color}; 
-                border-bottom: 2px solid {self.accent_color}; 
-            }}
-            QWidget {{ background-color: {self.background_color}; }}
-        """
-        )
-
-        main_layout = QVBoxLayout(self._details_dialog)
-        main_layout.setSpacing(4)
-        main_layout.setContentsMargins(6, 6, 6, 6)
-        tab_widget = QTabWidget()
-
-        self._create_overview_tab(tab_widget, game_data, self._details_dialog)
-        self._create_uninstall_tab(tab_widget, game_data, self._details_dialog)
-        self._create_tools_tab(tab_widget, game_data, self._details_dialog)
-
-        main_layout.addWidget(tab_widget)
-        self._details_dialog.exec()
-        self._details_dialog = None
-
-    def _create_overview_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Overview tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(6)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        appid = str(game_data.get("appid", "0"))
-
-        # --- 1. Blurred Header Widget ---
-        header_widget = BlurredHeaderWidget()
-        header_widget.setFixedHeight(85)
-        
-        # Apply blur effect to bg_label
-        from PyQt6.QtWidgets import QGraphicsBlurEffect
-        blur = QGraphicsBlurEffect()
-        blur.setBlurRadius(12)
-        blur.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
-        header_widget.bg_label.setGraphicsEffect(blur)
-
-        # Set bg_label pixmap
-        cached_image = self._image_cache.get(appid)
-        if cached_image:
-            pixmap = QPixmap()
-            pixmap.loadFromData(cached_image)
-            if not pixmap.isNull():
-                header_widget.bg_label.setPixmap(pixmap)
-        else:
-            if appid not in ("0", "N/A", "unknown"):
-                if ImageFetcher:
-                    url = ImageFetcher.get_header_image_url(appid)
-                    fetcher = ImageFetcher(url)
-                    fetcher.setProperty("app_id", appid)
-                    
-                    def _on_details_img_ready(data, label=header_widget.bg_label):
-                        if data:
-                            px = QPixmap()
-                            px.loadFromData(data)
-                            if not px.isNull():
-                                label.setPixmap(px)
-                    
-                    fetcher.finished.connect(_on_details_img_ready)
-                    fetcher.start()
-                    self._active_fetchers[f"details_{appid}"] = fetcher
-                    fetcher.finished.connect(lambda _, aid=appid: self._cleanup_fetcher(f"details_{aid}"))
-
-        if not header_widget.bg_label.pixmap():
-            # Dark gray fallback background if no image
-            header_widget.bg_label.setStyleSheet("background-color: #1a1a1a;")
-
-        # Header Content Layout (Overlay Text)
-        header_content_layout = QVBoxLayout(header_widget)
-        header_content_layout.setContentsMargins(12, 6, 12, 6)
-        header_content_layout.setSpacing(1)
-
-        name_lbl = QLabel(format_game_display_name(game_data))
-        name_lbl.setStyleSheet(
-            f"font-size: 14px; font-weight: bold; color: #FFFFFF;"
-        )
-        name_lbl.setWordWrap(True)
-        header_content_layout.addWidget(name_lbl)
-
-        def _lbl_white(text):
-            label = QLabel(text)
-            label.setStyleSheet("color: rgba(255, 255, 255, 180); font-size: 10px;")
-            return label
-
-        header_content_layout.addWidget(_lbl_white(f"App ID: {appid}"))
-        header_content_layout.addWidget(_lbl_white(f"Source: {game_data.get('source', 'Steam')}"))
-        header_content_layout.addStretch()
-
-        layout.addWidget(header_widget)
-
-        # --- 2. Information Grid ---
-        form = QFormLayout()
-        form.setSpacing(4)
-        form.setContentsMargins(5, 0, 5, 0)
-
-        def _lbl(text, style=None):
-            label = QLabel(text)
-            if style:
-                label.setStyleSheet(style)
-            else:
-                label.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
-            return label
-
-        # Size on disk
-        size = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
-        form.addRow(_lbl("Size:"), _lbl(size))
-
-        # Install path
-        form.addRow(_lbl("Path:"), _lbl(str(game_data.get("install_path"))))
-
-        # Manifest Age Calculation
-        manifest_age_value = "Not Cached / N/A"
-        if appid not in ("0", "N/A", "unknown"):
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-            last_updated = None
-            if fpath.exists():
-                try:
-                    last_updated = fpath.stat().st_mtime
-                except Exception:
-                    pass
-            if last_updated:
-                import datetime
-                import time
-                dt = datetime.datetime.fromtimestamp(last_updated)
-                formatted_date = dt.strftime("%Y-%m-%d %H:%M:%S")
-                
-                age_seconds = int(time.time() - last_updated)
-                if age_seconds < 0: age_seconds = 0
-                
-                if age_seconds < 60:
-                    age_str = f"{age_seconds}s"
-                elif age_seconds < 3600:
-                    age_str = f"{age_seconds // 60}m {age_seconds % 60}s"
-                elif age_seconds < 86400:
-                    hours = age_seconds // 3600
-                    mins = (age_seconds % 3600) // 60
-                    age_str = f"{hours}h {mins}m"
-                else:
-                    days = age_seconds // 86400
-                    hours = (age_seconds % 86400) // 3600
-                    if days < 30:
-                        age_str = f"{days}d {hours}h"
-                    elif days < 365:
-                        months = days // 30
-                        rem_days = days % 30
-                        age_str = f"{months}mo {rem_days}d"
-                    else:
-                        years = days // 365
-                        months = (days % 365) // 30
-                        age_str = f"{years}y {months}mo"
-                    
-                manifest_age_value = f"{age_str} ago ({formatted_date})"
-        form.addRow(_lbl("Manifest Age:"), _lbl(manifest_age_value))
-
-        # Last Checked for Updates Calculation
-        last_check_value = "Never"
-        if appid not in ("0", "N/A", "unknown"):
-            from utils.update_status_cache import get_update_cache
-            cache = get_update_cache()
-            if cache:
-                cache_entry = cache._cache.get(str(appid))
-                if cache_entry and cache_entry.get("updated_at"):
-                    import datetime
-                    dt = datetime.datetime.fromtimestamp(cache_entry.get("updated_at"))
-                    last_check_value = dt.strftime("%Y-%m-%d %H:%M:%S")
-        form.addRow(_lbl("Last Update Check:"), _lbl(last_check_value))
-
-        layout.addLayout(form)
-
-        # Linux FakeAppID
-        if platform.system() == "Linux":
-            self._add_fake_appid_controls(layout, game_data)
-
-        # --- 3. Update Controls Section ---
-        def _status_text(status):
-            return {
-                "update_available": "⬆  New version available",
-                "up_to_date": "✓  Up to date",
-                "checking": "⟳  Checking for updates...",
-                "cannot_determine": "?  Status unknown",
-            }.get(status, "?  Unknown")
-
-        applist_2_0_enabled = True
-        from utils.settings import get_settings
-        settings = get_settings()
-        if settings:
-            applist_2_0_enabled = settings.value("applist_2_0_beta", True, type=bool)
-
-        # Row with Update Status and Check button
-        update_row = QHBoxLayout()
-        update_row.setSpacing(10)
-        status_lbl = QLabel(_status_text(game_data.get("update_status")))
-        if applist_2_0_enabled and game_data.get("update_status") == "update_available":
-            status_lbl.setStyleSheet("color: #E05A47; font-weight: bold; font-size: 11px;")
-        else:
-            status_lbl.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 11px;")
-        update_row.addWidget(status_lbl, 1)
-
-        check_btn = QPushButton("Check for Updates")
-        check_btn.setToolTip("Manually re-check for an update for this game")
-        check_btn.setStyleSheet("font-size: 11px; padding: 3px 6px;")
-        update_row.addWidget(check_btn)
-        layout.addLayout(update_row)
-
-        # Checkboxes for Auto-update and Exclude settings
-        checkbox_layout = QVBoxLayout()
-        checkbox_layout.setSpacing(4)
-        
-        self.update_manifest_checkbox = QCheckBox("Auto-update manifest if update found")
-        self.update_manifest_checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
-        self.update_manifest_checkbox.setChecked(
-            self.settings.value(f"auto_update_manifest/{appid}", True, type=bool) if self.settings else True
-        )
-        self.update_manifest_checkbox.stateChanged.connect(
-            lambda state: self.settings.setValue(f"auto_update_manifest/{appid}", bool(state)) if self.settings else None
-        )
-        checkbox_layout.addWidget(self.update_manifest_checkbox)
-
-        self.exclude_update_all_checkbox = QCheckBox("Exclude from 'Update All'")
-        self.exclude_update_all_checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
-        self.exclude_update_all_checkbox.setChecked(
-            self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool) if self.settings else False
-        )
-        self.exclude_update_all_checkbox.stateChanged.connect(
-            lambda state: self.settings.setValue(f"exclude_from_update_all/{appid}", bool(state)) if self.settings else None
-        )
-        checkbox_layout.addWidget(self.exclude_update_all_checkbox)
-        
-        layout.addLayout(checkbox_layout)
-
-        # Validate/Update Button & Rollback Combo
-        action_layout = QHBoxLayout()
-        validate_btn = QPushButton()
-        is_update = game_data.get("update_status") == "update_available"
-        validate_btn.setText("Download Update" if is_update else "Validate Files")
-        validate_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
-        
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        backups = sorted(manifests_dir.glob(f"accela_fetch_{appid}_*.zip"), reverse=True)
-        
-        rollback_combo = QComboBox()
-        rollback_combo.setStyleSheet("font-size: 11px; padding: 2px;")
-        rollback_combo.addItem("Latest Build", None)
-        for b in backups:
-            try:
-                # Format: accela_fetch_{appid}_YYYYMMDD_HHMMSS.zip
-                parts = b.stem.split("_")
-                ts1, ts2 = parts[-2], parts[-1]
-                if len(ts1) == 8 and len(ts2) == 6:
-                    date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]} {ts2[:2]}:{ts2[2:4]}:{ts2[4:]}"
-                    rollback_combo.addItem(f"Backup: {date_str}", str(b))
-                else:
-                    rollback_combo.addItem(f"Backup: {b.name}", str(b))
-            except Exception:
-                rollback_combo.addItem(f"Backup: {b.name}", str(b))
-                
-        if backups:
-            action_layout.addWidget(rollback_combo)
-            
-            def _on_combo_changed():
-                if rollback_combo.currentData() is not None:
-                    validate_btn.setText("Install Selected Build")
-                else:
-                    is_update_now = game_data.get("update_status") == "update_available"
-                    validate_btn.setText("Download Update" if is_update_now else "Validate Files")
-                    
-            rollback_combo.currentIndexChanged.connect(_on_combo_changed)
-        
-        action_layout.addWidget(validate_btn)
-        layout.addLayout(action_layout)
-        
-        validate_btn.clicked.connect(
-            lambda *args: self._fetch_game_manifest(
-                game_data, 
-                dialog, 
-                local_path_override=rollback_combo.currentData() if backups else None
-            )
-        )
-
-        # Signals for checking updates
-        def _on_check_clicked():
-            if self.game_manager:
-                check_btn.setEnabled(False)
-                check_btn.setText("Checking...")
-                self.game_manager.check_single_game_update(appid)
-
-        def _on_status_changed(changed_appid, new_status):
-            if changed_appid != appid:
-                return
-            status_lbl.setText(_status_text(new_status))
-            check_btn.setEnabled(True)
-            check_btn.setText("Check for Updates")
-            is_update = new_status == "update_available"
-            validate_btn.setText("Download Update" if is_update else "Validate Files")
-
-            # Check if auto-update is enabled
-            if self.update_manifest_checkbox.isChecked() and is_update:
-                self._fetch_game_manifest(game_data, dialog, download_only=True)
-
-        check_btn.clicked.connect(_on_check_clicked)
-
-        if self.game_manager:
-            self.game_manager.game_update_status_changed.connect(_on_status_changed)
-            # Disconnect when dialog closes to avoid dangling connection
-            dialog.finished.connect(
-                lambda: self.game_manager.game_update_status_changed.disconnect(_on_status_changed)
-                if self.game_manager else None
-            )
-
-        # Footer Actions
-        btn_layout = QHBoxLayout()
-        open_btn = QPushButton("Open Folder")
-        open_btn.clicked.connect(
-            lambda: GameLibraryDialog._open_folder(game_data.get("install_path"))
-        )
-        btn_layout.addWidget(open_btn)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addStretch()
-        layout.addLayout(btn_layout)
-        tab_widget.addTab(tab, "Overview")
-
-    def _add_fake_appid_controls(self, layout, game_data) -> None:
-        """Helper to add Linux FakeAppID UI controls."""
-        if not is_slssteam_config_management_enabled():
-            return
-
-        hbox = QHBoxLayout()
-        checkbox = QCheckBox("Add to SLSonline as:")
-        checkbox.setStyleSheet(f"color: {self.accent_color}; font-size: 11px;")
-        checkbox.setToolTip("Add to FakeAppIds in SLSsteam config.yaml")
-        hbox.addWidget(checkbox)
-
-        hbox.addStretch()
-
-        inp = QLineEdit()
-        inp.setPlaceholderText("Spacewar (480)")
-        inp.setFixedWidth(120)
-        inp.setStyleSheet("font-size: 11px; padding: 2px;")
-        inp.setValidator(QIntValidator())
-        hbox.addWidget(inp)
-
-        save_btn = QPushButton("Save")
-        save_btn.setFixedWidth(60)
-        save_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        hbox.addWidget(save_btn)
-        layout.addLayout(hbox)
-
-        appid = str(game_data.get("appid", "0"))
-        if appid in ("0", "N/A", "unknown", "480"):
-            checkbox.setEnabled(False)
-            inp.setEnabled(False)
-            save_btn.setEnabled(False)
-            return
-
-        # Check initial state
-        config = get_user_config_path()
-        if config.exists():
-            existing_fake_id = get_fake_appid(config, appid)
-            if existing_fake_id:
-                checkbox.setChecked(True)
-                inp.setText(existing_fake_id)
-            else:
-                checkbox.setChecked(False)
-
-        # Connect logic
-        def _toggle(state):
-            fake_id = inp.text().strip() or "480"
-            name = game_data.get("game_name", "Unknown")
-            if state == Qt.CheckState.Checked.value:
-                # Ensure clean slate
-                current_in_config = get_fake_appid(config, appid)
-                if current_in_config:
-                    remove_fake_app_id(config, appid, current_in_config)
-
-                if not add_fake_app_id(config, appid, name, fake_id):
-                    checkbox.setChecked(False)
-            else:
-                current_in_config = get_fake_appid(config, appid)
-                if current_in_config:
-                    if not remove_fake_app_id(config, appid, current_in_config):
-                        checkbox.setChecked(True)
-
-        def _update_fake_id():
-            if checkbox.isChecked():
-                fake_id = inp.text().strip() or "480"
-                name = game_data.get("game_name", "Unknown")
-
-                current_fake_id = get_fake_appid(config, appid)
-                if current_fake_id:
-                    remove_fake_app_id(config, appid, current_fake_id)
-
-                add_fake_app_id(config, appid, name, fake_id)
-                QMessageBox.information(self, "Success", "AppID updated successfully.")
-
-        checkbox.stateChanged.connect(_toggle)
-        save_btn.clicked.connect(_update_fake_id)
-
-    def _create_uninstall_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Uninstall tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        lbl = QLabel("Remove this game and its files?")
-        lbl.setStyleSheet(f"color: {self.accent_color};")
-        layout.addWidget(lbl)
-
-        opts = {}
-        if platform.system() == "Linux":
-            opts["compat"] = QCheckBox("Remove Proton/Wine Data")
-            opts["saves"] = QCheckBox("Remove Cloud Saves")
-            opts["compat"].setStyleSheet(f"color: {self.accent_color};")
-            opts["saves"].setStyleSheet(f"color: {self.accent_color};")
-            layout.addWidget(opts["compat"])
-            layout.addWidget(opts["saves"])
-
-        btn = QPushButton("Uninstall Game")
-        btn.clicked.connect(lambda: self._uninstall_game(game_data, dialog, opts))
-        layout.addWidget(btn)
-        layout.addStretch()
-
-        tab_widget.addTab(tab, "Uninstall")
-
-    def _create_tools_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Tools tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        path = game_data.get("install_path")
-        name = game_data.get("game_name")
-        appid = str(game_data.get("appid", ""))
-
-        # Steamless
-        sl_btn = QPushButton("Remove DRM (Steamless)")
-        sl_btn.clicked.connect(
-            lambda: self.main_window.task_manager.run_steamless_for_game(path, name)
-        )
-        layout.addWidget(sl_btn)
-
-        # Steamless AIO
-        sl_aio_btn = QPushButton("Remove DRM (Steamless-AIO)")
-        sl_aio_btn.clicked.connect(
-            lambda: self.main_window.task_manager.run_steamless_aio_for_game(path, name)
-        )
-        layout.addWidget(sl_aio_btn)
-
-        # ACF Fix
-        fix_btn = QPushButton("Fix Install (Remove .acf)")
-        fix_btn.clicked.connect(lambda: self._fix_game_install(game_data))
-        layout.addWidget(fix_btn)
-
-        # Goldberg
-        self.gb_btn = QPushButton("Checking Goldberg status...")
-        self.gb_btn.setEnabled(False)
-        layout.addWidget(self.gb_btn)
-
-        # Start background check
-        self.executor.submit(self._check_goldberg_async, path)
-
-        def _on_gb_click():
-            if not self.main_window or not self.main_window.task_manager:
-                return
-
-            # Re-check status synchronously for the action (since we need current state)
-            # Or better, rely on button text/state which we updated
-            is_applied = "Remove" in self.gb_btn.text()
-
-            if is_applied:
-                self.main_window.task_manager.remove_goldberg_from_game(
-                    path, appid, name, show_dialog=True
-                )
-            else:
-                self.main_window.task_manager.apply_goldberg_to_game(
-                    path, appid, name, show_dialog=True
-                )
-
-            # Re-trigger async check to update button
-            self.gb_btn.setText("Updating status...")
-            self.gb_btn.setEnabled(False)
-            self.executor.submit(self._check_goldberg_async, path)
-
-        self.gb_btn.clicked.connect(_on_gb_click)
-
-        # Depot Selection Group
-        depot_group = QGroupBox("Depot Configuration")
-        depot_group.setStyleSheet(f"QGroupBox {{ color: {self.accent_color}; font-weight: bold; }}")
-        depot_layout = QVBoxLayout()
-        depot_layout.setSpacing(10)
-
-        self.depot_status_lbl = QLabel()
-        self.depot_status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
-        self._update_depot_status_label(appid)
-        depot_layout.addWidget(self.depot_status_lbl)
-
-        btn_row = QHBoxLayout()
-        configure_btn = QPushButton("Choose Depots...")
-        configure_btn.clicked.connect(lambda: self._configure_depots(game_data))
-        btn_row.addWidget(configure_btn)
-
-        reset_btn = QPushButton("Reset Selection")
-        reset_btn.clicked.connect(lambda: self._reset_depot_selection(game_data))
-        btn_row.addWidget(reset_btn)
-
-        depot_layout.addLayout(btn_row)
-        depot_group.setLayout(depot_layout)
-        layout.addWidget(depot_group)
-
-        layout.addStretch()
-        tab_widget.addTab(tab, "Tools")
+        try:
+            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+            dialog = GameDetailsDialogV2(self, game_data)
+            self._details_dialog = dialog
+            dialog.exec()
+            self._details_dialog = None
+        except Exception as e:
+            logger.error(f"Failed to load Game Details V2: {e}", exc_info=True)
 
     def _check_goldberg_async(self, path: str) -> None:
         """Background task to check Goldberg status."""
@@ -1712,7 +1172,7 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog, download_only: bool = False, local_path_override: str = None) -> None:
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None) -> None:
         """Trigger background manifest download and show progress."""
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
@@ -1947,13 +1407,59 @@ class GameLibraryDialog(QDialog):
             else:
                 # User cancelled depot selection, don't submit job
                 logger.info("User cancelled depot selection.")
-                dialog.accept()
+                if dialog:
+                    dialog.accept()
                 self.accept()
                 return
 
         self.main_window.job_queue.add_job(filepath, metadata)
-        dialog.accept()
+        if dialog:
+            dialog.accept()
         self.accept()
+
+    def _show_games_list_context_menu(self, pos) -> None:
+        """Show context menu for a game item."""
+        item = self.games_list.itemAt(pos)
+        if not item:
+            return
+
+        game_data = item.data(Qt.ItemDataRole.UserRole)
+        if not game_data:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: #111111;
+                color: #FFFFFF;
+                border: 1px solid #333333;
+            }}
+            QMenu::item:selected {{
+                background-color: {self.accent_color};
+                color: #000000;
+            }}
+            """
+        )
+
+        verify_action = QAction("Verify & Repair Game Files", self)
+        verify_action.triggered.connect(lambda: self._fetch_game_manifest(game_data))
+        menu.addAction(verify_action)
+
+        open_folder_action = QAction("Open Install Folder", self)
+        install_path = game_data.get("install_path")
+        open_folder_action.triggered.connect(lambda: self._open_folder(install_path))
+        menu.addAction(open_folder_action)
+
+        reset_depots_action = QAction("Reset Depot Selection", self)
+        reset_depots_action.triggered.connect(lambda: self._reset_depot_selection(game_data))
+        menu.addAction(reset_depots_action)
+
+        uninstall_action = QAction("Uninstall Game", self)
+        uninstall_action.triggered.connect(lambda: self._uninstall_game(game_data, None, {}))
+        menu.addAction(uninstall_action)
+
+        menu.exec(self.games_list.mapToGlobal(pos))
 
     @staticmethod
     def _open_folder(path: str) -> None:

@@ -1,7 +1,11 @@
 import logging
 import re
+import os
+import tempfile
+import subprocess
+from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -12,6 +16,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QVBoxLayout,
+    QMessageBox,
+    QProgressDialog
 )
 
 from utils.image_fetcher import ImageFetcher
@@ -68,9 +74,11 @@ class DepotSelectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Select Depots to Download")
         self.depots = depots
+        self.app_id = app_id
         self.game_name = game_name
         self.header_url = header_url
         self.selected_depots = selected_depots
+        self.selected_files = []
         self.resize(485, 520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 10)
@@ -252,6 +260,15 @@ class DepotSelectionDialog(QDialog):
         )
         button_layout.addWidget(deselect_all_button)
         content_widget.addLayout(button_layout)
+
+        # Custom File Selection Button (on its own row)
+        file_sel_layout = QHBoxLayout()
+        select_files_button = QPushButton("Select Files...")
+        select_files_button.setToolTip("Customize downloaded files within the selected depots")
+        select_files_button.clicked.connect(self._on_select_files_clicked)
+        select_files_button.setStyleSheet("font-weight: bold; padding: 4px;")
+        file_sel_layout.addWidget(select_files_button)
+        content_widget.addLayout(file_sel_layout)
 
         buttons = create_standard_buttons(self.accept, self.reject)
         content_widget.addWidget(buttons)
@@ -435,6 +452,161 @@ class DepotSelectionDialog(QDialog):
             if item.checkState() == Qt.CheckState.Checked:
                 selected.append(item.data(Qt.ItemDataRole.UserRole))
         return selected
+
+    def get_selected_files(self):
+        """Returns the list of custom checked relative file paths."""
+        return self.selected_files
+
+    def _on_select_files_clicked(self):
+        # 1. Get chosen depots
+        chosen_depots = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                depot_id = str(item.data(Qt.ItemDataRole.UserRole))
+                chosen_depots.append(depot_id)
+
+        if not chosen_depots:
+            QMessageBox.warning(self, "Warning", "Please select at least one depot first.")
+            return
+
+        # Use the first checked depot for file list customization
+        target_depot = chosen_depots[0]
+
+        # 2. Locate the manifest zip for this app
+        from utils.helpers import get_base_path
+        app_id = self.app_id
+
+        manifests_dir = get_base_path() / "hubcap_manifests"
+        zips = list(manifests_dir.glob(f"accela_fetch_{app_id}.zip")) + \
+               list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
+        if not zips:
+            QMessageBox.critical(self, "Error", f"No manifest zip file found for AppID {app_id} in {manifests_dir}.")
+            return
+        zips.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        zip_path = str(zips[0])
+
+        # 3. Extract target manifests
+        import zipfile
+        temp_dir = os.path.join(tempfile.gettempdir(), f"selective_manifests_{app_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
+            return
+
+        # Find LUA file to read depot keys
+        lua_files = list(Path(temp_dir).glob("*.lua"))
+        if not lua_files:
+            QMessageBox.critical(self, "Error", "No LUA configuration file found in manifest ZIP.")
+            return
+        lua_path = str(lua_files[0])
+
+        # Find manifest file
+        manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest"))
+        if not manifest_files:
+            # Fallback to any manifest file
+            manifest_files = list(Path(temp_dir).glob("*.manifest"))
+            if not manifest_files:
+                QMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
+                return
+            target_depot = manifest_files[0].stem.split("_")[0]
+
+        manifest_file = str(manifest_files[0])
+        manifest_id = manifest_files[0].stem.split("_")[1]
+
+        # Extract key from LUA config
+        depot_key = None
+        try:
+            with open(lua_path, "r", encoding="utf-8") as lf:
+                lua_content = lf.read()
+                match = re.search(r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", lua_content)
+                if match:
+                    depot_key = match.group(1)
+        except Exception as e:
+            logger.warning(f"Failed to parse LUA for depot keys: {e}")
+
+        if not depot_key:
+            QMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot} in LUA config.")
+            return
+
+        # Create depot keys file
+        keys_path = os.path.join(temp_dir, "depot.keys")
+        try:
+            with open(keys_path, "w") as kf:
+                kf.write(f"{target_depot};{depot_key}\n")
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
+            return
+
+        # Dump manifest files using DDM in background progress
+        progress_dialog = QProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
+        progress_dialog.setWindowTitle("Loading Manifest")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.show()
+
+        # Define command args
+        from utils.helpers import get_dotnet_path, resource_path
+        dotnet_path = get_dotnet_path()
+        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
+
+        cmd = [
+            dotnet_path,
+            dll_path,
+            "-app", str(app_id),
+            "-depot", str(target_depot),
+            "-manifest", str(manifest_id),
+            "-manifestfile", manifest_file,
+            "-depotkeys", keys_path,
+            "-manifest-only",
+            "-dir", temp_dir
+        ]
+
+        class DumpThread(QThread):
+            finished_signal = pyqtSignal(bool, str)
+            def run(self):
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    self.finished_signal.emit(True, "")
+                except Exception as ex:
+                    self.finished_signal.emit(False, str(ex))
+
+        self.dump_thread = DumpThread()
+
+        def on_dump_finished(success, err):
+            progress_dialog.close()
+            # Clean up temp keys file
+            if os.path.exists(keys_path):
+                try:
+                    os.remove(keys_path)
+                except OSError:
+                    pass
+
+            if not success:
+                QMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
+                return
+
+            txt_path = os.path.join(temp_dir, f"manifest_{target_depot}_{manifest_id}.txt")
+            if not os.path.exists(txt_path):
+                QMessageBox.critical(self, "Error", "Failed to locate generated file list text file.")
+                return
+
+            # Open File Selection Tree Dialog
+            from ui.dialogs.fileselection import FileSelectionDialog
+            sel_dialog = FileSelectionDialog(app_id, target_depot, txt_path, self)
+            if sel_dialog.exec():
+                self.selected_files = sel_dialog.selected_files
+                QMessageBox.information(
+                    self,
+                    "Selection Confirmed",
+                    f"Selected {len(self.selected_files)} file(s) for custom download.\nPress OK at the bottom to start installing."
+                )
+
+        self.dump_thread.finished_signal.connect(on_dump_finished)
+        self.dump_thread.start()
 
     def closeEvent(self, a0):
         """Ensure image fetch is cleaned up when dialog closes."""

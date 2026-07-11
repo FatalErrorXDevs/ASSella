@@ -155,8 +155,6 @@ class FetchManifestDialog(QDialog):
         layout = QVBoxLayout(self)
 
         applist_2_0_enabled = True
-        if self.settings:
-            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
 
         if applist_2_0_enabled:
             self.setStyleSheet(
@@ -549,8 +547,6 @@ class FetchManifestDialog(QDialog):
         name = self._extract_game_name(game) or "Unknown"
 
         applist_2_0_enabled = True
-        if self.settings:
-            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
 
         in_library = False
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -713,8 +709,6 @@ class FetchManifestDialog(QDialog):
             return
 
         applist_2_0_enabled = True
-        if self.settings:
-            applist_2_0_enabled = self.settings.value("applist_2_0_beta", True, type=bool)
 
         in_library = False
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:

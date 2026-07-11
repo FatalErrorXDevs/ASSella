@@ -26,7 +26,6 @@ from core import steam_helpers
 from core.tasks.download_depots_task import DownloadDepotsTask
 from core.tasks.download_workshop_task import DownloadWorkshopTask
 from core.tasks.generate_achievements_task import GenerateAchievementsTask
-from core.tasks.monitor_speed_task import SpeedMonitorTask
 from core.tasks.process_zip_task import ProcessZipTask
 from core.tasks.steamless_task import SteamlessTask
 
@@ -279,8 +278,13 @@ class TaskManager(QObject):
             selected_depots = (
                 self.main_window.ui_state.depot_dialog.get_selected_depots()
             )
+            selected_files = (
+                self.main_window.ui_state.depot_dialog.get_selected_files()
+            )
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
+                if selected_files:
+                    self.game_data["selected_files_list"] = selected_files
 
             if not selected_depots:
                 self.job_finished()
@@ -463,6 +467,10 @@ class TaskManager(QObject):
             self.main_window.progress_bar.setValue,
             Qt.ConnectionType.QueuedConnection
         )
+        self.download_task.speed_update.connect(
+            self.main_window.speed_label.setText,
+            Qt.ConnectionType.QueuedConnection
+        )
         self.download_task.completed.connect(
             self._on_download_complete,
             Qt.ConnectionType.QueuedConnection
@@ -505,32 +513,15 @@ class TaskManager(QObject):
                     logger.error(f"Failed to write app token: {e}")
 
     def _start_speed_monitor(self):
-        self.speed_monitor_task = SpeedMonitorTask()
-        self.speed_monitor_task.speed_update.connect(
-            self.main_window.speed_label.setText,
-            Qt.ConnectionType.QueuedConnection
-        )
-
-        self.speed_monitor_runner = TaskRunner()
-        self.speed_monitor_runner.cleanup_complete.connect(
-            self._on_speed_monitor_stopped
-        )
-        self.speed_monitor_runner.run(self.speed_monitor_task.run)
+        pass
 
     def _stop_speed_monitor(self):
-        if self.speed_monitor_task:
-            self.speed_monitor_task.stop()
-            self.speed_monitor_task = None
-        else:
-            if self.is_awaiting_speed_monitor_stop:
-                self.is_awaiting_speed_monitor_stop = False
-                self.main_window.job_queue.check_if_safe_to_start_next_job()
-
+        if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+            self.main_window.speed_label.setText("")
+        self.is_awaiting_speed_monitor_stop = False
 
     def _on_speed_monitor_stopped(self):
-        self.speed_monitor_runner = None
         self.is_awaiting_speed_monitor_stop = False
-        self.main_window.job_queue.check_if_safe_to_start_next_job()
 
     def _on_zip_task_stopped(self):
         self.zip_task_runner = None

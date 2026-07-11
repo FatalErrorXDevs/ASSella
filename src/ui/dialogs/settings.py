@@ -211,9 +211,7 @@ class SettingsDialog(QDialog):
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
-        self.download_screen_2_0_beta_checkbox = None
-        self.applist_2_0_beta_checkbox = None
-        self.game_details_2_0_checkbox = None
+        self.use_lancache_checkbox = None
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
@@ -405,32 +403,14 @@ class SettingsDialog(QDialog):
         )
         group_layout.addWidget(self.autofetch_manifests_checkbox)
 
-        self.download_screen_2_0_beta_checkbox = create_checkbox_setting(
-            "Download Screen 2.0 Beta",
-            "download_screen_2_0_beta",
+        self.use_lancache_checkbox = create_checkbox_setting(
+            "Enable LanCache Detection",
+            "use_lancache",
             False,
             self,
-            "Enable the modern, redesigned Download Screen 2.0 interface.",
+            "Direct DepotDownloader downloads through a local LanCache server if detected on the local network (speeds up LAN downloads).",
         )
-        group_layout.addWidget(self.download_screen_2_0_beta_checkbox)
-
-        self.applist_2_0_beta_checkbox = create_checkbox_setting(
-            "AppList 2.0 Beta",
-            "applist_2_0_beta",
-            True,
-            self,
-            "Enable the modern, redesigned App Library screen (reorganized controls, overlay checkboxes, better search).",
-        )
-        group_layout.addWidget(self.applist_2_0_beta_checkbox)
-
-        self.game_details_2_0_checkbox = create_checkbox_setting(
-            "Game Details 2.0 Beta",
-            "game_details_2_0",
-            False,
-            self,
-            "Enable the modern, redesigned Game Details dialog.",
-        )
-        group_layout.addWidget(self.game_details_2_0_checkbox)
+        group_layout.addWidget(self.use_lancache_checkbox)
 
         # self.fakeappid_db_integration_checkbox = create_checkbox_setting(
         #     "Fake AppID Database Integration",
@@ -1599,16 +1579,8 @@ class SettingsDialog(QDialog):
             self.autofetch_manifests_checkbox.isChecked(),
         )
         self.settings.setValue(
-            "download_screen_2_0_beta",
-            self.download_screen_2_0_beta_checkbox.isChecked(),
-        )
-        self.settings.setValue(
-            "applist_2_0_beta",
-            self.applist_2_0_beta_checkbox.isChecked(),
-        )
-        self.settings.setValue(
-            "game_details_2_0",
-            self.game_details_2_0_checkbox.isChecked(),
+            "use_lancache",
+            self.use_lancache_checkbox.isChecked(),
         )
         self.settings.setValue(
             "prompt_steam_restart",

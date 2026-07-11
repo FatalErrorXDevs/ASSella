@@ -34,6 +34,7 @@ class DownloadDepotsTask(QObject):
 
     progress = pyqtSignal(str)
     progress_percentage = pyqtSignal(int)
+    speed_update = pyqtSignal(str)
     completed = pyqtSignal()
     error = pyqtSignal()
 
@@ -49,6 +50,9 @@ class DownloadDepotsTask(QObject):
         self.current_depot_size = 0
         self._last_log_time = 0
         self._log_buffer = []
+        self.temp_file_list = None
+        self._last_speed_calc_time = 0.0
+        self._last_downloaded_bytes = 0.0
 
     @property
     def is_running_flag(self) -> bool:
@@ -151,6 +155,36 @@ class DownloadDepotsTask(QObject):
                     logger.warning(msg)
                 else:
                     self.completed_so_far_for_this_job += self.current_depot_size
+                    # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
+                    try:
+                        manifest_id = current_cmd[7]
+                        manifest_file_path = current_cmd[9]
+                        dest_depot_downloader = os.path.join(self.download_dir, ".DepotDownloader")
+                        os.makedirs(dest_depot_downloader, exist_ok=True)
+                        
+                        dest_manifest_path = os.path.join(dest_depot_downloader, f"{depot_id}_{manifest_id}.manifest")
+                        
+                        import shutil
+                        import hashlib
+                        
+                        if os.path.exists(manifest_file_path):
+                            shutil.copy2(manifest_file_path, dest_manifest_path)
+                            
+                            # Calculate SHA1 hash of the manifest file
+                            sha1 = hashlib.sha1()
+                            with open(dest_manifest_path, "rb") as f:
+                                while chunk := f.read(8192):
+                                    sha1.update(chunk)
+                            
+                            # Write the raw bytes of the SHA1 hash to the .sha file (as expected by DDM's Util.LoadManifestFromFile)
+                            with open(dest_manifest_path + ".sha", "wb") as f:
+                                f.write(sha1.digest())
+                                
+                            logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
+                        else:
+                            logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
+                    except Exception as e:
+                        logger.warning(f"Failed to copy manifest for depot {depot_id}: {e}", exc_info=True)
 
             if skipped_depots:
                 self.progress.emit(
@@ -248,6 +282,14 @@ class DownloadDepotsTask(QObject):
                 except OSError as e:
                     self.progress.emit(f"Error removing temp item '{name}': {e}")
 
+        if self.temp_file_list and os.path.exists(self.temp_file_list):
+            try:
+                os.remove(self.temp_file_list)
+                self.progress.emit("Removed temporary selective filelist.")
+                self.temp_file_list = None
+            except OSError as e:
+                self.progress.emit(f"Error removing selective filelist temp file: {e}")
+
     def _flush_log_buffer(self):
         """Emits any buffered log lines."""
         if self._log_buffer:
@@ -295,6 +337,44 @@ class DownloadDepotsTask(QObject):
                     if total_percentage != self.last_percentage:
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
+
+                    # Calculate Speed & ETA locally from percentage progress changes
+                    current_time = time.time()
+                    if self._last_speed_calc_time == 0.0:
+                        self._last_speed_calc_time = current_time
+                        self._last_downloaded_bytes = total_progress_bytes
+                    elif current_time - self._last_speed_calc_time >= 1.0:
+                        elapsed = current_time - self._last_speed_calc_time
+                        bytes_diff = total_progress_bytes - self._last_downloaded_bytes
+                        self._last_downloaded_bytes = total_progress_bytes
+                        self._last_speed_calc_time = current_time
+
+                        speed_bps = bytes_diff / elapsed
+                        remaining_bytes = self.total_download_size_for_this_job - total_progress_bytes
+
+                        # Format Speed
+                        if speed_bps < 1024:
+                            speed_str = f"{speed_bps:.2f} B/s"
+                        elif speed_bps < 1024**2:
+                            speed_str = f"{(speed_bps / 1024):.2f} KB/s"
+                        else:
+                            speed_str = f"{(speed_bps / 1024**2):.2f} MB/s"
+
+                        # Format ETA
+                        if speed_bps > 0:
+                            eta_seconds = int(remaining_bytes / speed_bps)
+                            if eta_seconds < 60:
+                                eta_str = f"{eta_seconds}s remaining"
+                            elif eta_seconds < 3600:
+                                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
+                            else:
+                                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
+
+                            self.speed_update.emit(f"Speed: {speed_str} | ETA: {eta_str}")
+                            logger.debug(f"Download Progress: {total_percentage}% | Speed: {speed_str} | ETA: {eta_str} | Completed size: {total_progress_bytes} bytes")
+                        else:
+                            self.speed_update.emit(f"Speed: {speed_str}")
+                            logger.debug(f"Download Progress: {total_percentage}% | Speed: {speed_str}")
                 else:
                     int_percentage = int(percentage)
                     if int_percentage != self.last_percentage:
@@ -339,6 +419,7 @@ class DownloadDepotsTask(QObject):
         download_dir = os.path.join(
             dest_path, "steamapps", "common", install_folder_name
         )
+        self.download_dir = download_dir
         os.makedirs(download_dir, exist_ok=True)
         self.progress.emit(f"Download destination set to: {download_dir}")
 
@@ -390,27 +471,53 @@ class DownloadDepotsTask(QObject):
                 manifest_dir, f"{depot_id}_{manifest_id}.manifest"
             )
 
-            commands.append(
-                [
-                    dotnet_cmd,
-                    dll_path,
-                    "-app",
-                    str(game_data["appid"]),
-                    "-depot",
-                    str(depot_id),
-                    "-manifest",
-                    str(manifest_id),
-                    "-manifestfile",
-                    manifest_file_path,
-                    "-depotkeys",
-                    keys_path,
-                    "-max-downloads",
-                    str(max_downloads),
-                    "-dir",
-                    download_dir,
-                    "-validate",
-                ]
-            )
+            cmd_args = [
+                dotnet_cmd,
+                dll_path,
+                "-app",
+                str(game_data["appid"]),
+                "-depot",
+                str(depot_id),
+                "-manifest",
+                str(manifest_id),
+                "-manifestfile",
+                manifest_file_path,
+                "-depotkeys",
+                keys_path,
+                "-max-downloads",
+                str(max_downloads),
+                "-dir",
+                download_dir,
+                "-validate",
+            ]
+
+            # 1. LanCache support
+            use_lancache = settings.value("use_lancache", False, type=bool)
+            if use_lancache:
+                cmd_args.append("-use-lancache")
+
+            # 2. LoginID session isolation (randomized 32-bit integer)
+            import random
+            login_id = random.randint(1, 2147483647)
+            cmd_args.extend(["-loginid", str(login_id)])
+
+            # 3. Selective files list support (-filelist)
+            selected_files = game_data.get("selected_files_list")
+            if selected_files:
+                # Write filelist to temp file
+                fl_path = os.path.join(temp_dir, f"selective_filelist_{depot_id}.txt")
+                try:
+                    with open(fl_path, "w", encoding="utf-8") as fl:
+                        for file_path in selected_files:
+                            # Normalize paths to use forward slashes for DDM
+                            fl.write(file_path.replace("\\", "/") + "\n")
+                    self.temp_file_list = fl_path
+                    cmd_args.extend(["-filelist", fl_path])
+                    self.progress.emit(f"Using selective filelist: {len(selected_files)} file(s) checked")
+                except OSError as e:
+                    self.progress.emit(f"Warning: Failed to write selective filelist: {e}")
+
+            commands.append(cmd_args)
 
         return commands, skipped_depots, depot_sizes
 

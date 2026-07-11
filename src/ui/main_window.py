@@ -326,51 +326,7 @@ class SimplifiedTerminalWidget(QWidget):
         active_layout.setContentsMargins(0, 0, 0, 0)
         active_layout.setSpacing(0)
 
-        self.active_checklist_stack = QStackedWidget()
-
-        # --- CLASSIC ACTIVE LAYOUT ---
-        self.active_classic_widget = QWidget()
-        classic_layout = QVBoxLayout(self.active_classic_widget)
-        classic_layout.setContentsMargins(0, 0, 0, 0)
-        classic_layout.setSpacing(3)
-
-        self.game_title_label = QLabel("Installing Game...")
-        self.game_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        checklist_layout = QVBoxLayout()
-        checklist_layout.setSpacing(2)
-        checklist_layout.setContentsMargins(20, 0, 20, 0)
-
-        # Download Stage
-        self.dl_status_icon = QLabel("○")
-        self.dl_text = QLabel("Downloading Game Files")
-        dl_row = QHBoxLayout()
-        dl_row.addWidget(self.dl_status_icon)
-        dl_row.addWidget(self.dl_text, 1)
-        checklist_layout.addLayout(dl_row)
-
-        # Achievements Stage
-        self.ach_status_icon = QLabel("○")
-        self.ach_text = QLabel("Generating Steam Achievements")
-        ach_row = QHBoxLayout()
-        ach_row.addWidget(self.ach_status_icon)
-        ach_row.addWidget(self.ach_text, 1)
-        checklist_layout.addLayout(ach_row)
-
-        # Steamless Stage
-        self.steam_status_icon = QLabel("○")
-        self.steam_text = QLabel("Removing Steam DRM (Steamless)")
-        steam_row = QHBoxLayout()
-        steam_row.addWidget(self.steam_status_icon)
-        steam_row.addWidget(self.steam_text, 1)
-        checklist_layout.addLayout(steam_row)
-
-        classic_layout.addWidget(self.game_title_label)
-        classic_layout.addLayout(checklist_layout)
-
-        self.active_checklist_stack.addWidget(self.active_classic_widget)
-
-        # --- VIEW 1.2: ACTIVE 2.0 BETA LAYOUT ---
+        # --- ACTIVE 2.0 LAYOUT (Now Permanent) ---
         self.active_2_0_widget = QWidget()
         active_2_0_layout = QVBoxLayout(self.active_2_0_widget)
         active_2_0_layout.setContentsMargins(5, 5, 5, 5)
@@ -382,10 +338,10 @@ class SimplifiedTerminalWidget(QWidget):
         game_info_layout.setContentsMargins(10, 8, 10, 8)
         game_info_layout.setSpacing(2)
 
-        self.game_title_label_2_0 = QLabel("Installing Game...")
-        self.game_title_label_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.game_title_label_2_0.setWordWrap(True)
-        game_info_layout.addWidget(self.game_title_label_2_0)
+        self.game_title_label = QLabel("Installing Game...")
+        self.game_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.game_title_label.setWordWrap(True)
+        game_info_layout.addWidget(self.game_title_label)
 
         active_2_0_layout.addWidget(self.game_info_card)
 
@@ -428,9 +384,7 @@ class SimplifiedTerminalWidget(QWidget):
 
         active_2_0_layout.addStretch()
 
-        self.active_checklist_stack.addWidget(self.active_2_0_widget)
-
-        active_layout.addWidget(self.active_checklist_stack)
+        active_layout.addWidget(self.active_2_0_widget)
 
         self.layout.addWidget(self.idle_widget)
         self.layout.addWidget(self.active_widget)
@@ -603,7 +557,6 @@ class SimplifiedTerminalWidget(QWidget):
         self.stats_title.setStyleSheet(title_style)
         self.updates_title.setStyleSheet(title_style)
         self.history_title.setStyleSheet(title_style)
-
         self.total_games_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
         self.updates_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
         self.separator.setStyleSheet(f"background-color: {accent}; border: none;")
@@ -611,13 +564,8 @@ class SimplifiedTerminalWidget(QWidget):
         self.quote_source_label.setStyleSheet("font-size: 8pt; color: #888888;")
 
         self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
-        self.dl_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
-        self.ach_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
-        self.steam_text.setStyleSheet("color: #FFFFFF; font-size: 10pt; border: none; background: transparent;")
 
         # 2.0 active layout styling
-        if hasattr(self, "game_title_label_2_0") and self.game_title_label_2_0:
-            self.game_title_label_2_0.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
         if hasattr(self, "game_info_card") and self.game_info_card:
             self.game_info_card.setStyleSheet("""
                 QFrame {
@@ -632,11 +580,6 @@ class SimplifiedTerminalWidget(QWidget):
             self.ach_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
         if hasattr(self, "drm_text_2_0") and self.drm_text_2_0:
             self.drm_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
-
-        # Reset current status icons to apply updated colors
-        self.update_stage_style(self.dl_status_icon, self.dl_status_icon.text())
-        self.update_stage_style(self.ach_status_icon, self.ach_status_icon.text())
-        self.update_stage_style(self.steam_status_icon, self.steam_status_icon.text())
 
         # Re-apply 2.0 stages style if statuses exist
         if hasattr(self, "_stage_statuses"):
@@ -719,37 +662,13 @@ class SimplifiedTerminalWidget(QWidget):
             self._stage_statuses = {}
         self._stage_statuses[stage] = (status, count)
 
-        status_map = {
-            "pending": "○",
-            "in_progress": "▶",
-            "completed": "✓",
-            "error": "✗",
-            "skipped": "~",
-            "skipped_linux": "~",
-            "skipped_no_achievements": "~"
-        }
-        symbol = status_map.get(status, status)
-
         if stage == "download":
-            self.update_stage_style(self.dl_status_icon, symbol)
             if hasattr(self, "dl_card") and self.dl_card:
                 self.update_2_0_stage_style(self.dl_card, self.dl_badge_2_0, status, count)
         elif stage == "achievements":
-            self.update_stage_style(self.ach_status_icon, symbol)
-            if status == "skipped_no_achievements":
-                self.ach_text.setText("Generating Steam Achievements (No Achievements)")
-            elif count is not None:
-                self.ach_text.setText(f"Generating Steam Achievements ({count} achievements)")
-            else:
-                self.ach_text.setText("Generating Steam Achievements")
             if hasattr(self, "ach_card") and self.ach_card:
                 self.update_2_0_stage_style(self.ach_card, self.ach_badge_2_0, status, count)
         elif stage == "steamless":
-            self.update_stage_style(self.steam_status_icon, symbol)
-            if status == "skipped_linux":
-                self.steam_text.setText("Removing Steam DRM (Linux Skip)")
-            else:
-                self.steam_text.setText("Removing Steam DRM (Steamless)")
             if hasattr(self, "drm_card") and self.drm_card:
                 self.update_2_0_stage_style(self.drm_card, self.drm_badge_2_0, status, count)
 
@@ -766,15 +685,6 @@ class SimplifiedTerminalWidget(QWidget):
 
     def show_active_job(self, game_name: str = "Installing Game..."):
         self.game_title_label.setText(game_name)
-        if hasattr(self, "game_title_label_2_0") and self.game_title_label_2_0:
-            self.game_title_label_2_0.setText(game_name)
-        
-        beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
-        if beta:
-            self.active_checklist_stack.setCurrentIndex(1)
-        else:
-            self.active_checklist_stack.setCurrentIndex(0)
-
         self.layout.setCurrentIndex(1)
         if hasattr(self.main_window, "_update_tool_update_visibility"):
             self.main_window._update_tool_update_visibility()

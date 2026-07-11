@@ -100,48 +100,26 @@ class UIStateManager:
 
     def set_download_controls_visible(self, visible: bool) -> None:
         """Show or hide pause/cancel buttons based on current settings."""
-        beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
-        if beta:
-            # Hide the traditional queue buttons
-            if self.pause_button:
-                self.pause_button.setVisible(False)
-            if self.cancel_button:
-                self.cancel_button.setVisible(False)
-            # Show/hide inline text controls on main window
-            mw = self.main_window
-            if hasattr(mw, "media_pause_button") and mw.media_pause_button:
-                mw.media_pause_button.setVisible(visible)
-            if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
-                mw.media_cancel_button.setVisible(visible)
-            if hasattr(mw, "_sep_label") and mw._sep_label:
-                mw._sep_label.setVisible(visible)
-        else:
-            # Show/hide traditional queue buttons
-            if self.pause_button:
-                self.pause_button.setVisible(visible)
-            if self.cancel_button:
-                self.cancel_button.setVisible(visible)
-            # Hide inline text controls on main window
-            mw = self.main_window
-            if hasattr(mw, "media_pause_button") and mw.media_pause_button:
-                mw.media_pause_button.setVisible(False)
-            if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
-                mw.media_cancel_button.setVisible(False)
-            if hasattr(mw, "_sep_label") and mw._sep_label:
-                mw._sep_label.setVisible(False)
+        # Hide the traditional queue buttons
+        if self.pause_button:
+            self.pause_button.setVisible(False)
+        if self.cancel_button:
+            self.cancel_button.setVisible(False)
+        # Show/hide inline text controls on main window
+        mw = self.main_window
+        if hasattr(mw, "media_pause_button") and mw.media_pause_button:
+            mw.media_pause_button.setVisible(visible)
+        if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
+            mw.media_cancel_button.setVisible(visible)
+        if hasattr(mw, "_sep_label") and mw._sep_label:
+            mw._sep_label.setVisible(visible)
 
     def set_pause_button_text(self, text: str) -> None:
         """Set text for pause button based on state."""
-        beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
-        if beta:
-            # Use plain text (Pause / Resume) — no emoji
-            if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
-                self.main_window.media_pause_button.setText(text)
-                self.main_window.media_pause_button.setToolTip("")
-        else:
-            if self.pause_button:
-                self.pause_button.setText(text)
-                self.pause_button.setToolTip("")
+        # Use plain text (Pause / Resume) — no emoji
+        if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
+            self.main_window.media_pause_button.setText(text)
+            self.main_window.media_pause_button.setToolTip("")
 
     def _apply_queue_styles(self, beta: bool) -> None:
         accent = self.main_window.accent_color or "#C06C84"
@@ -304,24 +282,14 @@ class UIStateManager:
             sonic_font.setPointSize(font_size)
             self.main_window.font = sonic_font
 
-        beta = self.settings.value("download_screen_2_0_beta", False, type=bool)
-        if beta:
-            self.queue_move_up_button.setText("▲ Move Up")
-            self.queue_move_down_button.setText("▼ Move Down")
-            self.queue_remove_button.setText("✖ Remove")
-            # Hide the traditional pause/cancel buttons in queue list
-            self.pause_button.setVisible(False)
-            self.cancel_button.setVisible(False)
-        else:
-            self.queue_move_up_button.setText("Move Up")
-            self.queue_move_down_button.setText("Move Down")
-            self.queue_remove_button.setText("Remove")
-            # If the task manager is currently processing, we might need to show them
-            is_processing = self.main_window.task_manager.is_processing
-            self.pause_button.setVisible(is_processing)
-            self.cancel_button.setVisible(is_processing)
+        self.queue_move_up_button.setText("▲ Move Up")
+        self.queue_move_down_button.setText("▼ Move Down")
+        self.queue_remove_button.setText("✖ Remove")
+        # Hide the traditional pause/cancel buttons in queue list
+        self.pause_button.setVisible(False)
+        self.cancel_button.setVisible(False)
 
-        self._apply_queue_styles(beta)
+        self._apply_queue_styles(True)
 
         # Apply styles to various UI elements
         self._apply_background_color()
