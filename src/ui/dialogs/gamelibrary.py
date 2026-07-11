@@ -8,7 +8,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QIntValidator, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -614,22 +614,22 @@ class GameLibraryDialog(QDialog):
         pill_layout.addStretch()
 
         # Right: Queue action button
-        self.queue_selected_btn = QPushButton("Queue Selected  ↓")
+        self.queue_selected_btn = QPushButton("Start Queue  ▶")
         self.queue_selected_btn.clicked.connect(self._on_queue_selected)
         self.queue_selected_btn.setEnabled(False)
         self.queue_selected_btn.setStyleSheet(
             f"""
             QPushButton {{
-                background-color: transparent;
-                color: {self.accent_color};
-                border: 1px solid {self.accent_color};
+                background-color: {self.accent_color};
+                color: #000000;
+                border: none;
                 border-radius: 5px;
-                padding: 3px 10px;
+                padding: 3px 14px;
                 font-size: 9pt;
                 font-weight: bold;
             }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,12); }}
-            QPushButton:disabled {{ color: rgba(255,255,255,40); border-color: rgba(255,255,255,25); }}
+            QPushButton:hover {{ background-color: rgba(255,255,255,220); }}
+            QPushButton:disabled {{ background-color: rgba(255,255,255,25); color: rgba(255,255,255,40); }}
             """
         )
         pill_layout.addWidget(self.queue_selected_btn)
@@ -976,7 +976,7 @@ class GameLibraryDialog(QDialog):
                 widget.set_selected(False)
 
     def _on_queue_selected(self) -> None:
-        """Open the batch queue dialog for selected games."""
+        """Directly enqueue selected games without any intermediate dialog."""
         if not self._selected_appids:
             return
 
@@ -996,11 +996,190 @@ class GameLibraryDialog(QDialog):
         if not selected_games:
             return
 
-        dialog = BatchQueueDialog(selected_games, self.main_window, self)
-        if dialog.exec():
-            # Exit select mode after queuing
-            self.select_mode_button.setChecked(False)
-            self._toggle_select_mode()
+        # Disable the button so it can't be double-clicked
+        self.queue_selected_btn.setEnabled(False)
+        self.queue_selected_btn.setText("Queueing...")
+        self.info_label.setText(f"Queueing {len(selected_games)} game(s)...")
+
+        # Exit select mode immediately
+        self.select_mode_button.setChecked(False)
+        self._toggle_select_mode()
+
+        # Run the heavy work (zip parse + depot resolve) off the main thread
+        import threading
+        threading.Thread(
+            target=self._enqueue_games_background,
+            args=(selected_games,),
+            daemon=True
+        ).start()
+
+    def _enqueue_games_background(self, selected_games: list) -> None:
+        """Background thread: enqueue each game using the normal download+depot flow."""
+        queued_count = 0
+        total = len(selected_games)
+        for i, game_data in enumerate(selected_games):
+            appid = str(game_data.get("appid", "0"))
+            if appid in ("0", "N/A", "unknown"):
+                logger.warning(f"Skipping batch queue for game with invalid appid: {game_data.get('game_name')}")
+                continue
+            try:
+                success = self._enqueue_single_game(game_data)
+                if success:
+                    queued_count += 1
+            except Exception as e:
+                logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
+
+        # Update UI back on main thread
+        QMetaObject.invokeMethod(
+            self,
+            "_on_enqueue_finished",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(int, queued_count),
+            Q_ARG(int, total),
+        )
+
+    @pyqtSlot(int, int)
+    def _on_enqueue_finished(self, queued_count: int, total: int) -> None:
+        """Called on main thread after background enqueueing is done."""
+        if queued_count > 0:
+            self.info_label.setText(f"\u2713 Queued {queued_count} of {total} game(s) \u2014 downloads starting.")
+        else:
+            self.info_label.setText("Nothing queued. Check App IDs are valid.")
+
+    def _enqueue_single_game(self, game_data: dict) -> bool:
+        """Enqueue a single game through the manifest fetch + depot selection flow."""
+        try:
+            appid = str(game_data.get("appid", "0"))
+            name = game_data.get("game_name", "Unknown")
+            update_status = game_data.get("update_status")
+
+            from utils.helpers import get_base_path
+            from core import morrenus_api as _api
+            from utils.settings import get_settings
+            settings = get_settings()
+
+            # Check local cache first
+            local_path = None
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
+
+            if fpath.exists() and (update_status != "update_available" or is_fresh):
+                local_path = str(fpath)
+
+            if not local_path:
+                # Download manifest
+                fpath, error = _api.download_manifest(appid)
+                if error or not fpath:
+                    logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
+                    return False
+                local_path = str(fpath)
+                # Manifest is fresh now
+                settings.setValue(f"manifest_is_fresh/{appid}", True)
+                latest_id = settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                if latest_id:
+                    settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
+
+            # Parse for depots
+            from core.tasks.process_zip_task import ProcessZipTask
+
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(local_path)
+
+            metadata = {
+                "appid": appid,
+                "library_path": game_data.get("library_path"),
+                "install_path": game_data.get("install_path"),
+                "game_name": name,
+            }
+
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                depots = parsed_data.get("depots")
+
+                selected_depots = None
+
+                # Smart selection logic
+                import json
+                smart_active = settings.value("smart_depot_selection", False, type=bool)
+                val = settings.value(f"depot_selection/{appid}", "", type=str)
+                should_prompt = True
+
+                if smart_active and val:
+                    try:
+                        data = json.loads(val)
+                        cached_selected = data.get("selected", [])
+                        cached_all = data.get("all_available", [])
+                        current_depots = list(depots.keys())
+                        has_new_depot = any(d not in cached_all for d in current_depots)
+                        if not has_new_depot:
+                            selected_depots = [d for d in cached_selected if d in depots]
+                            should_prompt = False
+                            logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
+                    except Exception as e:
+                        logger.warning(f"Error parsing cached depot selection: {e}")
+
+                if should_prompt:
+                    if auto_skip and len(depots) == 1:
+                        selected_depots = list(depots.keys())
+                    else:
+                        # Depot dialog must run on the main thread
+                        result_holder = [None]
+                        done_event = __import__("threading").Event()
+
+                        def _show_depot_dialog():
+                            try:
+                                depot_dialog = DepotSelectionDialog(
+                                    parsed_data["appid"],
+                                    parsed_data.get("game_name", name),
+                                    depots,
+                                    parsed_data.get("header_url"),
+                                    self.main_window,
+                                )
+                                if depot_dialog.exec():
+                                    result_holder[0] = depot_dialog.get_selected_depots()
+                            finally:
+                                done_event.set()
+
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_run_on_main_thread",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(object, _show_depot_dialog),
+                        )
+                        done_event.wait(timeout=120)
+                        selected_depots = result_holder[0]
+
+                if not selected_depots:
+                    logger.info(f"Batch queue: user cancelled depot selection for {name}")
+                    return False
+
+                metadata["selected_depots_list"] = selected_depots
+                # Cache the choice
+                try:
+                    settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                        })
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
+
+            self.main_window.job_queue.add_job(local_path, metadata)
+            logger.info(f"Batch queued: {name} (appid={appid})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
+            return False
+
+    @pyqtSlot(object)
+    def _run_on_main_thread(self, fn) -> None:
+        """Slot to execute a callable on the main thread (used by background enqueue thread)."""
+        fn()
 
     # --- Image Handling ---
 
@@ -1713,302 +1892,3 @@ class GameLibraryDialog(QDialog):
         if game_data:
             self._show_game_details_dialog(game_data)
 
-
-class _ActionToggle(QPushButton):
-    """Pill-style toggle button for BatchQueueDialog actions."""
-
-    def __init__(self, label: str, checked: bool = False, accent: str = "#C06C84", bg: str = "#000000"):
-        super().__init__(label)
-        self._accent = accent
-        self._bg = bg
-        self.setCheckable(True)
-        self.setChecked(checked)
-        self._refresh_style()
-        self.toggled.connect(self._refresh_style)
-
-    def _refresh_style(self, *_):
-        if self.isChecked():
-            self.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: {self._accent};
-                    color: #000000;
-                    border: 1px solid {self._accent};
-                    border-radius: 6px;
-                    padding: 5px 12px;
-                    font-size: 9pt;
-                    font-weight: bold;
-                }}
-                """
-            )
-        else:
-            self.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: rgba(255,255,255,160);
-                    border: 1px solid rgba(255,255,255,30);
-                    border-radius: 6px;
-                    padding: 5px 12px;
-                    font-size: 9pt;
-                }}
-                QPushButton:hover {{
-                    border-color: {self._accent};
-                    color: {self._accent};
-                }}
-                """
-            )
-
-
-class BatchQueueDialog(QDialog):
-    """
-    Dialog shown after clicking 'Queue Selected' in the library.
-    Redesigned with chip game preview and pill-toggle action buttons.
-    """
-
-    def __init__(self, selected_games: list, main_window, parent=None):
-        super().__init__(parent)
-        self.selected_games = selected_games
-        self.main_window = main_window
-        self._library_dialog = parent  # GameLibraryDialog reference
-
-        accent = "#C06C84"
-        bg = "#000000"
-        if hasattr(main_window, "settings") and main_window.settings:
-            accent = main_window.settings.value("accent_color", accent)
-            bg = main_window.settings.value("background_color", bg)
-
-        self.setWindowTitle("Queue Selected Games")
-        self.setMinimumWidth(460)
-        self.setModal(True)
-        self.setStyleSheet(
-            f"""
-            QDialog {{ background-color: {bg}; color: {accent}; }}
-            QLabel {{ color: {accent}; }}
-            QScrollArea {{ background-color: transparent; border: none; }}
-            QWidget#chipArea {{ background-color: transparent; }}
-        """
-        )
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-        layout.setContentsMargins(16, 14, 16, 14)
-
-        # ── Header ──────────────────────────────────────────────────────────
-        header = QLabel(f"Queue {len(selected_games)} game(s)")
-        header.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {accent};")
-        layout.addWidget(header)
-
-        # ── Game chip row ────────────────────────────────────────────────────
-        from PyQt6.QtWidgets import QScrollArea, QSizePolicy
-        from PyQt6.QtCore import Qt as _Qt
-
-        chip_scroll = QScrollArea()
-        chip_scroll.setWidgetResizable(True)
-        chip_scroll.setMaximumHeight(72)
-        chip_scroll.setHorizontalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        chip_scroll.setStyleSheet(
-            f"QScrollArea {{ background: rgba(255,255,255,6); border: 1px solid rgba(255,255,255,12); border-radius: 6px; }}"
-        )
-
-        chip_area = QWidget()
-        chip_area.setObjectName("chipArea")
-        chip_flow = QHBoxLayout(chip_area)
-        chip_flow.setContentsMargins(6, 4, 6, 4)
-        chip_flow.setSpacing(6)
-
-        for g in selected_games:
-            name = g.get("game_name", "Unknown")
-            short = name[:22] + "…" if len(name) > 22 else name
-            chip = QLabel(short)
-            chip.setToolTip(name)
-            chip.setStyleSheet(
-                f"""
-                QLabel {{
-                    background-color: rgba(255,255,255,10);
-                    color: rgba(255,255,255,200);
-                    border: 1px solid rgba(255,255,255,20);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8pt;
-                }}
-                """
-            )
-            chip_flow.addWidget(chip)
-        chip_flow.addStretch()
-
-        chip_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        chip_scroll.setWidget(chip_area)
-        layout.addWidget(chip_scroll)
-
-        layout.addStretch()
-
-        # ── Confirm / Cancel ─────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: rgba(255,255,255,120); border: 1px solid rgba(255,255,255,20); border-radius: 5px; padding: 6px 14px; }}"
-            f"QPushButton:hover {{ color: #FFFFFF; border-color: rgba(255,255,255,60); }}"
-        )
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
-
-        self.confirm_btn = QPushButton("Start Queue")
-        self.confirm_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {accent};
-                color: #000000;
-                border: none;
-                border-radius: 5px;
-                padding: 6px 18px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,220); }}
-            """
-        )
-        self.confirm_btn.clicked.connect(self._enqueue_all)
-        btn_row.addWidget(self.confirm_btn, 1)
-        layout.addLayout(btn_row)
-
-    def _enqueue_all(self) -> None:
-        """Enqueue each selected game through the normal download+depot flow."""
-        queued_count = 0
-        for game_data in self.selected_games:
-            appid = str(game_data.get("appid", "0"))
-            if appid in ("0", "N/A", "unknown"):
-                logger.warning(f"Skipping batch queue for game with invalid appid: {game_data.get('game_name')}")
-                continue
-
-            success = self._enqueue_single_game(game_data)
-            if success:
-                queued_count += 1
-
-        if queued_count > 0:
-            QMessageBox.information(
-                self,
-                "Queued",
-                f"Successfully queued {queued_count} game(s).\n"
-                "Check the queue in the main window.",
-            )
-        else:
-            QMessageBox.warning(
-                self, "Nothing Queued", "No games could be queued. Check that App IDs are valid."
-            )
-
-        self.accept()
-
-    def _enqueue_single_game(self, game_data: dict) -> bool:
-        """Enqueue a single game through the manifest fetch + depot selection flow."""
-        try:
-            appid = str(game_data.get("appid", "0"))
-            name = game_data.get("game_name", "Unknown")
-            update_status = game_data.get("update_status")
-
-            from utils.helpers import get_base_path
-            from core import morrenus_api as _api
-            from utils.settings import get_settings
-            settings = get_settings()
-
-            # Check local cache first
-            local_path = None
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-            is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
-
-            if fpath.exists() and (update_status != "update_available" or is_fresh):
-                local_path = str(fpath)
-
-            if not local_path:
-                # Download manifest (blocking in dialog context)
-                fpath, error = _api.download_manifest(appid)
-                if error or not fpath:
-                    logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
-                    return False
-                local_path = str(fpath)
-                # Manifest is fresh now
-                settings.setValue(f"manifest_is_fresh/{appid}", True)
-                latest_id = settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
-                if latest_id:
-                    settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
-
-            # Parse for depots
-            from core.tasks.process_zip_task import ProcessZipTask
-
-            zip_task = ProcessZipTask()
-            parsed_data = zip_task.run(local_path)
-
-            metadata = {
-                "appid": appid,
-                "library_path": game_data.get("library_path"),
-                "install_path": game_data.get("install_path"),
-                "game_name": name,
-            }
-
-            if parsed_data and parsed_data.get("depots"):
-                from ui.dialogs.depotselection import DepotSelectionDialog
-                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
-                depots = parsed_data.get("depots")
-
-                selected_depots = None
-                
-                # Smart selection logic
-                import json
-                smart_active = settings.value("smart_depot_selection", False, type=bool)
-                val = settings.value(f"depot_selection/{appid}", "", type=str)
-                should_prompt = True
-                
-                if smart_active and val:
-                    try:
-                        data = json.loads(val)
-                        cached_selected = data.get("selected", [])
-                        cached_all = data.get("all_available", [])
-                        current_depots = list(depots.keys())
-                        has_new_depot = any(d not in cached_all for d in current_depots)
-                        if not has_new_depot:
-                            selected_depots = [d for d in cached_selected if d in depots]
-                            should_prompt = False
-                            logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
-                    except Exception as e:
-                        logger.warning(f"Error parsing cached depot selection: {e}")
-
-                if should_prompt:
-                    if auto_skip and len(depots) == 1:
-                        selected_depots = list(depots.keys())
-                    else:
-                        depot_dialog = DepotSelectionDialog(
-                            parsed_data["appid"],
-                            parsed_data.get("game_name", name),
-                            depots,
-                            parsed_data.get("header_url"),
-                            self.main_window,
-                        )
-                        if depot_dialog.exec():
-                            selected_depots = depot_dialog.get_selected_depots()
-
-                if not selected_depots:
-                    logger.info(f"Batch queue: user cancelled depot selection for {name}")
-                    return False
-
-                metadata["selected_depots_list"] = selected_depots
-                # Cache the choice
-                try:
-                    settings.setValue(
-                        f"depot_selection/{appid}",
-                        json.dumps({
-                            "selected": selected_depots,
-                            "all_available": list(depots.keys()),
-                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
-                        })
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to cache depot selection: {e}")
-
-            self.main_window.job_queue.add_job(local_path, metadata)
-            logger.info(f"Batch queued: {name} (appid={appid})")
-            return True
-
-        except Exception as e:
-            logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
-            return False

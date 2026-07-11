@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# asshead - Headless lightweight downloader/updater wrapper for ASSella running from source
+
+SRC_MAIN="/home/deck/Projects/ASSella/src/main.py"
+PYTHON_EXEC="/home/deck/.local/share/assella_testing/bin/.venv/bin/python3"
+
+if [ ! -f "$PYTHON_EXEC" ]; then
+    echo "Error: Extracted python interpreter not found at $PYTHON_EXEC"
+    exit 1
+fi
+
+if [ ! -f "$SRC_MAIN" ]; then
+    echo "Error: ASSella source main.py not found at $SRC_MAIN"
+    exit 1
+fi
+
+export PYTHONPATH="/home/deck/Projects/ASSella/src"
+QT_QPA_PLATFORM=offscreen exec "$PYTHON_EXEC" "$SRC_MAIN" --helper "$@"

@@ -1629,9 +1629,80 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from ui.dialogs.gamelibrary import BatchQueueDialog
-        dialog = BatchQueueDialog(updateable_games, self)
-        dialog.exec()
+        # Enqueue all updates directly on a background thread (no intermediate dialog)
+        from ui.dialogs.gamelibrary import GameLibraryDialog
+        import threading
+
+        # Create a temporary GameLibraryDialog-like enqueue helper
+        # by reusing the standalone enqueue logic
+        def _do_update_all():
+            from utils.helpers import get_base_path
+            from core import morrenus_api as _api
+            from utils.settings import get_settings
+            from core.tasks.process_zip_task import ProcessZipTask
+            import json
+
+            settings = get_settings()
+            queued = 0
+            for game_data in updateable_games:
+                appid = str(game_data.get("appid", "0"))
+                name = game_data.get("game_name", "Unknown")
+                update_status = game_data.get("update_status")
+                try:
+                    local_path = None
+                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                    is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
+                    if fpath.exists() and (update_status != "update_available" or is_fresh):
+                        local_path = str(fpath)
+                    if not local_path:
+                        fpath, error = _api.download_manifest(appid)
+                        if error or not fpath:
+                            logger.warning(f"Update All: manifest download failed for {name}: {error}")
+                            continue
+                        local_path = str(fpath)
+                        settings.setValue(f"manifest_is_fresh/{appid}", True)
+
+                    zip_task = ProcessZipTask()
+                    parsed_data = zip_task.run(local_path)
+                    metadata = {
+                        "appid": appid,
+                        "library_path": game_data.get("library_path"),
+                        "install_path": game_data.get("install_path"),
+                        "game_name": name,
+                    }
+
+                    if parsed_data and parsed_data.get("depots"):
+                        depots = parsed_data.get("depots")
+                        selected_depots = None
+                        smart_active = settings.value("smart_depot_selection", False, type=bool)
+                        val = settings.value(f"depot_selection/{appid}", "", type=str)
+                        if smart_active and val:
+                            try:
+                                data = json.loads(val)
+                                cached_selected = data.get("selected", [])
+                                cached_all = data.get("all_available", [])
+                                if not any(d not in cached_all for d in depots):
+                                    selected_depots = [d for d in cached_selected if d in depots]
+                            except Exception:
+                                pass
+                        if not selected_depots:
+                            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                            if auto_skip or len(depots) == 1:
+                                selected_depots = list(depots.keys())
+                            else:
+                                logger.info(f"Update All: skipping {name} — depot selection required")
+                                continue
+                        metadata["selected_depots_list"] = selected_depots
+
+                    self.job_queue.add_job(local_path, metadata)
+                    queued += 1
+                    logger.info(f"Update All queued: {name}")
+                except Exception as e:
+                    logger.error(f"Update All failed for {name}: {e}", exc_info=True)
+
+            logger.info(f"Update All: queued {queued} of {len(updateable_games)} games.")
+
+        threading.Thread(target=_do_update_all, daemon=True).start()
 
     def update_dashboard_elements(self) -> None:
         """Dynamically update "Update All" button text based on pending updates count."""

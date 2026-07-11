@@ -4,7 +4,7 @@ import logging
 import time
 import threading
 from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import Qt, QMetaObject, Q_ARG, QTimer, QObject
+from PyQt6.QtCore import Qt, QMetaObject, Q_ARG, QTimer, QObject, pyqtSlot
 
 from core import steam_helpers
 
@@ -48,14 +48,35 @@ class JobQueueManager(QObject):
     def add_job(self, file_path, metadata=None):
         """Add a job to the queue (Thread-Safe)"""
         if threading.current_thread() is not threading.main_thread():
+            # Marshal to main thread, passing metadata as well
+            import json as _json
+            try:
+                meta_str = _json.dumps(metadata or {})
+            except Exception:
+                meta_str = "{}"
             QMetaObject.invokeMethod(
-                self.main_window,
-                "add_job_safely",
+                self,
+                "_add_job_on_main_thread",
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(str, file_path),
+                Q_ARG(str, meta_str),
             )
             return
 
+        self._do_add_job(file_path, metadata)
+
+    @pyqtSlot(str, str)
+    def _add_job_on_main_thread(self, file_path: str, meta_str: str) -> None:
+        """Slot that runs on the main thread to safely add a job."""
+        import json as _json
+        try:
+            metadata = _json.loads(meta_str)
+        except Exception:
+            metadata = {}
+        self._do_add_job(file_path, metadata)
+
+    def _do_add_job(self, file_path: str, metadata: dict) -> None:
+        """Internal: actually add the job on the main thread."""
         if not os.path.exists(file_path):
             logger.error(f"Failed to add job: file {file_path} does not exist.")
             QMessageBox.critical(

@@ -70,16 +70,29 @@ def run_boot_config_check() -> None:
             boot_status = "no_config"
             return
 
-        # Validate local config
+        # Validate local config structure first
         issues = validate_config(config_path)
 
-        # Download template to check for missing upstream keys
-        template_yaml = fetch_template(TEMPLATE_SOURCE_URL)
-        reader = SimpleYAMLReader()
-        old_data = reader.parse(config_path.read_text(encoding="utf-8"))
-        template_data = reader.parse(template_yaml)
-
-        new_keys = set(template_data) - set(old_data)
+        # Try to download template to check for missing upstream keys.
+        # If the network is unavailable, we still report the local validation result
+        # rather than marking the whole check as failed.
+        new_keys = set()
+        try:
+            template_yaml = fetch_template(TEMPLATE_SOURCE_URL)
+            reader = SimpleYAMLReader()
+            old_data = reader.parse(config_path.read_text(encoding="utf-8"))
+            template_data = reader.parse(template_yaml)
+            new_keys = set(template_data) - set(old_data)
+        except Exception as net_err:
+            # Network unavailable or GitHub unreachable — skip upstream key check
+            boot_issues = [f"[Network] Could not fetch template: {net_err}"]
+            # Still report based purely on local validation
+            if issues:
+                boot_status = "needs_fix"
+                boot_issues = issues[:]
+            else:
+                boot_status = "optimal"
+            return
 
         if issues or new_keys:
             boot_status = "needs_fix"
