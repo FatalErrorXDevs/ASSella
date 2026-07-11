@@ -1841,29 +1841,6 @@ class BatchQueueDialog(QDialog):
         chip_scroll.setWidget(chip_area)
         layout.addWidget(chip_scroll)
 
-        # ── Action toggles ───────────────────────────────────────────────────
-        actions_label = QLabel("Actions to perform:")
-        actions_label.setStyleSheet(f"color: rgba(255,255,255,140); font-size: 9pt;")
-        layout.addWidget(actions_label)
-
-        toggles_row1 = QHBoxLayout()
-        toggles_row1.setSpacing(8)
-        toggles_row2 = QHBoxLayout()
-        toggles_row2.setSpacing(8)
-
-        self.tog_download = _ActionToggle("↓  Download / Update", checked=True, accent=accent, bg=bg)
-        self.tog_goldberg = _ActionToggle("🎮  Goldberg", checked=False, accent=accent, bg=bg)
-        self.tog_steamless = _ActionToggle("🔓  Remove DRM", checked=False, accent=accent, bg=bg)
-        self.tog_achievements = _ActionToggle("🏆  Achievements", checked=False, accent=accent, bg=bg)
-
-        toggles_row1.addWidget(self.tog_download)
-        toggles_row1.addWidget(self.tog_goldberg)
-        toggles_row2.addWidget(self.tog_steamless)
-        toggles_row2.addWidget(self.tog_achievements)
-
-        layout.addLayout(toggles_row1)
-        layout.addLayout(toggles_row2)
-
         layout.addStretch()
 
         # ── Confirm / Cancel ─────────────────────────────────────────────────
@@ -1878,7 +1855,7 @@ class BatchQueueDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
-        self.confirm_btn = QPushButton("Add to Queue")
+        self.confirm_btn = QPushButton("Start Queue")
         self.confirm_btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -1898,14 +1875,6 @@ class BatchQueueDialog(QDialog):
 
     def _enqueue_all(self) -> None:
         """Enqueue each selected game through the normal download+depot flow."""
-        do_download = self.tog_download.isChecked()
-        do_goldberg = self.tog_goldberg.isChecked()
-        do_steamless = self.tog_steamless.isChecked()
-        do_achievements = self.tog_achievements.isChecked()
-
-        # Temporarily override settings for this batch if needed
-        settings = getattr(self.main_window, "settings", None)
-
         queued_count = 0
         for game_data in self.selected_games:
             appid = str(game_data.get("appid", "0"))
@@ -1913,25 +1882,9 @@ class BatchQueueDialog(QDialog):
                 logger.warning(f"Skipping batch queue for game with invalid appid: {game_data.get('game_name')}")
                 continue
 
-            if do_download:
-                success = self._enqueue_single_game(game_data)
-                if success:
-                    queued_count += 1
-            else:
-                # No download — just run tools directly if game is installed
-                game_dir = game_data.get("install_path")
-                name = game_data.get("game_name", "Unknown")
-                if game_dir:
-                    from managers.task_manager import TaskManager
-                    tm = getattr(self.main_window, "task_manager", None)
-                    if tm:
-                        if do_goldberg:
-                            tm.apply_goldberg_to_game(game_dir, appid, name, show_dialog=False)
-                        if do_steamless:
-                            tm.run_steamless_aio_for_game(game_data)
-                        if do_achievements:
-                            tm.run_slscheevo_for_game(game_data)
-                    queued_count += 1
+            success = self._enqueue_single_game(game_data)
+            if success:
+                queued_count += 1
 
         if queued_count > 0:
             QMessageBox.information(

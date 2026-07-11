@@ -1732,6 +1732,31 @@ class TaskManager(QObject):
             self._finalize_job_logic()
             return
 
+        # Check if achievements generation is disabled in settings
+        from utils.settings import get_settings
+        settings = get_settings()
+        if not settings.value("generate_achievements", False, type=bool):
+            logger.info("Achievements generation is disabled in settings. Skipping step.")
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.set_stage_status("achievements", "skipped")
+
+            self._slscheevo_ran = False
+            self._slscheevo_error = False
+            self._slscheevo_completed = True
+            self._last_slscheevo_status = "skipped_no_ach"
+            self._last_slscheevo_status_text = "Skipped"
+
+            if self._current_active_step == "achievements":
+                self._current_active_step = None
+                self._waiting_for_achievements = False
+                self._finalize_job_logic()
+            elif self._waiting_for_achievements:
+                self._waiting_for_achievements = False
+                QMetaObject.invokeMethod(
+                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+                )
+            return
+
         logger.info(f"Checking achievements availability for AppID: {app_id}...")
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:

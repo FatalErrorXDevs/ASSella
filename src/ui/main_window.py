@@ -674,7 +674,21 @@ class SimplifiedTerminalWidget(QWidget):
 
     def reset_stages(self):
         self.set_stage_status("download", "pending")
-        self.set_stage_status("achievements", "pending")
+        
+        # Hide achievements status card if achievements generation is disabled in Settings
+        from utils.settings import get_settings
+        settings = get_settings()
+        gen_ach = settings.value("generate_achievements", False, type=bool)
+        
+        if gen_ach:
+            if hasattr(self, "ach_card") and self.ach_card:
+                self.ach_card.show()
+            self.set_stage_status("achievements", "pending")
+        else:
+            if hasattr(self, "ach_card") and self.ach_card:
+                self.ach_card.hide()
+            self.set_stage_status("achievements", "skipped")
+            
         self.set_stage_status("steamless", "pending")
 
     def show_idle(self):
@@ -764,6 +778,11 @@ class MainWindow(QMainWindow):
             self.toggle_web_server(True, port=port)
         else:
             self._update_web_ui_status_label()
+
+        # Trigger SLSsteam config check (ASShead) once per boot in background
+        import threading
+        from utils.assfixer import run_boot_config_check
+        threading.Thread(target=run_boot_config_check, daemon=True).start()
 
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
@@ -1285,20 +1304,11 @@ class MainWindow(QMainWindow):
         sls_row.addWidget(self.sls_status_value)
         sls_row.addStretch()
 
-        web_ui_row = QHBoxLayout()
-        web_ui_row.setSpacing(4)
-        web_ui_lbl = QLabel("Web UI:")
-        web_ui_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-        self.web_ui_status_value = QLabel("Disabled")
-        self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        web_ui_row.addWidget(web_ui_lbl)
-        web_ui_row.addWidget(self.web_ui_status_value)
-        web_ui_row.addStretch()
+        self.web_ui_status_value = None
         
         status_layout.addWidget(self.status_card_title)
         status_layout.addLayout(steam_row)
         status_layout.addLayout(sls_row)
-        status_layout.addLayout(web_ui_row)
         
         dash_layout.addWidget(self.hubcap_stats_card, 1)
         dash_layout.addWidget(self.update_action_card, 1)
@@ -1504,10 +1514,27 @@ class MainWindow(QMainWindow):
             self.steam_updates_value.setText("Allowed")
             self.steam_updates_value.setStyleSheet(f"color: #33ff33; font-size: 11px; font-weight: bold; border: none; background: transparent;")
             
-        # Placeholder for SLS Status
-        self.sls_status_value.setText("Healthy")
-        if hasattr(self, "accent_color") and self.accent_color:
-            self.sls_status_value.setStyleSheet(f"color: {self.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        # SLS Config Status based on boot check
+        import utils.assfixer
+        status = utils.assfixer.boot_status
+        if status == "optimal":
+            self.sls_status_value.setText("Optimal")
+            self.sls_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        elif status == "needs_fix":
+            self.sls_status_value.setText("Action Needed")
+            self.sls_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        elif status == "no_config":
+            self.sls_status_value.setText("Missing Config")
+            self.sls_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        elif status == "failed":
+            self.sls_status_value.setText("Failed Check")
+            self.sls_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        elif status == "checking":
+            self.sls_status_value.setText("Checking...")
+            self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        else:
+            self.sls_status_value.setText("Not Checked")
+            self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
 
     def refresh_hubcap_stats(self) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""

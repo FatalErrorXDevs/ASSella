@@ -27,7 +27,7 @@ fi
 VERSION_STR=$(cat "$SRC_DIR/src/res/version" | tr -d '\r\n')
 # e.g., 20260603+ASSella-1.8f
 # Extract the tag name (e.g. v1.8f)
-if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+[a-z]?(-[a-zA-Z0-9]+)?)$ ]]; then
+if [[ "$VERSION_STR" =~ -([0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?(-[a-zA-Z0-9]+)?)$ ]]; then
     TAG="v${BASH_REMATCH[1]}"
 else
     echo -e "${RED}Error: version string format invalid: $VERSION_STR${NC}"
@@ -94,17 +94,17 @@ git push origin -f "$TAG"
 # Create release if gh CLI is available
 if command -v gh &>/dev/null; then
     # Check if release exists on GitHub, delete if so
-    if gh release view "$TAG" &>/dev/null; then
+    if env -u GITHUB_TOKEN gh release view "$TAG" &>/dev/null; then
         echo -e "${YELLOW}GitHub release $TAG already exists. Re-creating it...${NC}"
-        gh release delete "$TAG" -y
+        env -u GITHUB_TOKEN gh release delete "$TAG" -y
     fi
 
-    # Create GitHub release and upload asset
+    # Create GitHub release and upload asset with custom title and release notes file
     echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage...${NC}"
-    gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
+    env -u GITHUB_TOKEN gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
         --prerelease \
-        --title "ASSella $TAG" \
-        --notes-from-tag
+        --title "ASSella $TAG - New Beginnings" \
+        --notes-file "/home/deck/.gemini/antigravity-ide/brain/b03a3e81-1fe7-42f3-9779-8098760a7104/scratch/release_notes.md"
 else
     echo -e "${YELLOW}Warning: 'gh' CLI not found. Please create the release manually on GitHub and upload:${NC}"
     echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage${NC}"
