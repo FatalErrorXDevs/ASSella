@@ -1,4 +1,13 @@
+## ASSella v2.1 (Release candidate 1) — Changes from v2.0d RC6
+
+*   **Experimental DepotDownloaderMod Delta Patching Support**: Integrated a manifest state seeding workflow. When installing or updating games, ASSella now copies the new manifests to the game's hidden `.DepotDownloader/` folder and writes the `.sha` verification sidecars expected by the modified DepotDownloader. On future updates, DepotDownloaderMod will load these previous manifests and perform a differential/incremental delta patch check instead of validation/redownload from scratch.
+    > [!WARNING]
+    > This feature is highly experimental.
+
+---
+
 ## ASSella v2.0d (Release candidate 6) — Changes from v2.0d RC5
+
 
 *   **Library Scan Performance**: Replaced the O(N×M) nested ACF file scan with a single O(M) pass per Steam library. All `.acf` manifest files in `steamapps/` are now read exactly once at scan start and cached in a lookup dict. Each game directory match is then an instant O(1) lookup. This eliminates the multi-second startup delay before games appear and dramatically reduces the CPU/disk load from the 5-minute periodic update check.
 *   **Fixed "Keep Old Manifests" Setting Not Persisting**: Corrected a PyQt6 QSettings boolean conversion bug on Linux where `type=bool` silently failed to parse the stored string values `"true"`/`"false"`, causing the checkbox to appear unchecked on every open. Now uses explicit string comparison for robust cross-platform loading. Also added `settings.sync()` on dialog accept to guarantee settings are flushed to disk immediately.

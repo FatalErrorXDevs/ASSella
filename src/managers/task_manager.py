@@ -701,10 +701,15 @@ class TaskManager(QObject):
         # 1. ACF
         self._create_acf_file(size_on_disk)
 
-        # 2. Manifests
+        # 2. Manifests → depotcache (Steam-compatible location)
         self._move_manifests_to_depotcache()
 
-        # 3. Depot Info
+        # 3. Seed DDM delta cache (.DepotDownloader/ folder with .sha sidecars)
+        #    This lets DepotDownloaderMod use the installed manifest as the
+        #    "old" manifest on the next update, enabling true delta downloads.
+        self._seed_ddm_delta_cache()
+
+        # 4. Depot Info
         selected_depots = self.game_data.get("selected_depots_list", [])
         all_manifests = self.game_data.get("manifests", {})
         if selected_depots and all_manifests:
@@ -947,6 +952,80 @@ class TaskManager(QObject):
             shutil.rmtree(temp_manifest_dir)
         except OSError as e:
             logger.error(f"Failed to move manifests to depotcache: {e}")
+
+    def _seed_ddm_delta_cache(self):
+        """
+        Copy the newly installed manifest files into the game's .DepotDownloader/
+        hidden folder and write .sha sidecar files alongside each one.
+
+        DepotDownloaderMod-patched reads this folder to find the "old" manifest
+        from the previously installed build. With this in place, the next update
+        triggers a proper incremental delta download — only changed chunks are
+        fetched instead of re-validating every file from scratch.
+
+        File layout expected by DDM:
+          {install_dir}/.DepotDownloader/{depotId}_{manifestId}.manifest
+          {install_dir}/.DepotDownloader/{depotId}_{manifestId}.manifest.sha
+        """
+        import hashlib
+
+        if not self.game_data or not self.current_dest_path:
+            return
+
+        manifests_map = self.game_data.get("manifests", {})
+        if not manifests_map:
+            return
+
+        # Source: depotcache/ (manifests were just moved there)
+        depotcache_dir = os.path.join(self.current_dest_path, "depotcache")
+        # Derive the game install dir (steamapps/common/{installdir})
+        install_folder = self.game_data.get(
+            "installdir",
+            re.sub(r"[^\w\s-]", "", self.game_data.get("game_name", "")).strip().replace(" ", "_")
+        )
+        if not install_folder:
+            install_folder = f"App_{self.game_data.get('appid', 'unknown')}"
+        game_install_dir = os.path.join(
+            self.current_dest_path, "steamapps", "common", install_folder
+        )
+        ddm_dir = os.path.join(game_install_dir, ".DepotDownloader")
+
+        try:
+            os.makedirs(ddm_dir, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"Could not create .DepotDownloader dir for delta cache: {e}")
+            return
+
+        seeded = 0
+        for depot_id, manifest_gid in manifests_map.items():
+            manifest_filename = f"{depot_id}_{manifest_gid}.manifest"
+            src = os.path.join(depotcache_dir, manifest_filename)
+            if not os.path.exists(src):
+                logger.debug(f"Delta cache: manifest not found in depotcache, skipping: {manifest_filename}")
+                continue
+
+            dst = os.path.join(ddm_dir, manifest_filename)
+            sha_dst = dst + ".sha"
+            try:
+                shutil.copy2(src, dst)
+                # Compute SHA1 of the manifest file — DDM validates this sidecar
+                # to confirm the cached manifest hasn't been corrupted.
+                sha1 = hashlib.sha1()
+                with open(dst, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        sha1.update(chunk)
+                with open(sha_dst, "wb") as f:
+                    f.write(sha1.digest())  # raw bytes, not hex — matches DDM's FileSHAHash()
+                seeded += 1
+                logger.debug(f"Delta cache seeded: {manifest_filename} → .DepotDownloader/")
+            except OSError as e:
+                logger.warning(f"Failed to seed delta cache for {manifest_filename}: {e}")
+
+        if seeded:
+            logger.info(
+                f"DDM delta cache seeded for {self.game_data.get('game_name', '?')} "
+                f"({seeded} depot manifest(s)). Next update will use incremental delta download."
+            )
 
     def _set_linux_binary_permissions(self):
         if not self.game_data or not self.current_dest_path:
