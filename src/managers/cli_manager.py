@@ -402,7 +402,12 @@ class CLITaskManager:
 
         # Steamless processing
         steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-        if steamless_enabled:
+        appid = self.game_data.get("appid") if self.game_data else None
+        is_dlc_only = False
+        if appid:
+            is_dlc_only = self.settings.value(f"dlc_only_mode/{appid}", False, type=bool)
+
+        if steamless_enabled and not is_dlc_only:
             self.logger.info("Steamless is enabled, starting DRM removal...")
             self._run_steamless()
 

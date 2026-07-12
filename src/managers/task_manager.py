@@ -797,7 +797,14 @@ class TaskManager(QObject):
 
         steamless_enabled = self.settings.value("use_steamless", False, type=bool)
         steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
-        if (steamless_enabled or steamless_aio_enabled) and not self.is_cancelling and not self._is_current_job_linux():
+        
+        # Skip Steamless entirely if this is a DLC Only installation
+        appid = self.game_data.get("appid") if self.game_data else None
+        is_dlc_only = False
+        if appid:
+            is_dlc_only = self.settings.value(f"dlc_only_mode/{appid}", False, type=bool)
+
+        if (steamless_enabled or steamless_aio_enabled) and not self.is_cancelling and not self._is_current_job_linux() and not is_dlc_only:
             if "steamless" not in self._job_steps_completed:
                 self._job_steps_completed.add("steamless")
                 self._current_active_step = "steamless"

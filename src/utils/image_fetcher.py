@@ -1,10 +1,13 @@
 import logging
 import time
+import re
+import os
+from pathlib import Path
 from functools import wraps
 from typing import List, Optional, Union
 
 import requests
-from PyQt6.QtCore import QObject, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QUrl, pyqtSignal, Qt, QTimer
 from PyQt6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
@@ -81,6 +84,26 @@ class ImageFetcher(QObject):
         self._reply: Optional[QNetworkReply] = None
         self._start_time: Optional[float] = None
 
+        # Parse AppID from URL
+        self.app_id = None
+        match = re.search(r'/apps/(\d+)/', url)
+        if match:
+            self.app_id = match.group(1)
+
+        # Build fallback list of URLs to try in sequence
+        self.urls_to_try = [url]
+        if self.app_id:
+            fallbacks = [
+                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/header.jpg",
+                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_capsule.jpg",
+                f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/header.jpg",
+                f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/capsule_231x87.jpg",
+                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_hero.jpg"
+            ]
+            for fb in fallbacks:
+                if fb not in self.urls_to_try:
+                    self.urls_to_try.append(fb)
+
     def stop(self) -> None:
         """Abort the request and prevent signal emission."""
         self._stopped = True
@@ -92,10 +115,31 @@ class ImageFetcher(QObject):
         if self._stopped:
             return
 
+        # Check local cache first
+        if self.app_id:
+            cached_path = ImageFetcher.get_cache_path(self.app_id)
+            if cached_path.exists():
+                try:
+                    data = cached_path.read_bytes()
+                    if data and not self._stopped:
+                        QTimer.singleShot(0, lambda: self.finished.emit(data))
+                        return
+                except Exception as e:
+                    logger.debug(f"Failed to read cached image for AppID {self.app_id}: {e}")
+
         self._start_time = time.time()
+        self._fetch_next_url()
+
+    def _fetch_next_url(self) -> None:
+        if self._stopped or not self.urls_to_try:
+            if not self._stopped:
+                self.finished.emit(b"")
+            return
+
+        current_url = self.urls_to_try.pop(0)
         manager = get_network_manager()
 
-        request = QNetworkRequest(QUrl(self.url))
+        request = QNetworkRequest(QUrl(current_url))
         request.setRawHeader(b"User-Agent", b"Mozilla/5.0")
 
         self._reply = manager.get(request)
@@ -114,31 +158,101 @@ class ImageFetcher(QObject):
         self._reply = None
 
         try:
-            # Guard Clause: Network Error
+            # Guard Clause: Network Error -> Try fallback next
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 logger.debug(
-                    f"Failed to fetch image from {self.url}: {reply.errorString()}"
+                    f"Failed to fetch image from {reply.url().toString()}: {reply.errorString()}"
                 )
-                if not self._stopped:
-                    self.finished.emit(b"")
+                reply.deleteLater()
+                self._fetch_next_url()
                 return
 
-            # 3. Success Path
+            # Success Path
             data = reply.readAll().data()  # .data() returns Python bytes
+
+            # Cache the exact raw image bytes directly
+            if self.app_id and data:
+                ImageFetcher.save_to_cache(self.app_id, data)
 
             if self._start_time:
                 download_time = (time.time() - self._start_time) * 1000
                 if download_time > 100:
                     logger.debug(
-                        f"Downloaded {len(data)} bytes from {self.url} "
+                        f"Downloaded {len(data)} bytes from {reply.url().toString()} "
                         f"in {download_time:.2f}ms"
                     )
 
             if not self._stopped:
                 self.finished.emit(data)
 
+        except Exception as e:
+            logger.error(f"Error handling image reply: {e}")
+            self._fetch_next_url()
         finally:
             reply.deleteLater()
+
+    @staticmethod
+    def get_cache_dir() -> Path:
+        return Path.home() / ".local" / "share" / "ACCELA" / "image_cache"
+
+    @staticmethod
+    def get_cache_path(app_id: str) -> Path:
+        return ImageFetcher.get_cache_dir() / f"{app_id}.jpg"
+
+    @staticmethod
+    def save_to_cache(app_id: str, data: bytes) -> None:
+        try:
+            # Write exact original bytes directly (no compression, no resize)
+            cache_dir = ImageFetcher.get_cache_dir()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = cache_dir / f"{app_id}.jpg"
+            cache_path.write_bytes(data)
+
+            # Enforce 100MB limit
+            ImageFetcher.enforce_cache_limit()
+        except Exception as e:
+            logger.warning(f"Failed to cache image for AppID {app_id}: {e}")
+
+    @staticmethod
+    def enforce_cache_limit() -> None:
+        try:
+            cache_dir = ImageFetcher.get_cache_dir()
+            if not cache_dir.exists():
+                return
+
+            MAX_CACHE_SIZE = 100 * 1024 * 1024  # 100MB
+
+            # Get list of all jpg files in cache with their size and mtime
+            files = []
+            total_size = 0
+            for f in cache_dir.glob("*.jpg"):
+                try:
+                    stat = f.stat()
+                    files.append((f, stat.st_size, stat.st_mtime))
+                    total_size += stat.st_size
+                except Exception:
+                    pass
+
+            if total_size <= MAX_CACHE_SIZE:
+                return
+
+            # Sort by mtime (oldest first)
+            files.sort(key=lambda x: x[2])
+
+            logger.info(
+                f"Image cache size ({total_size / (1024*1024):.2f}MB) exceeds limit. "
+                f"Cleaning up oldest files..."
+            )
+            for f, size, _ in files:
+                try:
+                    f.unlink()
+                    total_size -= size
+                    if total_size <= MAX_CACHE_SIZE:
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to delete cached image {f.name}: {e}")
+        except Exception as e:
+            logger.warning(f"Error enforcing image cache limit: {e}")
 
     # Legacy method for compatibility
     def run(self) -> None:

@@ -175,6 +175,23 @@ class ManifestCheckTask(QObject):
         if not appid or appid in ("0", "N/A", "unknown"):
             return "cannot_determine"
 
+        # DLC-Only mode: check only the user-selected depots, not the whole game
+        try:
+            from utils.settings import get_settings
+            import json as _json
+            _s = get_settings()
+            if _s.value(f"dlc_only_mode/{appid}", False, type=bool):
+                val = _s.value(f"depot_selection/{appid}", "", type=str)
+                if val:
+                    saved_selection = _json.loads(val)
+                    selected_depot_ids = saved_selection.get("selected", [])
+                    if selected_depot_ids:
+                        return ManifestCheckTask._check_dlc_only_update(
+                            appid, selected_depot_ids, batched_results, game_data
+                        )
+        except Exception as _e:
+            logger.debug(f"DLC-only mode check failed for {appid}: {_e}")
+
         # Read saved manifest ID from depot file
         depots_dir = Path(get_base_path()) / "depots"
         depot_file = depots_dir / f"{appid}.depot"
@@ -264,6 +281,70 @@ class ManifestCheckTask(QObject):
         except Exception as e:
             logger.error(f"Error checking for updates for app {appid}: {e}")
             return "cannot_determine"
+
+    @staticmethod
+    def _get_depot_latest_manifest(depot_id: str, appid: str, batched_results: dict) -> str:
+        # 1. Try in base game depots
+        base_depots = batched_results.get(appid, {}).get("depots", {})
+        if depot_id in base_depots:
+            return base_depots[depot_id].get("manifest_id")
+
+        # 2. Try in batched_results[depot_id] directly
+        dlc_depots = batched_results.get(depot_id, {}).get("depots", {})
+        if depot_id in dlc_depots:
+            return dlc_depots[depot_id].get("manifest_id")
+
+        return None
+
+    @staticmethod
+    def _get_installed_depot_manifest(depot_id: str, game_data: dict) -> str:
+        install_path = game_data.get("install_path")
+        if not install_path or not os.path.exists(install_path):
+            return None
+
+        ddm_dir = os.path.join(install_path, ".DepotDownloader")
+        if not os.path.exists(ddm_dir):
+            return None
+
+        try:
+            for fname in os.listdir(ddm_dir):
+                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest"):
+                    # Extract the manifest ID: depotId_manifestId.manifest
+                    base = fname[:-9]  # strip ".manifest"
+                    parts = base.split("_", 1)
+                    if len(parts) == 2:
+                        return parts[1]
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _check_dlc_only_update(appid, selected_depot_ids, batched_results, game_data):
+        has_changes = False
+        any_resolved = False
+
+        for depot_id in selected_depot_ids:
+            depot_id_str = str(depot_id)
+            latest_manifest = ManifestCheckTask._get_depot_latest_manifest(depot_id_str, appid, batched_results)
+            if not latest_manifest:
+                continue
+
+            any_resolved = True
+            installed_manifest = ManifestCheckTask._get_installed_depot_manifest(depot_id_str, game_data)
+
+            # If we don't have it installed yet, or it matches, it's not a pending update
+            if installed_manifest and installed_manifest != latest_manifest:
+                logger.info(
+                    f"[DLC Only Check] Update available for depot {depot_id_str} "
+                    f"of app {appid}: installed={installed_manifest}, latest={latest_manifest}"
+                )
+                has_changes = True
+
+        if has_changes:
+            return "update_available"
+        if any_resolved:
+            return "up_to_date"
+        return "cannot_determine"
 
     def stop(self):
         """Stop the task"""

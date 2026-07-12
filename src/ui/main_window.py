@@ -174,10 +174,15 @@ class SimplifiedTerminalWidget(QWidget):
 
         # Connect signals from GameManager to update stats
         if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
-            self.main_window.game_manager.library_updated.connect(self.update_stats)
-            self.main_window.game_manager.game_update_status_changed.connect(
+            gm = self.main_window.game_manager
+            gm.library_updated.connect(self.update_stats)
+            gm.game_update_status_changed.connect(
                 lambda appid, status: self.update_stats()
             )
+            # Also connect scan_complete and all_updates_checked so we never miss
+            # a refresh if library_updated fires before this widget is constructed
+            gm.scan_complete.connect(lambda _: self.update_stats())
+            gm.all_updates_checked.connect(self.update_stats)
 
         self.update_stats()
         self.update_history_display()
@@ -405,9 +410,18 @@ class SimplifiedTerminalWidget(QWidget):
         if not hasattr(self.main_window, "game_manager") or not self.main_window.game_manager:
             return
 
+        settings = self.main_window.settings
         games = self.main_window.game_manager.games
         total_games = len(games)
-        games_with_updates = [g for g in games if g.get("update_status") == "update_available"]
+
+        # Only include updates for games NOT excluded from "Update All"
+        games_with_updates = [
+            g for g in games
+            if g.get("update_status") == "update_available"
+            and not settings.value(
+                f"exclude_from_update_all/{g.get('appid', '')}", False, type=bool
+            )
+        ]
         total_updates = len(games_with_updates)
 
         self.total_games_label.setText(f"Library Size: {total_games} games")
@@ -427,6 +441,9 @@ class SimplifiedTerminalWidget(QWidget):
         else:
             for g in games_with_updates:
                 name = g.get("game_name", "Unknown Game")
+                appid = str(g.get("appid", ""))
+                if appid and settings.value(f"dlc_only_mode/{appid}", False, type=bool):
+                    name = f"{name} [DLC MODE]"
                 
                 # Make it look like a little card/row
                 row = QFrame()
@@ -480,6 +497,11 @@ class SimplifiedTerminalWidget(QWidget):
                 from datetime import datetime
                 time_str = datetime.fromtimestamp(t).strftime('%H:%M')
 
+                game_name = entry.get('game_name', 'Unknown')
+                appid = str(entry.get('appid', ''))
+                settings = self.main_window.settings
+                if appid and settings.value(f"dlc_only_mode/{appid}", False, type=bool):
+                    game_name = f"{game_name} [DLC MODE]"
 
                 success = entry.get("success", True)
                 if not success:
@@ -499,7 +521,7 @@ class SimplifiedTerminalWidget(QWidget):
 
                 html = f"""
                 <div style="margin-bottom: 2px;">
-                    <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{entry.get('game_name')}</span>
+                    <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{game_name}</span>
                     <span style="color: #888888; font-size: 8pt; float: right;">[{time_str}]</span>
                     <br/>
                     <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
@@ -762,6 +784,9 @@ class MainWindow(QMainWindow):
         self._setup_window_properties()
         self._initialize_managers()
         self._setup_ui()
+        # Deferred refresh: run after the event loop processes the UI construction
+        # so update_stats and refresh_system_status always see fully built widgets
+        QTimer.singleShot(0, self._deferred_post_init_refresh)
         self._setup_resize_handles()
         if self.ui_state:
             self.ui_state.apply_style_settings()
@@ -856,6 +881,16 @@ class MainWindow(QMainWindow):
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not set AppUserModelID: {e}")
+
+    def _deferred_post_init_refresh(self) -> None:
+        """Runs one event-loop tick after full UI construction.
+
+        Guarantees update_stats and refresh_system_status always see fully
+        built widgets even if the library scan completed before the UI was ready.
+        """
+        if self.simplified_terminal:
+            self.simplified_terminal.update_stats()
+        self.refresh_system_status()
 
     def _initialize_managers(self) -> None:
         """Initialize all manager classes."""
@@ -1392,7 +1427,7 @@ class MainWindow(QMainWindow):
     def update_nerd_mode(self, nerd: Optional[bool] = None) -> None:
         """Update terminal widget display based on nerd mode setting."""
         if nerd is None:
-            nerd = self.settings.value("nerd_mode", True, type=bool)
+            nerd = self.settings.value("nerd_mode", False, type=bool)
         if self.stacked_terminal_widget:
             if nerd:
                 self.stacked_terminal_widget.setCurrentIndex(0)
@@ -1646,7 +1681,7 @@ class MainWindow(QMainWindow):
             queued = 0
             for game_data in updateable_games:
                 appid = str(game_data.get("appid", "0"))
-                name = game_data.get("game_name", "Unknown")
+                name = self.format_game_display_name(game_data)
                 update_status = game_data.get("update_status")
                 try:
                     local_path = None

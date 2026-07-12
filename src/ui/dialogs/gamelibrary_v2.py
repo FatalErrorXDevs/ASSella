@@ -655,7 +655,25 @@ class GameDetailsDialogV2(QDialog):
         pref2_layout.addStretch()
         pref2_layout.addWidget(self.pref2_toggle)
         c3_layout.addLayout(pref2_layout)
-        
+
+        c3_layout.addSpacing(10)
+
+        pref3_layout = QHBoxLayout()
+        pref3_lbl = QLabel("DLC Only Mode")
+        pref3_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px;")
+        pref3_lbl.setToolTip("Only select this if you own the base game separately.\nIn DLC Only Mode, update checks only compare the depots you selected — not the whole game.")
+        self.pref3_toggle = SwitchToggle(active_color="#4a90d9")
+        self.pref3_toggle.setChecked(
+            self.settings.value(f"dlc_only_mode/{self.appid}", False, type=bool) if self.settings else False
+        )
+        self.pref3_toggle.stateChanged.connect(
+            lambda state: self.settings.setValue(f"dlc_only_mode/{self.appid}", state) if self.settings else None
+        )
+        pref3_layout.addWidget(pref3_lbl)
+        pref3_layout.addStretch()
+        pref3_layout.addWidget(self.pref3_toggle)
+        c3_layout.addLayout(pref3_layout)
+
         c3_layout.addStretch(1)
 
         grid_layout.addWidget(card3, 1, 0)

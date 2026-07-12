@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.image_fetcher import ImageFetcher
+from utils.settings import get_settings
 from ui.dialogs.dialog_helpers import create_standard_buttons
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,16 @@ class DepotSelectionDialog(QDialog):
         self.header_label.setFixedHeight(108)
         layout.addWidget(self.header_label)
         self._fetch_header_image(app_id)
+
+        # Load DLC-only mode state
+        try:
+            self._settings = settings if settings is not None else get_settings()
+        except Exception:
+            self._settings = None
+        self._dlc_only_mode = (
+            self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool)
+            if self._settings else False
+        )
 
         content_widget = QVBoxLayout()
         content_widget.setContentsMargins(10, 0, 10, 0)
@@ -261,13 +272,27 @@ class DepotSelectionDialog(QDialog):
         button_layout.addWidget(deselect_all_button)
         content_widget.addLayout(button_layout)
 
-        # Custom File Selection Button (on its own row)
+        # Custom File Selection + DLC Only button row
         file_sel_layout = QHBoxLayout()
+        file_sel_layout.setSpacing(6)
+
         select_files_button = QPushButton("Select Files...")
         select_files_button.setToolTip("Customize downloaded files within the selected depots")
         select_files_button.clicked.connect(self._on_select_files_clicked)
         select_files_button.setStyleSheet("font-weight: bold; padding: 4px;")
         file_sel_layout.addWidget(select_files_button)
+
+        self._dlc_only_btn = QPushButton("DLC Only")
+        self._dlc_only_btn.setToolTip(
+            "Only select this if you own the base game separately.\n"
+            "Update checks will only compare the depots you select here."
+        )
+        self._dlc_only_btn.setCheckable(True)
+        self._dlc_only_btn.setChecked(self._dlc_only_mode)
+        self._dlc_only_btn.clicked.connect(self._on_dlc_only_toggled)
+        self._refresh_dlc_only_style()
+        file_sel_layout.addWidget(self._dlc_only_btn)
+
         content_widget.addLayout(file_sel_layout)
 
         buttons = create_standard_buttons(self.accept, self.reject)
@@ -456,6 +481,47 @@ class DepotSelectionDialog(QDialog):
     def get_selected_files(self):
         """Returns the list of custom checked relative file paths."""
         return self.selected_files
+
+    def _refresh_dlc_only_style(self) -> None:
+        """Update the DLC Only button style to reflect its on/off state."""
+        active = self._dlc_only_btn.isChecked()
+        if active:
+            # Inverted / lit-up: background = accent text colour, text = dark
+            self._dlc_only_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: #c8e6ff;"
+                "  color: #0a1a2e;"
+                "  border: 1px solid #4a90d9;"
+                "  border-radius: 4px;"
+                "  padding: 4px 10px;"
+                "  font-weight: bold;"
+                "}"
+            )
+        else:
+            self._dlc_only_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: transparent;"
+                "  color: rgba(255,255,255,140);"
+                "  border: 1px solid rgba(255,255,255,40);"
+                "  border-radius: 4px;"
+                "  padding: 4px 10px;"
+                "}"
+                "QPushButton:hover {"
+                "  border-color: #4a90d9;"
+                "  color: #4a90d9;"
+                "}"
+            )
+
+    def _on_dlc_only_toggled(self) -> None:
+        """Toggle DLC Only mode and persist the setting."""
+        self._dlc_only_mode = self._dlc_only_btn.isChecked()
+        self._refresh_dlc_only_style()
+        if self._settings:
+            self._settings.setValue(f"dlc_only_mode/{self.app_id}", self._dlc_only_mode)
+
+    def get_dlc_only_mode(self) -> bool:
+        """Returns whether DLC Only mode is enabled for this dialog."""
+        return self._dlc_only_mode
 
     def _on_select_files_clicked(self):
         # 1. Get chosen depots

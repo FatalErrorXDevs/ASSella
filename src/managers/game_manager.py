@@ -4,7 +4,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot
 
 from core.steam_helpers import (
     get_steam_libraries,
@@ -51,6 +51,12 @@ class GameManager(QObject):
     scan_complete = pyqtSignal(int)  # Emits number of games found
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
     all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
+
+    @pyqtSlot(int)
+    def _emit_scan_signals(self, games_found: int) -> None:
+        """Main-thread slot: emit library_updated and scan_complete after a background scan."""
+        self.library_updated.emit()
+        self.scan_complete.emit(games_found)
 
     def __init__(self, main_window):
         super().__init__()
@@ -416,12 +422,18 @@ class GameManager(QObject):
         # Sync missing apptokens from manifests
         self._sync_app_tokens_from_manifests()
 
-        # Emit signals on main thread using QTimer.singleShot
-        def update_ui():
-            self.library_updated.emit()
-            self.scan_complete.emit(games_found)
-
-        QTimer.singleShot(0, update_ui)
+        # Emit signals on the main thread via QMetaObject.invokeMethod.
+        # QTimer.singleShot called from a background thread does NOT schedule
+        # on the main event loop — it silently fires on the worker thread's
+        # (non-existent) loop. invokeMethod with QueuedConnection is the correct
+        # cross-thread signal dispatch mechanism.
+        from PyQt6.QtCore import QMetaObject, Qt as _Qt
+        QMetaObject.invokeMethod(
+            self,
+            "_emit_scan_signals",
+            _Qt.ConnectionType.QueuedConnection,
+            Q_ARG(int, games_found),
+        )
 
         return games_found
 

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QFont, QDesktopServices
+from PyQt6.QtGui import QColor, QFont, QDesktopServices, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -235,6 +235,18 @@ class SettingsDialog(QDialog):
         self.current_font = QFont()
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
+
+        # Origins easter egg setup
+        self._origins_movie = None
+        self._fade_timer = None
+        self._flash_opacity = 0.18
+        self._original_remember_origins = self.settings.value("remember_origins", False, type=bool)
+        if self._original_remember_origins:
+            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            if os.path.exists(gif_path):
+                self._origins_movie = QMovie(gif_path)
+                self._origins_movie.frameChanged.connect(self.update)
+                self._origins_movie.start()
 
         # Save original API keys for restore on cancel
         self._original_morrenus_key = self.settings.value(
@@ -1072,6 +1084,14 @@ class SettingsDialog(QDialog):
             except OSError as e:
                 errors.append(f"Could not remove ASSella.AppImage: {e}")
 
+        # Remove image cache if it exists
+        cache_dir = os.path.join(install_dir, "image_cache")
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+            except OSError as e:
+                errors.append(f"Could not remove image cache directory: {e}")
+
         # Restore backup if requested
         if restore:
             try:
@@ -1132,96 +1152,97 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
 
-        # Color Group
-        color_group = QGroupBox("Color Settings")
-        color_layout = QVBoxLayout()
+        desc_lbl = QLabel("Customize the visual appearance, accent colors, and typography of ASSella.")
+        desc_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px; margin-bottom: 5px;")
+        layout.addWidget(desc_lbl)
 
-        # Accent
-        acc_layout = QHBoxLayout()
+        # Colors & Font combined in a neat group
+        theme_group = QGroupBox("Theme & Typography")
+        theme_layout = QGridLayout()
+        theme_layout.setContentsMargins(15, 15, 15, 15)
+        theme_layout.setSpacing(10)
+
+        # Accent color swatch row
+        theme_layout.addWidget(QLabel("Accent Color:"), 0, 0)
         self.accent_color_button = QPushButton()
+        self.accent_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.accent_color_button.setFixedSize(60, 24)
         self.accent_color_button.setStyleSheet(
-            f"background-color: {self._user_accent_color};"
+            f"background-color: {self._user_accent_color}; border: 1px solid #444; border-radius: 4px;"
         )
         self.accent_reset_button = QPushButton("Reset")
-        acc_layout.addWidget(QLabel("Accent Color:"))
-        acc_layout.addWidget(self.accent_color_button)
-        acc_layout.addWidget(self.accent_reset_button)
-        acc_layout.addStretch()
-        self.accent_color_button.clicked.connect(self.choose_accent_color)
-        self.accent_reset_button.clicked.connect(self.reset_accent_color)
-        color_layout.addLayout(acc_layout)
+        self.accent_reset_button.setFixedWidth(70)
+        theme_layout.addWidget(self.accent_color_button, 0, 1)
+        theme_layout.addWidget(self.accent_reset_button, 0, 2)
 
-        # Background
-        bg_layout = QHBoxLayout()
+        # Background color swatch row
+        theme_layout.addWidget(QLabel("Background Color:"), 1, 0)
         self.bg_color_button = QPushButton()
+        self.bg_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bg_color_button.setFixedSize(60, 24)
         self.bg_color_button.setStyleSheet(
-            f"background-color: {self._user_background_color};"
+            f"background-color: {self._user_background_color}; border: 1px solid #444; border-radius: 4px;"
         )
         self.bg_reset_button = QPushButton("Reset")
-        bg_layout.addWidget(QLabel("Background Color:"))
-        bg_layout.addWidget(self.bg_color_button)
-        bg_layout.addWidget(self.bg_reset_button)
-        bg_layout.addStretch()
-        self.bg_color_button.clicked.connect(self.choose_bg_color)
-        self.bg_reset_button.clicked.connect(self.reset_bg_color)
-        color_layout.addLayout(bg_layout)
+        self.bg_reset_button.setFixedWidth(70)
+        theme_layout.addWidget(self.bg_color_button, 1, 1)
+        theme_layout.addWidget(self.bg_reset_button, 1, 2)
 
-        color_group.setLayout(color_layout)
-        layout.addWidget(color_group)
-
-        # Font Group
-        font_group = QGroupBox("Font Settings")
-        font_layout = QVBoxLayout()
-        font_children, self.font_button, self.font_reset_button = create_font_setting(
-            self
-        )
+        # Font row
+        font_children, self.font_button, self.font_reset_button = create_font_setting(self)
         self.font_button.clicked.connect(self.choose_font)
         self.font_reset_button.clicked.connect(self.reset_font)
-        font_layout.addLayout(font_children)
-        font_group.setLayout(font_layout)
-        layout.addWidget(font_group)
+        
+        self.font_button.setMinimumWidth(150)
+        self.font_reset_button.setFixedWidth(70)
+        
+        theme_layout.addWidget(QLabel("System Font:"), 2, 0)
+        theme_layout.addWidget(self.font_button, 2, 1)
+        theme_layout.addWidget(self.font_reset_button, 2, 2)
 
-        # Display Group
-        disp_group = QGroupBox("Display Settings")
+        self.accent_color_button.clicked.connect(self.choose_accent_color)
+        self.accent_reset_button.clicked.connect(self.reset_accent_color)
+        self.bg_color_button.clicked.connect(self.choose_bg_color)
+        self.bg_reset_button.clicked.connect(self.reset_bg_color)
+
+        theme_group.setLayout(theme_layout)
+        layout.addWidget(theme_group)
+
+        # Interface Options Group
+        disp_group = QGroupBox("Interface Options")
         disp_layout = QVBoxLayout()
+        disp_layout.setContentsMargins(15, 15, 15, 15)
+        disp_layout.setSpacing(10)
 
-        self.titlebar_position_checkbox = QCheckBox("Move Titlebar to Top")
+        self.titlebar_position_checkbox = QCheckBox("Move Titlebar to Window Top")
         is_top = self.settings.value("titlebar_position", "bottom", type=str) == "top"
         self.titlebar_position_checkbox.setChecked(is_top)
-        self.titlebar_position_checkbox.setToolTip("Move the titlebar to the top.")
-        self.titlebar_position_checkbox.stateChanged.connect(
-            self.on_titlebar_position_changed
-        )
+        self.titlebar_position_checkbox.setToolTip("Places the navigation bar / titlebar at the top of the window instead of the bottom.")
+        self.titlebar_position_checkbox.stateChanged.connect(self.on_titlebar_position_changed)
         disp_layout.addWidget(self.titlebar_position_checkbox)
-        SettingsDialog._add_checkbox_explanation(
-            disp_layout, "Move the titlebar to the top of the window."
-        )
 
-
-
-        self.ignore_color_warnings_checkbox = create_checkbox_setting(
-            "Ignore color warnings",
-            "ignore_color_warnings",
-            False,
-            self,
-            "Allow any color combination.",
+        self.ignore_color_warnings_checkbox = QCheckBox("Ignore safety color limits")
+        ignore_colors = self.settings.value("ignore_color_warnings", False, type=bool)
+        self.ignore_color_warnings_checkbox.setChecked(ignore_colors)
+        self.ignore_color_warnings_checkbox.setToolTip("Disables color contrast and safety checks. Allows setting extremely low-contrast colors.")
+        self.ignore_color_warnings_checkbox.stateChanged.connect(
+            lambda state: self.settings.setValue("ignore_color_warnings", bool(state))
         )
         disp_layout.addWidget(self.ignore_color_warnings_checkbox)
 
-        self.nerd_mode_checkbox = create_checkbox_setting(
-            "Nerd Mode",
-            "nerd_mode",
-            True,
-            self,
-            "Display verbose terminal output. Disable for a simplified checklist.",
-        )
-        disp_layout.addWidget(self.nerd_mode_checkbox)
+        self.remember_origins_checkbox = QCheckBox("Remember your origins")
+        is_origins = self.settings.value("remember_origins", False, type=bool)
+        self.remember_origins_checkbox.setChecked(is_origins)
+        self.remember_origins_checkbox.setToolTip("Subtly displays the Wired layout background.")
+        self.remember_origins_checkbox.stateChanged.connect(self._on_origins_toggled)
+        disp_layout.addWidget(self.remember_origins_checkbox)
 
         disp_group.setLayout(disp_layout)
         layout.addWidget(disp_group)
 
-
+        layout.addStretch(1)
 
         self.tab_widget.addTab(tab, "Style")
 
@@ -1704,10 +1725,9 @@ class SettingsDialog(QDialog):
         ignore = self.ignore_color_warnings_checkbox.isChecked()
         self.settings.setValue("ignore_color_warnings", ignore)
 
-        nerd = self.nerd_mode_checkbox.isChecked()
-        self.settings.setValue("nerd_mode", nerd)
+        self.settings.setValue("nerd_mode", False)
         if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
-            self.main_window.update_nerd_mode(nerd)
+            self.main_window.update_nerd_mode(False)
         if SettingsDialog._is_too_close(QColor(u_accent), QColor(u_bg)):
                 QMessageBox.warning(
                     self,
@@ -1731,11 +1751,78 @@ class SettingsDialog(QDialog):
             style = "Bold Italic"
         self.settings.setValue("font-style", style)
 
+        origins = self.remember_origins_checkbox.isChecked()
+        self.settings.setValue("remember_origins", origins)
+
         if self.main_window and hasattr(self.main_window, "ui_state"):
             # noinspection PyUnresolvedReferences
             self.main_window.ui_state.apply_style_settings()
 
         return True
+
+    def _on_origins_toggled(self, state: int) -> None:
+        checked = bool(state)
+        self.settings.setValue("remember_origins", checked)
+
+        # Stop existing movie/fade
+        if self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+
+        if self._fade_timer:
+            self._fade_timer.stop()
+            self._fade_timer = None
+
+        if checked:
+            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            if os.path.exists(gif_path):
+                self._origins_movie = QMovie(gif_path)
+                self._origins_movie.frameChanged.connect(self.update)
+                self._origins_movie.start()
+
+                # Start flash animation (fade from high opacity down to watermark level)
+                self._flash_opacity = 0.85
+                self._fade_timer = QTimer(self)
+                self._fade_timer.timeout.connect(self._fade_origins_opacity)
+                self._fade_timer.start(50)
+            else:
+                self._origins_movie = None
+        else:
+            self._origins_movie = None
+
+        self.update()
+
+    def _fade_origins_opacity(self) -> None:
+        self._flash_opacity = max(0.18, self._flash_opacity - 0.04)
+        self.update()
+        if self._flash_opacity <= 0.18:
+            if self._fade_timer:
+                self._fade_timer.stop()
+                self._fade_timer = None
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if hasattr(self, "_origins_movie") and self._origins_movie and self._origins_movie.state() == QMovie.MovieState.Running:
+            painter = QPainter(self)
+            current_pixmap = self._origins_movie.currentPixmap()
+            if not current_pixmap.isNull():
+                painter.setOpacity(self._flash_opacity)
+
+                # Scale keeping aspect ratio to fit the dialog size
+                scaled_pixmap = current_pixmap.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+
+                # Center the scaled image in the dialog area
+                x = (self.width() - scaled_pixmap.width()) // 2
+                y = (self.height() - scaled_pixmap.height()) // 2
+                
+                # Fill borders with background color matching the GIF edges (dark blue/black)
+                # Background of lain.gif is approximately #001020 or #011b33. We can just fill the rest of the canvas
+                # with the default background color of the dialog or a matching dark color
+                painter.drawPixmap(x, y, scaled_pixmap)
 
     def reject(self) -> None:
         """Revert settings on cancel."""
@@ -1746,6 +1833,13 @@ class SettingsDialog(QDialog):
         if self.main_window and hasattr(self.main_window, "reposition_titlebar"):
             # noinspection PyUnresolvedReferences
             self.main_window.reposition_titlebar(self._original_titlebar_position)
+
+        # Revert origins settings and stop movie if running
+        if hasattr(self, "_original_remember_origins"):
+            self.settings.setValue("remember_origins", self._original_remember_origins)
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
 
 
         

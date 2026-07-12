@@ -94,8 +94,8 @@ def main():
     # People only have substance within the memories of other people.
 
     app = QApplication(sys.argv)
-    app.setApplicationName("accela")
-    app.setDesktopFileName("accela.desktop")
+    app.setApplicationName("ASSella")
+    app.setDesktopFileName("assella.desktop")
 
     # Set default window icon for all dialogs and sub-windows
     icon_path = Paths.resource("logo/icon.ico")

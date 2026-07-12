@@ -105,10 +105,17 @@ logger = logging.getLogger(__name__)
 
 
 def format_game_display_name(game_data: dict) -> str:
-    """Return the display name for a game, including the ACCELA marker."""
+    """Return the display name for a game."""
     name = game_data.get("game_name", "Unknown")
-    if game_data.get("is_accela_install"):
-        return f"{name} [ACCELA]"
+    appid = str(game_data.get("appid", ""))
+    if appid and appid not in ("0", "N/A", "unknown"):
+        from utils.settings import get_settings
+        try:
+            settings = get_settings()
+            if settings.value(f"dlc_only_mode/{appid}", False, type=bool):
+                return f"{name} [DLC MODE]"
+        except Exception:
+            pass
     return name
 
 
@@ -484,6 +491,7 @@ class GameLibraryDialog(QDialog):
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Recently Installed", "recently_installed")
         self.sort_combo.addItem("Has Update First", "update_first")
+        self.sort_combo.addItem("DLC Only First", "dlc_only_first")
         self.sort_combo.addItem("Name (A-Z)", "name_asc")
         self.sort_combo.addItem("Name (Z-A)", "name_desc")
         self.sort_combo.addItem("Size (Smallest)", "size_asc")
@@ -770,6 +778,14 @@ class GameLibraryDialog(QDialog):
             # Games with an update available sort first (0), then everything else (1)
             has_update = game.get("update_status") == "update_available"
             return (0 if has_update else 1, game.get("game_name", "").lower())
+        if sort_option == "dlc_only_first":
+            from utils.settings import get_settings
+            try:
+                settings = get_settings()
+                is_dlc = settings.value(f"dlc_only_mode/{game.get('appid')}", False, type=bool)
+            except Exception:
+                is_dlc = False
+            return (0 if is_dlc else 1, game.get("game_name", "").lower())
         return game.get("game_name", "").lower()
 
     def _sort_games(self, games: list) -> list:
@@ -1821,6 +1837,7 @@ class GameLibraryDialog(QDialog):
             self._download_progress_dialog = QProgressDialog(
                 f"Downloading manifest for {name}...", "Cancel", 0, 0, self
             )
+            self._download_progress_dialog.setWindowTitle("Downloading Manifest")
             self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
             self._download_progress_dialog.show()
 
