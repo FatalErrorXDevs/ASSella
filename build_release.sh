@@ -104,7 +104,7 @@ if command -v gh &>/dev/null; then
     env -u GITHUB_TOKEN gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
         --prerelease \
         --title "ASSella $TAG - New Beginnings" \
-        --notes-file "/home/deck/.gemini/antigravity-ide/brain/b03a3e81-1fe7-42f3-9779-8098760a7104/scratch/release_notes.md"
+        --notes-file "$SRC_DIR/release_notes.md"
 else
     echo -e "${YELLOW}Warning: 'gh' CLI not found. Please create the release manually on GitHub and upload:${NC}"
     echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage${NC}"
