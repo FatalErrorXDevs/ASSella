@@ -1675,13 +1675,14 @@ class MainWindow(QMainWindow):
             from core import morrenus_api as _api
             from utils.settings import get_settings
             from core.tasks.process_zip_task import ProcessZipTask
+            from ui.dialogs.gamelibrary import format_game_display_name
             import json
 
             settings = get_settings()
             queued = 0
             for game_data in updateable_games:
                 appid = str(game_data.get("appid", "0"))
-                name = self.format_game_display_name(game_data)
+                name = format_game_display_name(game_data)
                 update_status = game_data.get("update_status")
                 try:
                     local_path = None
