@@ -307,8 +307,15 @@ class UIStateManager:
         """Apply accent color to UI elements"""
         accent_style = f"color: {self.main_window.accent_color};"
 
-        # Drop text label
-        self.main_window.drop_text_label.setStyleSheet(accent_style)
+        # Status Pager
+        if hasattr(self.main_window, "status_pager") and self.main_window.status_pager:
+            self.main_window.status_pager.update_style()
+
+        # Active Hubcap label
+        if hasattr(self.main_window, "active_hubcap_label") and self.main_window.active_hubcap_label:
+            self.main_window.active_hubcap_label.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
 
         # Queue label
         if hasattr(self, "queue_widget") and self.queue_widget:
@@ -376,5 +383,11 @@ class UIStateManager:
                 self.main_window.drop_text_label.setText(
                     "Queue idle. Ready for next job."
                 )
+
+        # Toggle dashboard and active hubcap label based on processing state
+        if hasattr(self.main_window, "dashboard_widget") and self.main_window.dashboard_widget:
+            self.main_window.dashboard_widget.setVisible(not is_processing)
+        if hasattr(self.main_window, "active_hubcap_label") and self.main_window.active_hubcap_label:
+            self.main_window.active_hubcap_label.setVisible(is_processing)
 
 

@@ -132,13 +132,13 @@ SCALAR_KEYS = {
     "DisableFamilyShareLock", "UseWhitelist", "AutoFilterList",
     "PlayNotOwnedGames", "SafeMode", "Notifications", "WarnHashMissmatch",
     "NotifyInit", "API", "DisableCloud", "FakeEmail", "FakeWalletBalance",
-    "LogLevel", "ExtendedLogging", "MaxSchemaTries",
+    "LogLevel", "ExtendedLogging", "MaxSchemaTries", "DisableUpdates",
 }
 # All scalar keys that take yes/no values
 BOOLEAN_KEYS = SCALAR_KEYS - {"FakeEmail", "FakeWalletBalance", "LogLevel"}
 
-LIST_KEYS        = {"AppIds", "AdditionalApps", "FakeOffline"}
-MAP_KEYS         = {"AppTokens", "FakeAppIds", "GameTitles", "SubscriptionTimestamps", "DlcData"}
+LIST_KEYS        = {"AppIds", "AdditionalApps", "FakeOffline", "DepotBlacklist"}
+MAP_KEYS         = {"AppTokens", "FakeAppIds", "GameTitles", "SubscriptionTimestamps", "DlcData", "ManifestIds"}
 MAP_OF_LIST_KEYS = {"DenuvoGames"}
 IDLE_STATUS_KEY  = "IdleStatus"
 
@@ -445,7 +445,7 @@ class SimpleYAMLReader:
             return ""
         v_part  = m.group(1).strip()
         comment = m.group(2)
-        if parent_key in ("AppTokens", "FakeAppIds", "SubscriptionTimestamps"):
+        if parent_key in ("AppTokens", "FakeAppIds", "SubscriptionTimestamps", "ManifestIds"):
             if not v_part.isdigit():
                 return ""
             return f"{v_part} {comment.strip()}" if comment else v_part

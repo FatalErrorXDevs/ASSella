@@ -752,7 +752,9 @@ class MainWindow(QMainWindow):
         self.main_layout = None
         self.drop_zone_container = None
         self.drop_zone_layout = None
+        self.status_pager = None
         self.drop_text_label = None
+        self.active_hubcap_label = None
         self.dashboard_widget = None
         self.usage_value = None
         self.expiry_value = None
@@ -1208,14 +1210,20 @@ class MainWindow(QMainWindow):
 
 
 
-        # Smaller drag status label for backward compatibility and status updates
-        self.drop_text_label = ScaledFontLabel("Drag and Drop Zip here")
-        self.drop_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.drop_text_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.drop_text_label.setMinimumHeight(16)
-        self.drop_text_label.setMaximumHeight(20)
+        # Status Pager Display
+        from ui.status_pager import StatusPagerWidget
+        self.status_pager = StatusPagerWidget(self)
+
+        # Backward compatibility wrapper for other modules setting drop_text_label text
+        class DropTextLabelWrapper:
+            def __init__(self, pager):
+                self.pager = pager
+            def setText(self, text):
+                self.pager.set_status(text)
+            def setStyleSheet(self, style):
+                pass
+
+        self.drop_text_label = DropTextLabelWrapper(self.status_pager)
 
         # Dashboard container widget
         self.dashboard_widget = QWidget()
@@ -1349,7 +1357,7 @@ class MainWindow(QMainWindow):
         dash_layout.addWidget(self.update_action_card, 1)
         dash_layout.addWidget(self.steam_sls_status_card, 1)
         
-        self.drop_zone_layout.addWidget(self.drop_text_label, 1)
+        self.drop_zone_layout.addWidget(self.status_pager)
         self.drop_zone_layout.addWidget(self.dashboard_widget, 2)
         self.main_layout.addWidget(self.drop_zone_container, 1)
 
@@ -1358,6 +1366,16 @@ class MainWindow(QMainWindow):
         self.progress_container = QWidget()
         self.progress_layout = QVBoxLayout(self.progress_container)
         self.progress_layout.setContentsMargins(20, 5, 20, 5)
+
+        # Active Hubcap Label (visible only when downloading, left-aligned)
+        self.active_hubcap_layout = QHBoxLayout()
+        self.active_hubcap_layout.setContentsMargins(2, 0, 2, 0)
+        self.active_hubcap_label = QLabel("")
+        self.active_hubcap_label.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold;")
+        self.active_hubcap_label.setVisible(False)
+        self.active_hubcap_layout.addWidget(self.active_hubcap_label)
+        self.active_hubcap_layout.addStretch()
+        self.progress_layout.addLayout(self.active_hubcap_layout)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -1584,6 +1602,8 @@ class MainWindow(QMainWindow):
             self.usage_value.setText("Loading...")
         if self.expiry_value:
             self.expiry_value.setText("Loading...")
+        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+            self.active_hubcap_label.setText("Hubcap stats: Loading...")
 
         worker = self.stats_task_runner.run(get_user_stats)
         worker.finished.connect(self._on_user_stats_loaded)
@@ -1599,6 +1619,8 @@ class MainWindow(QMainWindow):
                 self.usage_value.setText(val)
             if self.expiry_value:
                 self.expiry_value.setText(val)
+            if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+                self.active_hubcap_label.setText(f"Hubcap stats: {val}")
             return
 
         # Daily usage
@@ -1606,6 +1628,8 @@ class MainWindow(QMainWindow):
         limit = stats.get("daily_limit", 45)
         if self.usage_value:
             self.usage_value.setText(f"{usage} / {limit}")
+        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+            self.active_hubcap_label.setText(f"Hubcap stats: {usage} / {limit}")
 
         # Key Expiry
         expires_str = stats.get("api_key_expires_at")
@@ -1641,6 +1665,8 @@ class MainWindow(QMainWindow):
             self.usage_value.setText("Error")
         if self.expiry_value:
             self.expiry_value.setText("Error")
+        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+            self.active_hubcap_label.setText("Hubcap stats: Error")
 
     def run_update_all_flow(self) -> None:
         """Flow for updating all games that have update_available status."""
