@@ -2163,6 +2163,10 @@ class TaskManager(QObject):
         self.library_mode_was_active = False
         self.is_processing = False
 
+        # Refresh stats immediately after a job finishes to keep API limits in sync
+        if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
+            self.main_window.refresh_hubcap_stats()
+
         self._update_status_button_color()
         self.current_job = None
 
