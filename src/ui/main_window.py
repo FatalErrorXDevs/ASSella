@@ -1821,6 +1821,8 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "web_server_manager") and self.web_server_manager:
                 self.web_server_manager.stop()
+            from utils.update_status_cache import get_update_cache
+            get_update_cache().save()  # Force synchronous save of status cache before exit
             MainWindow._cleanup_logging()
             self.task_manager.cleanup()
             self.job_queue.clear()

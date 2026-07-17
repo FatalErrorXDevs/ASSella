@@ -431,11 +431,32 @@ def batched_get_product_info(
                 batch_success = True
                 break  # Success! Exit retry loop
 
-            except Exception as e:
-                logger.error(f"Batch {batch_idx + 1} (Attempt {attempt + 1}): Error during fetch: {e}")
+            except BaseException as e:
+                # gevent.timeout.Timeout inherits from BaseException, not Exception,
+                # so a plain `except Exception` misses it entirely — the timeout
+                # propagates uncaught all the way up and crashes the update-check thread.
+                # Re-raise only genuine process-level exits; treat everything else
+                # (including gevent timeouts and network errors) as a retryable failure.
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                is_timeout = type(e).__name__ == "Timeout"  # gevent.timeout.Timeout
+                if is_timeout:
+                    logger.warning(
+                        f"Batch {batch_idx + 1} (Attempt {attempt + 1}): "
+                        f"Steam API timed out after {request_timeout}s — "
+                        "will retry with a new client if possible."
+                    )
+                else:
+                    logger.error(
+                        f"Batch {batch_idx + 1} (Attempt {attempt + 1}): "
+                        f"Error during fetch: {e}"
+                    )
                 if used_shared_client:
                     # Drop the broken shared client so the next iteration uses the fallback
-                    logger.info(f"Batch {batch_idx + 1}: Shared client failed, falling back to new client...")
+                    logger.info(
+                        f"Batch {batch_idx + 1}: Shared client failed, "
+                        "falling back to new client..."
+                    )
                     shared_client = None
                 # If we're on the last attempt, it's a hard failure
                 if attempt == 1 or not used_shared_client:
@@ -444,7 +465,9 @@ def batched_get_product_info(
                 if client and not used_shared_client and client.logged_on:
                     try:
                         client.logout()
-                    except Exception as e:
+                    except BaseException as e:
+                        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                            raise
                         logger.error(f"Error during fallback client logout: {e}")
 
         if not batch_success:

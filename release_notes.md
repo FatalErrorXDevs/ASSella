@@ -1,6 +1,6 @@
-# Release Notes - ASSella v2.2.3-rc1
+# Release Notes - ASSella v2.2.3
 
-Welcome to v2.2.3-rc1 in the preview/beta branch. This release introduces a persistent retro LCD status pager, streamlined UI layout during active tasks, QSettings reset fixes, and major backend upgrades to the ASShead config fixer.
+Welcome to v2.2.3. This release introduces a persistent retro LCD status pager, streamlined UI layout during active tasks, QSettings reset fixes, critical thread-safety and timeout bug fixes, and major backend upgrades.
 
 ### Features & Layout Changes
 
@@ -16,10 +16,21 @@ Welcome to v2.2.3-rc1 in the preview/beta branch. This release introduces a pers
 
 ### Bug Fixes & Stability
 
-* **QSettings Reset Fix:**
-  - Implemented a custom RobustQSettings handler to resolve standard PyQt6 settings parsing bugs. This prevents stored settings (such as "Generate Achievements" or "Use Steamless") from randomly resetting or toggling themselves.
+* **Critical gevent Timeout & Crash Fixes:**
+  - Caught `BaseException` (specifically `gevent.timeout.Timeout`) in `batched_get_product_info` to prevent Steam connection drops from crashing the update-check task.
+  - Extended `Worker.run` to catch `BaseException` so any uncaught thread-level gevent timeout gracefully aborts and cleans up resources without leaking threads or lockups.
+  
+* **Deadlock Prevention:**
+  - Wrapped achievement check threads with fallback values so network failures do not drop signals and permanently hang/deadlock the job queue.
+  - Closed download process stdout pipes immediately after output reading is finished, preventing descriptor exhaustion and thread leaks on cancel.
 
-### Backend Upgrades
+* **Shutdown Synchronization:**
+  - Forced synchronous saving of the update status cache on application exit, resolving race conditions where background save threads could execute after main context destruction.
+
+### Performance & Backend Upgrades
+
+* **Depot Description Parsing Cache:**
+  - Implemented a module-level cache for `depots.ini`, avoiding the repetitive parsing of 146K configuration entries on every single ZIP processing task (massive CPU and memory footprint reduction).
 
 * **ASShead Configuration Fixer:**
   - Fully updated to support the latest SLSsteam settings.

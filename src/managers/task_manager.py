@@ -1770,7 +1770,16 @@ class TaskManager(QObject):
             self.main_window.simplified_terminal.set_stage_status("achievements", "in_progress")
 
         def check_thread():
-            has_ach, count = self._check_game_achievements_info(str(app_id))
+            try:
+                has_ach, count = self._check_game_achievements_info(str(app_id))
+            except Exception as e:
+                # If the network check raises unexpectedly, default to True/0
+                # so the job continues rather than stalling the queue forever.
+                logger.error(
+                    f"Achievement check thread raised unexpectedly for {app_id}: {e}",
+                    exc_info=True,
+                )
+                has_ach, count = True, 0
             self.achievements_checked.emit(has_ach, count)
 
         threading.Thread(target=check_thread, daemon=True).start()
@@ -1778,6 +1787,28 @@ class TaskManager(QObject):
     @pyqtSlot(bool, int)
     def _on_achievements_checked(self, has_achievements: bool, count: int):
         if not self.is_processing:
+            return
+
+        # Re-check the setting here: the Store API thread was already in flight
+        # when this callback fires, so the user may have disabled achievements
+        # mid-session between when the thread was spawned and now.
+        from utils.settings import get_settings
+        if not get_settings().value("generate_achievements", False, type=bool):
+            logger.info("Achievements generation is disabled in settings (re-checked in callback). Skipping.")
+            self._slscheevo_ran = False
+            self._slscheevo_error = False
+            self._slscheevo_completed = True
+            self._last_slscheevo_status = "skipped_no_ach"
+            self._last_slscheevo_status_text = "Skipped"
+            if self._current_active_step == "achievements":
+                self._current_active_step = None
+                self._waiting_for_achievements = False
+                self._finalize_job_logic()
+            elif self._waiting_for_achievements:
+                self._waiting_for_achievements = False
+                QMetaObject.invokeMethod(
+                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+                )
             return
 
         if not has_achievements:
@@ -1792,20 +1823,14 @@ class TaskManager(QObject):
             self._last_slscheevo_status_text = "No Achievements"
 
             if self._current_active_step == "achievements":
-                # We are in the sequential (post-download) phase — unblock finalization
                 self._current_active_step = None
                 self._waiting_for_achievements = False
                 self._finalize_job_logic()
             elif self._waiting_for_achievements:
-                # Parallel mode: achievements check finished while download was still running,
-                # but we set _waiting_for_achievements=True when finalize tried to wait for us.
-                # Unblock finalization now.
                 self._waiting_for_achievements = False
                 QMetaObject.invokeMethod(
                     self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
                 )
-            # else: download still running in parallel — finalize will check
-            # _slscheevo_completed=True and proceed on its own when download finishes.
         else:
             logger.info(f"Game has achievements (count: {count}). Starting achievements generation...")
             self._game_achievements_count = count if count > 0 else None

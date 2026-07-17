@@ -112,14 +112,26 @@ class ManifestCheckTask(QObject):
                 )
                 batched_results = {}
             else:
-                batched_results = batched_get_product_info(
-                    appid_list,
-                    access_tokens=access_tokens,
-                    batch_size=batch_size,
-                    rate_limit_delay=rate_limit_delay,
-                    is_cancelled=lambda: not self._is_running,
-                    request_timeout=10,
-                )
+                try:
+                    batched_results = batched_get_product_info(
+                        appid_list,
+                        access_tokens=access_tokens,
+                        batch_size=batch_size,
+                        rate_limit_delay=rate_limit_delay,
+                        is_cancelled=lambda: not self._is_running,
+                        request_timeout=10,
+                    )
+                except BaseException as e:
+                    # Safety net: gevent.timeout.Timeout (and other BaseExceptions)
+                    # can escape the retry loop in steam_api if something unexpected
+                    # happens. Catch them here so the task thread doesn't crash.
+                    if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    logger.error(
+                        f"batched_get_product_info raised {type(e).__name__}: {e} — "
+                        "falling back to empty results (all games will show 'cannot determine')."
+                    )
+                    batched_results = {}
 
             if not self._is_running:
                 logger.debug("Update check task was stopped after batched fetch")

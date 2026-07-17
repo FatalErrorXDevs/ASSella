@@ -131,6 +131,16 @@ class DownloadDepotsTask(QObject):
                 # Read output directly in this thread
                 self._read_process_output()
 
+                # Close the stdout pipe now that the reader loop has exited.
+                # The process is either finished or about to be killed — releasing
+                # the read end of the pipe here frees the OS file descriptor
+                # immediately rather than waiting for GC.
+                if self.process and self.process.stdout:
+                    try:
+                        self.process.stdout.close()
+                    except OSError:
+                        pass
+
                 # Flush any remaining logs
                 self._flush_log_buffer()
 
