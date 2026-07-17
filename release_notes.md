@@ -21,10 +21,12 @@ Welcome to v2.2.4-rc1. This pre-release introduces automated SLSsteam updates, a
   - Automatically saves the chosen library as the default download location.
   - Bypasses folder browse prompts during new game installations, installing directly into the chosen default directory.
 
-### Performance & UI Redesign
+### Performance & Search Optimizations
 
-* **Deferred Search Image Loading:**
-  - Game list search results render instantly, with network-heavy image fetches deferred using a short delay timer. This ensures 100% UI priority and zero lag during fast typing.
+* **Search Performance & Lag Fix:**
+  - Resolved UI thread blockage and lag when typing searches rapidly (especially for short terms like "war" or "wae").
+  - Separated network-heavy cover image fetches from the main query list rendering logic.
+  - Game search results now render instantly, with image downloads deferred using a short delay timer and loaded one-by-one in the background. This guarantees 100% UI responsiveness for search productivity.
 * **Clean Settings Layout:**
   - Removed visible description labels beneath settings checkboxes in favor of hover tooltips. This provides a compact, clean, and perfectly aligned settings window.
   - Restored core selection and LanCache checkboxes back to the main ASSella settings tab.
