@@ -407,6 +407,7 @@ class GameLibraryDialog(QDialog):
         self._image_cache = {}
         self._items_by_appid = {}
         self._manifest_mtimes = {}
+        self._pending_image_fetches = []
         self._dialog_open = False
         self._refreshing = False
         self._closing = False
@@ -802,6 +803,18 @@ class GameLibraryDialog(QDialog):
             return
 
         self._refreshing = True
+
+        # Cancel any active image fetches and clear the queue
+        for fetcher in list(self._active_fetchers.values()):
+            try:
+                fetcher.stop()
+            except Exception:
+                pass
+        self._active_fetchers.clear()
+        self._image_fetch_queue.clear()
+        self._pending_image_fetches.clear()
+        self._current_fetches = 0
+
         self.games_list.clear()
         self._items_by_appid.clear()
         self._manifest_mtimes.clear()
@@ -831,25 +844,45 @@ class GameLibraryDialog(QDialog):
         games = self.game_manager.get_all_games()
         
         # Filter games by search term (case-insensitive)
+        has_filter = False
         if hasattr(self, "search_input"):
             query = self.search_input.text().strip().lower()
             if query:
                 games = [g for g in games if query in g.get("game_name", "").lower()]
+                has_filter = True
 
         games = self._sort_games(games)
+        
+        # Limit displayed games count when filtering to prevent heavy UI layout lag
+        truncated = False
+        if has_filter and len(games) > 150:
+            showing_games = games[:150]
+            truncated = True
+        else:
+            showing_games = games
+
         total_size = 0
         accela_count = 0
 
-        for game in games:
+        for game in showing_games:
             if game.get("is_accela_install"):
                 accela_count += 1
             total_size += self._add_game_to_list(game)
 
-        self.info_label.setText(
-            f"Found {len(games)} Steam game(s) ({accela_count} ACCELA-managed) - "
-            f"Total Size: {GameLibraryDialog._format_size(total_size)}"
-        )
+        if truncated:
+            self.info_label.setText(
+                f"Showing top 150 of {len(games)} game(s) ({accela_count} ACCELA-managed) - "
+                f"Please refine your search query."
+            )
+        else:
+            self.info_label.setText(
+                f"Found {len(games)} Steam game(s) ({accela_count} ACCELA-managed) - "
+                f"Total Size: {GameLibraryDialog._format_size(total_size)}"
+            )
         self._refreshing = False
+
+        # Defer image downloads to a 100ms timer to prioritize UI list loading speed
+        QTimer.singleShot(100, self._start_pending_image_fetches)
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
@@ -880,7 +913,7 @@ class GameLibraryDialog(QDialog):
         if app_id in ("0", "N/A", "unknown"):
             self.executor.submit(self._resolve_and_update_item, item, game)
         else:
-            self._fetch_item_image(item, app_id)
+            self._pending_image_fetches.append((item, app_id))
 
         return size
 
@@ -893,6 +926,14 @@ class GameLibraryDialog(QDialog):
             QTimer.singleShot(
                 0, lambda: self._update_item_with_resolved_id(item, game_data)
             )
+
+    def _start_pending_image_fetches(self) -> None:
+        """Sequential start of delayed image fetches."""
+        if self._closing or not hasattr(self, "_pending_image_fetches"):
+            return
+        for item, app_id in self._pending_image_fetches:
+            self._fetch_item_image(item, app_id)
+        self._pending_image_fetches.clear()
 
     @staticmethod
     def _resolve_appid_by_name(name: str) -> str | None:

@@ -302,6 +302,12 @@ class TaskManager(QObject):
             self.job_finished()
 
     def _get_destination_path(self):
+        default_dl_dir = self.settings.value("default_download_directory", "")
+        if default_dl_dir and os.path.isdir(default_dl_dir):
+            if is_slssteam_mode_enabled():
+                self._handle_slssteam_mode()
+            return default_dl_dir
+
         slssteam_mode = is_slssteam_mode_enabled()
         library_mode = self.settings.value("library_mode", False, type=bool)
         current_job_metadata = self.current_job_metadata or {}

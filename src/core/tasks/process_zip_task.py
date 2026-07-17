@@ -282,14 +282,18 @@ class ProcessZipTask:
                             else:
                                 final_description = base_description
 
-                            lower_desc = final_description.lower()
-                            if "soundtrack" in lower_desc or re.search(
-                                r"\bost\b", lower_desc
-                            ):
-                                logger.info(
-                                    f"Filtering out soundtrack depot {depot_id} ('{final_description}')."
-                                )
-                                continue
+                            from utils.settings import get_settings
+                            filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
+
+                            if filter_soundtracks:
+                                lower_desc = final_description.lower()
+                                if "soundtrack" in lower_desc or re.search(
+                                    r"\bost\b", lower_desc
+                                ):
+                                    logger.info(
+                                        f"Filtering out soundtrack depot {depot_id} ('{final_description}')."
+                                    )
+                                    continue
 
                             api_size = details.get("size") if details else None
                             if api_size:

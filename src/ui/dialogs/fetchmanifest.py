@@ -347,13 +347,14 @@ class FetchManifestDialog(QDialog):
         if not isinstance(game_results, list):
             return {"results": [], "raw_total": 0}
 
+        from utils.settings import get_settings
+        filter_blacklist = get_settings().value("filter_search_blacklist", False, type=bool)
+
         filtered = [
             g
             for g in game_results
             if isinstance(g, dict)
-            # Restriction removed per user request:
-            # and not self._is_blacklisted_result(g)
-            # and not self._is_likely_media_variant(g)
+            and (not filter_blacklist or not self._is_blacklisted_result(g))
             and g.get("manifest_available", True) is not False
         ]
 

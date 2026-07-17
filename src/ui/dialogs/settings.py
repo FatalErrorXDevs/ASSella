@@ -47,6 +47,7 @@ from utils.helpers import (
 from utils.paths import Paths
 from utils.settings import get_settings
 from utils.yaml_config_manager import is_slssteam_mode_enabled
+from ui.dialogs.settings_sls import create_sls_tab
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,9 @@ class SettingsDialog(QDialog):
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
-        self.steamless_checkbox = None
+        self.steamless_remover_combo = None
+        self.filter_soundtracks_checkbox = None
+        self.filter_search_blacklist_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
@@ -319,7 +322,7 @@ class SettingsDialog(QDialog):
         self._create_downloads_tab()
         self._create_morrenus_tab()
         # self._create_webui_tab()
-        self._create_steam_tab()
+        create_sls_tab(self)
         self._create_tools_tab()
         self._create_style_tab()
 
@@ -427,15 +430,6 @@ class SettingsDialog(QDialog):
         )
         group_layout.addWidget(self.use_lancache_checkbox)
 
-        # self.fakeappid_db_integration_checkbox = create_checkbox_setting(
-        #     "Fake AppID Database Integration",
-        #     "fakeappid_db_integration",
-        #     False,
-        #     self,
-        #     "[HIGHLY EXPERIMENTAL] Automatically merge database of games supporting online play via fakeappids/spacewar into your SLSsteam config.yaml.",
-        # )
-        # group_layout.addWidget(self.fakeappid_db_integration_checkbox)
-
         group.setLayout(group_layout)
         layout.addWidget(group)
         
@@ -474,18 +468,6 @@ class SettingsDialog(QDialog):
         rollback_group.setLayout(rollback_layout)
         layout.addWidget(rollback_group)
 
-        # ── SLSsteam Config Fixer (ASShead) ──────────────────────────────
-        self.asshead_status_label = QLabel()
-        self.asshead_status_label.setWordWrap(True)
-        layout.addWidget(self.asshead_status_label)
-
-        self.run_asshead_btn = QPushButton("Run SLS Config Fixer")
-        self.run_asshead_btn.setToolTip("Scan, format, deduplicate, and merge latest upstream keys into your SLSsteam config.yaml.")
-        self.run_asshead_btn.clicked.connect(self.run_asshead_fixer)
-        layout.addWidget(self.run_asshead_btn)
-
-        self._update_asshead_status_ui()
-
         layout.addStretch()
 
         # ── Uninstall (Linux only) ────────────────────────────────────────
@@ -510,9 +492,7 @@ class SettingsDialog(QDialog):
 
         library_tooltip = "Detect Steam libraries and let you choose where to install games."
         if sys.platform == "linux":
-            library_tooltip += (
-                " On Linux, this also enables SLSsteam integration for those installs."
-            )
+            library_tooltip += " On Linux, this also enables SLSsteam integration for those installs."
 
         self.library_mode_checkbox = create_checkbox_setting(
             "Limit Downloads to Steam Libraries",
@@ -532,43 +512,113 @@ class SettingsDialog(QDialog):
         )
         dl_layout.addWidget(self.auto_skip_single_choice_checkbox)
 
-        # Max Downloads
-        max_dl_layout = QHBoxLayout()
-        max_dl_label = QLabel("Maximum concurrent downloads")
-        max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network speed usage.")
+        self.hide_macos_depots_checkbox = create_checkbox_setting(
+            "Hide macOS depots in depot selection",
+            "hide_macos_depots",
+            True,
+            self,
+            "Hide macOS platform depots to reduce clutter.",
+        )
+        dl_layout.addWidget(self.hide_macos_depots_checkbox)
 
+        # Soundtrack filtering
+        self.filter_soundtracks_checkbox = create_checkbox_setting(
+            "Filter Soundtracks and OSTs from Depots",
+            "filter_soundtracks",
+            True,
+            self,
+            "Filter out soundtrack and OST depots when downloading game files.",
+        )
+        dl_layout.addWidget(self.filter_soundtracks_checkbox)
+
+        # Search blacklist filtering
+        self.filter_search_blacklist_checkbox = create_checkbox_setting(
+            "Filter Blacklisted Keywords in Search",
+            "filter_search_blacklist",
+            False,
+            self,
+            "Hide soundtracks, artbooks, tools, and demos from manifest search results.",
+        )
+        dl_layout.addWidget(self.filter_search_blacklist_checkbox)
+
+        # Default Download Location
+        dl_dir_layout = QHBoxLayout()
+        dl_dir_label = QLabel("Default Download Location:")
+        dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game.")
+        
+        self.dl_location_combo = QComboBox()
+        self.dl_location_combo.addItem("Ask Every Time", "")
+        
+        # Load detected Steam libraries
+        from core import steam_helpers
+        detected_libs = steam_helpers.get_steam_libraries()
+        for lib in detected_libs:
+            self.dl_location_combo.addItem(lib, lib)
+            
+        self.dl_location_combo.addItem("Custom Folder...", "custom")
+        
+        # Load saved value
+        current_val = self.settings.value("default_download_directory", "")
+        if not current_val:
+            self.dl_location_combo.setCurrentIndex(0)
+        elif current_val in detected_libs:
+            idx = self.dl_location_combo.findData(current_val)
+            if idx >= 0:
+                self.dl_location_combo.setCurrentIndex(idx)
+        else:
+            # Custom folder path
+            self.dl_location_combo.insertItem(1, current_val, current_val)
+            self.dl_location_combo.setCurrentIndex(1)
+            
+        def on_dl_location_changed(index):
+            data = self.dl_location_combo.itemData(index)
+            if data == "custom":
+                path = QFileDialog.getExistingDirectory(self, "Select Custom Download Location")
+                if path:
+                    existing_idx = self.dl_location_combo.findData(path)
+                    if existing_idx >= 0:
+                        self.dl_location_combo.setCurrentIndex(existing_idx)
+                    else:
+                        # Insert custom path before the "Custom Folder..." item
+                        insert_pos = self.dl_location_combo.count() - 1
+                        self.dl_location_combo.insertItem(insert_pos, path, path)
+                        self.dl_location_combo.setCurrentIndex(insert_pos)
+                else:
+                    # Cancelled, revert to first item
+                    self.dl_location_combo.setCurrentIndex(0)
+                    
+        self.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
+        
+        dl_dir_layout.addWidget(dl_dir_label)
+        dl_dir_layout.addWidget(self.dl_location_combo, 1)
+        dl_layout.addLayout(dl_dir_layout)
+
+        # Max Downloads & Update Check Interval in a compact horizontal layout
+        spin_layout = QHBoxLayout()
+        
+        max_dl_label = QLabel("Concurrent Downloads:")
+        max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network usage.")
         self.max_downloads_spinbox = QSpinBox()
         self.max_downloads_spinbox.setRange(1, 30)
         current_max = self.settings.value("max_downloads", 4, type=int)
         if current_max < 1 or current_max > 30:
             current_max = 4
         self.max_downloads_spinbox.setValue(current_max)
-
-        max_dl_layout.addWidget(max_dl_label)
-        max_dl_layout.addWidget(self.max_downloads_spinbox)
-        dl_layout.addLayout(max_dl_layout)
-
-        # Update Check Interval
-        update_interval_layout = QHBoxLayout()
-        update_interval_label = QLabel("Auto-update check interval (minutes)")
+        
+        update_interval_label = QLabel("Update Interval (mins):")
         update_interval_label.setToolTip("Set how often to check for game updates in minutes. Set to 0 to disable automatic checks.")
-
         self.update_interval_spinbox = QSpinBox()
         self.update_interval_spinbox.setRange(0, 1440)
         current_interval = self.settings.value("update_check_interval_minutes", 5, type=int)
         self.update_interval_spinbox.setValue(current_interval)
-
-        update_interval_layout.addWidget(update_interval_label)
-        update_interval_layout.addWidget(self.update_interval_spinbox)
-        dl_layout.addLayout(update_interval_layout)
-
-        self.hide_macos_depots_checkbox = create_checkbox_setting(
-            "Hide macOS depots in depot selection",
-            "hide_macos_depots",
-            True,
-            self,
-        )
-        dl_layout.addWidget(self.hide_macos_depots_checkbox)
+        
+        spin_layout.addWidget(max_dl_label)
+        spin_layout.addWidget(self.max_downloads_spinbox)
+        spin_layout.addSpacing(20)
+        spin_layout.addWidget(update_interval_label)
+        spin_layout.addWidget(self.update_interval_spinbox)
+        spin_layout.addStretch()
+        dl_layout.addLayout(spin_layout)
 
         dl_group.setLayout(dl_layout)
         layout.addWidget(dl_group)
@@ -578,7 +628,7 @@ class SettingsDialog(QDialog):
         pp_layout = QVBoxLayout()
 
         self.achievements_checkbox = create_checkbox_setting(
-            "Generate Steam Achievements",
+            "Generate Achievements (Recommended Off)",
             "generate_achievements",
             False,
             self,
@@ -587,23 +637,30 @@ class SettingsDialog(QDialog):
         self.achievements_checkbox.stateChanged.connect(self._update_achievements_button_state)
         pp_layout.addWidget(self.achievements_checkbox)
 
-        self.steamless_checkbox = create_checkbox_setting(
-            "Remove Steam DRM with Steamless",
-            "use_steamless",
-            False,
-            self,
-            "Remove DRM from game executables after downloading.",
-        )
-        pp_layout.addWidget(self.steamless_checkbox)
-
-        self.steamless_aio_checkbox = create_checkbox_setting(
-            "Remove Steam DRM with Steamless-AIO (built-in)",
-            "use_steamless_aio",
-            True,
-            self,
-            "Remove DRM from game executables after downloading using the built-in Python Steamless AIO.",
-        )
-        pp_layout.addWidget(self.steamless_aio_checkbox)
+        # Steamless DRM Remover Combobox
+        drm_layout = QHBoxLayout()
+        drm_label = QLabel("Steamless DRM Remover:")
+        drm_label.setToolTip("Select the method to automatically remove Steam DRM from game executables.")
+        
+        self.steamless_remover_combo = QComboBox()
+        self.steamless_remover_combo.addItem("Disabled", "disabled")
+        self.steamless_remover_combo.addItem("Steamless AIO (Built-in)", "aio")
+        self.steamless_remover_combo.addItem("Steamless CLI (WINE/Proton)", "cli")
+        
+        # Load saved DRM Remover mode
+        use_aio = self.settings.value("use_steamless_aio", True, type=bool)
+        use_cli = self.settings.value("use_steamless", False, type=bool)
+        
+        if use_aio:
+            self.steamless_remover_combo.setCurrentIndex(1)
+        elif use_cli:
+            self.steamless_remover_combo.setCurrentIndex(2)
+        else:
+            self.steamless_remover_combo.setCurrentIndex(0)
+            
+        drm_layout.addWidget(drm_label)
+        drm_layout.addWidget(self.steamless_remover_combo, 1)
+        pp_layout.addLayout(drm_layout)
 
         pp_group.setLayout(pp_layout)
         layout.addWidget(pp_group)
@@ -785,69 +842,7 @@ class SettingsDialog(QDialog):
             self.morrenus_tab_initialized = True
             QTimer.singleShot(100, self.morrenus_stats_widget.refresh_stats)
 
-    def _create_steam_tab(self) -> None:
-        """Create the Steam settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
 
-        # Integration Group
-        int_group = QGroupBox("Steam Integration")
-        int_layout = QVBoxLayout()
-
-        if sys.platform == "linux":
-            wrapper_name = "SLSsteam"
-            self.sls_mode_checkbox = None
-            linux_hint = QLabel(
-                "SLSsteam is enabled automatically for Steam library installs on Linux."
-            )
-            linux_hint.setWordWrap(True)
-            int_layout.addWidget(linux_hint)
-        else:
-            wrapper_name = "GreenLuma"
-            wrapper_full = "GreenLuma Wrapper Mode"
-            tooltip = (
-                "Integrate games with Steam using GreenLuma.\n"
-                "Games appear in your Steam library automatically."
-            )
-            self.sls_mode_checkbox = create_checkbox_setting(
-                wrapper_full, "slssteam_mode", False, self, tooltip
-            )
-            self.sls_mode_checkbox.stateChanged.connect(
-                lambda: self.goldberg_checked_warning_from_mode(wrapper_name)
-            )
-            int_layout.addWidget(self.sls_mode_checkbox)
-
-        self.sls_config_management_checkbox = create_checkbox_setting(
-            f"{wrapper_name} Config Management",
-            "sls_config_management",
-            True,
-            self,
-            f"Allow ACCELA to manage {wrapper_name} configuration files.",
-        )
-        int_layout.addWidget(self.sls_config_management_checkbox)
-
-        int_group.setLayout(int_layout)
-        layout.addWidget(int_group)
-
-        # Settings Group
-        settings_group = QGroupBox("Steam Settings ")
-        settings_layout = QVBoxLayout()
-
-        self.prompt_steam_restart_checkbox = create_checkbox_setting(
-            "Prompt Steam Restart",
-            "prompt_steam_restart",
-            True,
-            self,
-            "Show prompt to restart Steam after Steam-integrated downloads.",
-        )
-        settings_layout.addWidget(self.prompt_steam_restart_checkbox)
-
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-
-        layout.addStretch()
-        self.tab_widget.addTab(tab, "Steam")
 
     def _create_tools_tab(self) -> None:
         """Create the Tools settings tab."""
@@ -889,48 +884,7 @@ class SettingsDialog(QDialog):
         tools_group.setLayout(tools_layout)
         layout.addWidget(tools_group)
 
-        # ── Headcrab Group ────────────────────────────────────────────────
-        if sys.platform != "win32":
-            hc_group = QGroupBox("Headcrab")
-            hc_layout = QVBoxLayout()
 
-            hc_installed = self._is_headcrab_installed()
-            hc_status_lbl = QLabel(
-                "✔ Headcrab appears to be installed." if hc_installed
-                else "✘ Headcrab not detected on this system."
-            )
-            hc_status_lbl.setStyleSheet(
-                "color: #66cc66; font-size: 11px;" if hc_installed
-                else "color: #cc6666; font-size: 11px;"
-            )
-            hc_status_lbl.setWordWrap(True)
-            hc_layout.addWidget(hc_status_lbl)
-
-            hc_lbl = QLabel(
-                "Headcrab installs SLSsteam and the tools required for ASSella to work. "
-                "It also blocks Steam auto-updates and patches steam.sh."
-            )
-            hc_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-            hc_lbl.setWordWrap(True)
-            hc_layout.addWidget(hc_lbl)
-
-            if hc_installed:
-                SettingsDialog._add_tool_button(
-                    hc_layout,
-                    "Run Headcrab Again",
-                    "Re-run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash).",
-                    self.run_headcrab,
-                )
-            else:
-                SettingsDialog._add_tool_button(
-                    hc_layout,
-                    "Install Headcrab",
-                    "Run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash).",
-                    self.run_headcrab,
-                )
-
-            hc_group.setLayout(hc_layout)
-            layout.addWidget(hc_group)
 
         # Windows Registry Group
         if sys.platform == "win32":
@@ -1007,33 +961,7 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         self.tab_widget.addTab(tab, "Tools")
 
-    # ── Headcrab helpers ──────────────────────────────────────────────────
 
-    @staticmethod
-    def _is_headcrab_installed() -> bool:
-        """Detect whether Headcrab has been installed on this system."""
-        headcrab_dir = os.path.expanduser("~/.headcrab")
-        headcrab_desktop = os.path.expanduser(
-            "~/.local/share/applications/headcrab.desktop"
-        )
-        return os.path.isdir(headcrab_dir) or os.path.isfile(headcrab_desktop)
-
-    def run_headcrab(self) -> None:
-        """Run the Headcrab installer script in a terminal."""
-        already = self._is_headcrab_installed()
-        verb = "re-run" if already else "install"
-        reply = QMessageBox.question(
-            self,
-            "Run Headcrab",
-            f"This will {verb} Headcrab via:\n"
-            "  curl -fsSL headcrab.pages.dev | bash\n\n"
-            "A terminal window will open. Close it when finished.",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-        )
-        if reply != QMessageBox.StandardButton.Ok:
-            return
-        cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
-        SettingsDialog._launch_terminal_command(cmd, os.path.expanduser("~"))
 
     # ── ASSella Manager helpers ───────────────────────────────────────────
 
@@ -1602,6 +1530,9 @@ class SettingsDialog(QDialog):
             "sls_config_management",
             self.sls_config_management_checkbox.isChecked(),
         )
+        self.settings.setValue(
+            "default_download_directory", self.dl_location_combo.currentData() or ""
+        )
         self.settings.setValue("library_mode", self.library_mode_checkbox.isChecked())
         self.settings.setValue(
             "auto_skip_single_choice",
@@ -1626,12 +1557,22 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "generate_achievements", self.achievements_checkbox.isChecked()
         )
-        self.settings.setValue(
-            "use_steamless", self.steamless_checkbox.isChecked()
-        )
-        self.settings.setValue(
-            "use_steamless_aio", self.steamless_aio_checkbox.isChecked()
-        )
+        
+        # Save Consolidated Steamless DRM Remover settings
+        drm_mode = self.steamless_remover_combo.currentData()
+        if drm_mode == "aio":
+            self.settings.setValue("use_steamless_aio", True)
+            self.settings.setValue("use_steamless", False)
+        elif drm_mode == "cli":
+            self.settings.setValue("use_steamless_aio", False)
+            self.settings.setValue("use_steamless", True)
+        else:
+            self.settings.setValue("use_steamless_aio", False)
+            self.settings.setValue("use_steamless", False)
+
+        # Save Soundtrack and Search Blacklist filtering toggles
+        self.settings.setValue("filter_soundtracks", self.filter_soundtracks_checkbox.isChecked())
+        self.settings.setValue("filter_search_blacklist", self.filter_search_blacklist_checkbox.isChecked())
 
         # Check if the toggle changed
         old_val = self.settings.value("fakeappid_db_integration", False, type=bool)

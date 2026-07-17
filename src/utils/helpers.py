@@ -705,23 +705,10 @@ class CheckboxSetting(QWidget):
             )
             self.checkbox.setChecked(current_value)
 
+        self.explanation_label = None
+        self._layout.addWidget(self.checkbox)
         if tooltip:
-            # Use tooltip both as hover tooltip and as visible explanatory label
             self.checkbox.setToolTip(tooltip)
-            self.explanation_label = QLabel(tooltip)
-            self.explanation_label.setStyleSheet("color: #888888; font-size: 11px;")
-            self.explanation_label.setWordWrap(True)
-            # Add checkbox and then an indented explanation label using
-            # an inner HBoxLayout
-            self._layout.addWidget(self.checkbox)
-            ex_layout = QHBoxLayout()
-            ex_layout.setContentsMargins(0, 0, 0, 0)
-            ex_layout.addSpacing(14)
-            ex_layout.addWidget(self.explanation_label)
-            self._layout.addLayout(ex_layout)
-        else:
-            self.explanation_label = None
-            self._layout.addWidget(self.checkbox)
 
     def isChecked(self) -> bool:  # noqa: N802
         return self.checkbox.isChecked()

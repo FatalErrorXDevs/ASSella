@@ -761,6 +761,7 @@ class MainWindow(QMainWindow):
         self.update_all_btn = None
         self.steam_updates_value = None
         self.sls_status_value = None
+        self.slssteam_status_value = None
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -806,10 +807,18 @@ class MainWindow(QMainWindow):
         else:
             self._update_web_ui_status_label()
 
-        # Trigger SLSsteam config check (ASShead) once per boot in background
+        # Trigger SLSsteam boot updates and config checks sequentially in a background thread
         import threading
         from utils.assfixer import run_boot_config_check
-        threading.Thread(target=run_boot_config_check, daemon=True).start()
+        from ui.dialogs.settings_sls import run_boot_update_check
+        
+        def run_boot_checks():
+            run_boot_update_check()
+            run_boot_config_check()
+            # Safely refresh system status labels on the main window dashboard
+            QMetaObject.invokeMethod(self, "refresh_system_status", Qt.ConnectionType.QueuedConnection)
+
+        threading.Thread(target=run_boot_checks, daemon=True).start()
 
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
@@ -1347,11 +1356,26 @@ class MainWindow(QMainWindow):
         sls_row.addWidget(self.sls_status_value)
         sls_row.addStretch()
 
+        if sys.platform == "linux":
+            slssteam_row = QHBoxLayout()
+            slssteam_row.setSpacing(4)
+            slssteam_lbl = QLabel("SLSsteam:")
+            slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
+            self.slssteam_status_value = QLabel("Checking...")
+            self.slssteam_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            slssteam_row.addWidget(slssteam_lbl)
+            slssteam_row.addWidget(self.slssteam_status_value)
+            slssteam_row.addStretch()
+        else:
+            self.slssteam_status_value = None
+
         self.web_ui_status_value = None
         
         status_layout.addWidget(self.status_card_title)
         status_layout.addLayout(steam_row)
         status_layout.addLayout(sls_row)
+        if self.slssteam_status_value is not None:
+            status_layout.addLayout(slssteam_row)
         
         dash_layout.addWidget(self.hubcap_stats_card, 1)
         dash_layout.addWidget(self.update_action_card, 1)
@@ -1588,6 +1612,27 @@ class MainWindow(QMainWindow):
         else:
             self.sls_status_value.setText("Not Checked")
             self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+        if self.slssteam_status_value is not None:
+            from ui.dialogs.settings_sls import get_local_sls_version
+            import ui.dialogs.settings_sls as sls_settings
+            
+            local_ver = get_local_sls_version()
+            if local_ver == "Not Installed":
+                self.slssteam_status_value.setText("Configure")
+                self.slssteam_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                if sls_settings.update_checked and sls_settings.latest_online_version:
+                    local_clean = local_ver.strip()
+                    if local_clean == "Installed (Version Unknown)" or local_clean != sls_settings.latest_online_version:
+                        self.slssteam_status_value.setText("Update!")
+                        self.slssteam_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                    else:
+                        self.slssteam_status_value.setText("Latest")
+                        self.slssteam_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                else:
+                    self.slssteam_status_value.setText("Latest")
+                    self.slssteam_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
 
     def refresh_hubcap_stats(self) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""
