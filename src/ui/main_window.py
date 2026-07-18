@@ -1911,6 +1911,35 @@ class MainWindow(QMainWindow):
                 return raw.split("+ASSella-", 1)[1].strip()
             return raw.strip()
 
+        def _parse_version(v_str: str) -> tuple:
+            v_str = v_str.lstrip('v').strip()
+            parts = v_str.split('-')
+            main_part = parts[0]
+            main_numbers = []
+            for num in main_part.split('.'):
+                try:
+                    main_numbers.append(int(num))
+                except ValueError:
+                    main_numbers.append(0)
+            
+            while len(main_numbers) < 3:
+                main_numbers.append(0)
+                
+            pre_release_val = 0  # 0 means release version
+            pre_release_num = 0
+            
+            if len(parts) > 1:
+                pre_tag = parts[1].lower()
+                pre_release_val = -1
+                match = re.search(r'\d+$', pre_tag)
+                if match:
+                    try:
+                        pre_release_num = int(match.group(0))
+                    except ValueError:
+                        pre_release_num = 0
+            
+            return tuple(main_numbers) + (pre_release_val, pre_release_num)
+
         def _check_sync():
             try:
                 # Check beta branch if local version is pre-release/beta
@@ -1928,12 +1957,14 @@ class MainWindow(QMainWindow):
                     logger.info(
                         f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
                     )
-                    if remote_clean and remote_clean != local_clean:
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_on_tool_update_available",
-                            Qt.ConnectionType.QueuedConnection
-                        )
+                    if remote_clean:
+                        # Only notify update if remote is strictly newer than local
+                        if _parse_version(remote_clean) > _parse_version(local_clean):
+                            QMetaObject.invokeMethod(
+                                self,
+                                "_on_tool_update_available",
+                                Qt.ConnectionType.QueuedConnection
+                            )
             except Exception as e:
                 logger.warning(f"Failed to check tool updates from GitHub: {e}")
             finally:
