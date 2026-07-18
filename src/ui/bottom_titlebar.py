@@ -113,8 +113,13 @@ class BottomTitleBar(QFrame):
         version_label.setToolTip("View credits")
         layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        self.update_arrow_label = QLabel(" ⬆ Update Available")
-        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold;")
+        self.update_arrow_label = ClickableLabel(
+            " ⬆ Update Available",
+            self.parent_window,
+            lambda: self.trigger_update_flow()
+        )
+        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold; cursor: pointer;")
+        self.update_arrow_label.setToolTip("Click here to apply delta updates (ZSync) now.")
         self.update_arrow_label.setVisible(False)
         layout.addWidget(self.update_arrow_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -430,6 +435,12 @@ class BottomTitleBar(QFrame):
                 self.fade_animation.start()
             else:
                 self.fade_animation.stop()
+
+    def trigger_update_flow(self) -> None:
+        """Triggers the self-update logic on the main window."""
+        if hasattr(self, "parent_window") and self.parent_window:
+            if hasattr(self.parent_window, "run_self_update"):
+                self.parent_window.run_self_update()
 
 
 """

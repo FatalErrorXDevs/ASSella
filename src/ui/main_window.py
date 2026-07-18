@@ -1985,6 +1985,146 @@ class MainWindow(QMainWindow):
             show = getattr(self, "_tool_update_available_flag", False) and getattr(self, "simplified_terminal", None) and self.simplified_terminal.layout.currentIndex() == 0
             self.bottom_titlebar.show_update_indicator(show)
 
+    def run_self_update(self) -> None:
+        """Run the ZSync self-update flow for the AppImage."""
+        import os
+        appimage_path = os.environ.get("APPIMAGE")
+        if not appimage_path:
+            QMessageBox.information(
+                self,
+                "Self-Update",
+                "You are running ASSella from source. Self-update is only available when running from a packaged AppImage."
+            )
+            return
+
+        # Confirm update with user
+        reply = QMessageBox.question(
+            self,
+            "Install Update",
+            "A new version of ASSella is available.\n\n"
+            "Would you like to download and install it now?\n"
+            "This will perform a fast delta update, only downloading changed files.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Disable main window input and show progress
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("Initializing update...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Self-Update")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(True)
+        progress.setMinimumDuration(0)
+        progress.setValue(5)
+
+        def _update_worker():
+            try:
+                import urllib.request
+                import stat
+                import subprocess
+                from pathlib import Path
+
+                # 1. Download appimageupdatetool-x86_64.AppImage
+                QMetaObject.invokeMethod(progress, "setLabelText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading updater tool..."))
+                QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 20))
+                
+                updater_url = "https://github.com/AppImage/AppImageUpdate/releases/download/continuous/appimageupdatetool-x86_64.AppImage"
+                temp_dir = Path("/tmp/assella_updater")
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                updater_path = temp_dir / "appimageupdatetool"
+
+                # Check if we already have it to save bandwidth
+                if not updater_path.exists():
+                    req = urllib.request.Request(updater_url, headers={"User-Agent": "ASSella-Updater"})
+                    with urllib.request.urlopen(req, timeout=20) as response, open(updater_path, "wb") as out_file:
+                        out_file.write(response.read())
+
+                # Make executable
+                updater_path.chmod(updater_path.stat().st_mode | stat.S_IEXEC)
+
+                # 2. Run appimageupdatetool on current AppImage
+                QMetaObject.invokeMethod(progress, "setLabelText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Applying delta updates (ZSync)..."))
+                QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 50))
+
+                # Launch updater tool
+                logger.info(f"Running self-update: {updater_path} {appimage_path}")
+                
+                # We run it with output redirection to capture status
+                proc = subprocess.Popen(
+                    [str(updater_path), appimage_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                
+                # Monitor progress
+                for line in iter(proc.stdout.readline, ""):
+                    if progress.wasCanceled():
+                        proc.terminate()
+                        break
+                    logger.debug(f"Updater: {line.strip()}")
+                    if "%" in line:
+                        parts = line.split("%")
+                        for p in parts:
+                            last_words = p.strip().split()
+                            if last_words:
+                                try:
+                                    pct = int(last_words[-1])
+                                    if 0 <= pct <= 100:
+                                        scaled_pct = 50 + int(pct * 0.45)
+                                        QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, scaled_pct))
+                                except ValueError:
+                                    pass
+
+                proc.wait()
+
+                if proc.returncode == 0:
+                    QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_on_update_success",
+                        Qt.ConnectionType.QueuedConnection
+                    )
+                else:
+                    if not progress.wasCanceled():
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_on_update_failed",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(str, f"Updater exited with code {proc.returncode}")
+                        )
+            except Exception as e:
+                logger.error(f"Self-update failed: {e}", exc_info=True)
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_update_failed",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, str(e))
+                )
+
+        import threading
+        t = threading.Thread(target=_update_worker, daemon=True)
+        t.start()
+
+    @pyqtSlot()
+    def _on_update_success(self) -> None:
+        QMessageBox.information(
+            self,
+            "Update Successful",
+            "The update has been successfully downloaded and applied next to your running AppImage!\n\n"
+            "Please close the app and launch the new version."
+        )
+
+    @pyqtSlot(str)
+    def _on_update_failed(self, error_msg: str) -> None:
+        QMessageBox.warning(
+            self,
+            "Update Failed",
+            f"Failed to apply the update.\nError: {error_msg}"
+        )
+
     @staticmethod
     def _cleanup_logging() -> None:
         """Clean up logging system."""
