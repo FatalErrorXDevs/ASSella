@@ -595,50 +595,47 @@ def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
         fixed_content, _ = _fix_app_tokens_indentation(content)
         content = fixed_content
 
-        app_tokens_section = _get_app_tokens_section(content)
-        existing_pattern = re.compile(
-            rf"^ {2}{re.escape(app_id)}\s*:\s*(.+)$", re.MULTILINE
+        # Search for any existing entries for this app_id (with or without quotes)
+        dup_pattern = re.compile(
+            rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*.*(?:\r?\n)?", re.MULTILINE
         )
-        existing_match = existing_pattern.search(app_tokens_section)
-
-        if existing_match:
-            existing_token = existing_match.group(1).strip()
-            if existing_token == token:
+        
+        matches = list(dup_pattern.finditer(content))
+        
+        if len(matches) == 1:
+            match_val_pat = re.compile(
+                rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*(.+)$", re.MULTILINE
+            )
+            m = match_val_pat.search(matches[0].group(0))
+            if m and m.group(1).strip() == token:
+                # Token matches exactly. No update needed.
                 return False
 
-            # Update existing token
-            tokens_start = content.find("AppTokens:")
-            line_start = tokens_start + len("AppTokens:\n") + existing_match.start()
-            line_end = line_start + len(existing_match.group(0))
-            new_line = f"  {app_id}: {token}"
-            new_content = content[:line_start] + new_line + content[line_end:]
+        # Remove all existing occurrences of this app_id
+        new_content = content
+        for m in reversed(matches):
+            new_content = new_content[:m.start()] + new_content[m.end():]
+
+        # Insert the single correct entry under AppTokens
+        tokens_start = new_content.find("AppTokens:")
+        if tokens_start != -1:
+            insert_pos = tokens_start + len("AppTokens:")
+            if insert_pos < len(new_content) and new_content[insert_pos] == "\n":
+                insert_pos += 1
+            elif insert_pos < len(new_content) and new_content[insert_pos] == "\r":
+                insert_pos += 2
+                
+            new_token_line = f"  {app_id}: {token}\n"
+            new_content = new_content[:insert_pos] + new_token_line + new_content[insert_pos:]
+            
             if _atomic_write(config_path, new_content):
-                logger.info(f"Updated AppToken for '{app_id}'")
+                if len(matches) > 1:
+                    logger.info(f"Updated AppToken for '{app_id}' and removed duplicates")
+                elif len(matches) == 1:
+                    logger.info(f"Updated AppToken for '{app_id}'")
+                else:
+                    logger.info(f"Added AppToken for '{app_id}'")
                 return True
-            return False
-
-        # Add new token
-        new_token_line = f"  {app_id}: {token}"
-        token_line_pattern = re.compile(
-            r"(^AppTokens:\n)( {2}\S+:[^\n]*)", re.MULTILINE
-        )
-        token_match = token_line_pattern.search(content)
-
-        if token_match:
-            new_content = (
-                content[: token_match.end()]
-                + "\n"
-                + new_token_line
-                + content[token_match.end() :]
-            )
-        else:
-            new_content = content.replace(
-                "AppTokens:", "AppTokens:\n" + new_token_line, 1
-            )
-
-        if _atomic_write(config_path, new_content):
-            logger.info(f"Added AppToken for '{app_id}'")
-            return True
         return False
 
     except OSError as e:

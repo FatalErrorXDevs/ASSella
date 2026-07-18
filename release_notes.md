@@ -1,6 +1,12 @@
-# Release Notes - ASSella v2.2.4-rc1
+# Release Notes - ASSella v2.2.4-rc2
 
-Welcome to v2.2.4-rc1. This pre-release introduces automated SLSsteam updates, a default download location manager, search list rendering performance improvements, consolidated DRM controls, and customizable filtering toggles.
+Welcome to v2.2.4-rc2. This pre-release introduces a critical bug fix for duplicate AppTokens generation in the configuration, alongside automated SLSsteam updates, a default download location manager, search list rendering performance improvements, consolidated DRM controls, and customizable filtering toggles.
+
+### Bug Fixes & Stability
+
+* **SLSsteam AppTokens Deduplication & Regex Fix:**
+  - Fixed a regex pattern compilation bug in `add_app_token` where `{2}` inside a Python f-string incorrectly evaluated to the character `'2'` instead of the regex quantifier `{2}`. This caused duplicate AppToken configuration entries to be generated on every update check.
+  - Implemented a robust deduplication logic that automatically cleans up and removes any existing duplicate AppToken entries in `config.yaml` upon token updates.
 
 ### SLSsteam Integration & Updater
 
