@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QGroupBox,
     QLabel,
     QWidget,
@@ -25,9 +26,9 @@ class CreditsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Credits & Updates")
-        self.setMinimumWidth(430)
-        self.setMinimumHeight(440)
-        self.resize(430, 440)
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(320)
+        self.resize(400, 320)
         self.settings = get_settings()
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(15, 15, 15, 15)
@@ -129,46 +130,33 @@ class CreditsDialog(QDialog):
 
     def _create_credits_content(self):
         # Developer Section
-        dev_group = QGroupBox("Core Development")
-        dev_layout = QVBoxLayout(dev_group)
-        dev_layout.setContentsMargins(12, 12, 12, 12)
-
-        dev_label = QLabel("Developed by:  bakabakabaka")
-        dev_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #e0e0e0;")
-        dev_layout.addWidget(dev_label)
-        self.main_layout.addWidget(dev_group)
+        dev_label = QLabel("by dev: bakabakabaka & drazy")
+        dev_label.setStyleSheet(
+            f"font-size: 13px; font-weight: bold; color: {self.accent_color};"
+        )
+        self.main_layout.addWidget(dev_label)
 
         # Third Party Section
         third_party_group = QGroupBox("Third-Party Tools & Integration")
-        third_party_layout = QVBoxLayout(third_party_group)
+        third_party_layout = QGridLayout(third_party_group)
         third_party_layout.setContentsMargins(12, 12, 12, 12)
-        third_party_layout.setSpacing(6)
+        third_party_layout.setSpacing(10)
 
-        items = [
-            ("GreenLuma", "Steam integration & offline helper"),
-            ("SLSsteam", "Steam API interface wrapper"),
-            ("Steamless", "DRM remover & unpacker (by Morrenus for AIO)"),
-            ("DepotDownloaderMod", "High-speed manifest downloading"),
-            ("SLScheevo", "Steam achievements unlocker & manager"),
-            ("GogoVang", "Steam Workshop downloader extension"),
+        tools = [
+            "GreenLuma",
+            "SLSsteam",
+            "Steamless",
+            "DepotDownloaderMod",
+            "SLScheevo",
+            "GogoVang",
         ]
 
-        for title, desc in items:
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(8)
-
-            t_lbl = QLabel(f"• {title}")
-            t_lbl.setStyleSheet("font-weight: bold; color: #d0d0d0; min-width: 140px;")
-
-            d_lbl = QLabel(desc)
-            d_lbl.setStyleSheet("color: #888888; font-size: 11px;")
-
-            row_layout.addWidget(t_lbl)
-            row_layout.addWidget(d_lbl)
-            row_layout.addStretch()
-            third_party_layout.addWidget(row)
+        for i, tool in enumerate(tools):
+            row = i // 3
+            col = i % 3
+            lbl = QLabel(f"• {tool}")
+            lbl.setStyleSheet("font-weight: bold; color: #d0d0d0; font-size: 12px;")
+            third_party_layout.addWidget(lbl, row, col)
 
         self.main_layout.addWidget(third_party_group)
 

@@ -1963,7 +1963,8 @@ class MainWindow(QMainWindow):
                             QMetaObject.invokeMethod(
                                 self,
                                 "_on_tool_update_available",
-                                Qt.ConnectionType.QueuedConnection
+                                Qt.ConnectionType.QueuedConnection,
+                                Q_ARG(str, remote_clean)
                             )
             except Exception as e:
                 logger.warning(f"Failed to check tool updates from GitHub: {e}")
@@ -1973,9 +1974,11 @@ class MainWindow(QMainWindow):
         t = threading.Thread(target=_check_sync, daemon=True)
         t.start()
 
-    @pyqtSlot()
-    def _on_tool_update_available(self) -> None:
+    @pyqtSlot(str)
+    def _on_tool_update_available(self, remote_version: str = "") -> None:
         """Slot triggered when a tool update is available."""
+        if remote_version:
+            self._latest_remote_version = remote_version
         self._tool_update_available_flag = True
         self._update_tool_update_visibility()
 
@@ -2009,6 +2012,13 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+
+        # Determine target update information (force specific pre-release version if found)
+        remote_version = getattr(self, "_latest_remote_version", None)
+        if remote_version:
+            update_info = f"gh-releases-zsync|niwia|ASSella|v{remote_version}|ASSella-x86_64.AppImage.zsync"
+        else:
+            update_info = "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync"
 
         # Disable main window input and show progress
         from PyQt6.QtWidgets import QProgressDialog
@@ -2049,11 +2059,11 @@ class MainWindow(QMainWindow):
                 QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 50))
 
                 # Launch updater tool
-                logger.info(f"Running self-update: {updater_path} {appimage_path}")
+                logger.info(f"Running self-update: {updater_path} {appimage_path} with update_info={update_info}")
                 
                 # We run it with output redirection to capture status
                 proc = subprocess.Popen(
-                    [str(updater_path), appimage_path],
+                    [str(updater_path), "-u", update_info, appimage_path],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True
