@@ -54,13 +54,24 @@ rsync -a --delete "$SRC_DIR/src/" "$WORKDIR/squashfs-root/bin/src/"
 # Write version string to squashfs-root version file (just to be absolutely sure)
 echo "$VERSION_STR" > "$WORKDIR/squashfs-root/bin/src/res/version"
 
-echo -e "${YELLOW}=== Repacking squashfs (gzip compression) ===${NC}"
-mksquashfs "$WORKDIR/squashfs-root" "$WORKDIR/new_squashfs.img" -comp gzip -noappend -quiet
+echo -e "${YELLOW}=== Building AppImage with appimagetool (ZSync enabled) ===${NC}"
+APPIMAGETOOL="/home/deck/bin/appimagetool"
+if [ ! -f "$APPIMAGETOOL" ]; then
+    echo -e "${RED}Error: appimagetool not found at $APPIMAGETOOL${NC}"
+    exit 1
+fi
 
-echo -e "${YELLOW}=== Stitching AppImage binary ===${NC}"
-dd if="$BACKUP_APPIMAGE" of="$WORKDIR/ASSella.AppImage" bs="$OFFSET" count=1 status=none
-cat "$WORKDIR/new_squashfs.img" >> "$WORKDIR/ASSella.AppImage"
-chmod +x "$WORKDIR/ASSella.AppImage"
+# Clean up any pre-existing zsync file in working directory
+rm -f "$SRC_DIR/ASSella.AppImage.zsync"
+
+export ARCH=x86_64
+"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync" \
+    "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
+
+# Move generated zsync file to workdir
+if [ -f "$SRC_DIR/ASSella.AppImage.zsync" ]; then
+    mv "$SRC_DIR/ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
+fi
 
 echo -e "${YELLOW}=== Verifying built AppImage runs offscreen ===${NC}"
 # We test with offscreen platform. A successful launch will run until timeout (exit code 124).
@@ -99,15 +110,17 @@ if command -v gh &>/dev/null; then
         env -u GITHUB_TOKEN gh release delete "$TAG" -y
     fi
 
-    # Create GitHub release and upload asset with custom title and release notes file
-    echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage...${NC}"
-    env -u GITHUB_TOKEN gh release create "$TAG" "$WORKDIR/ASSella.AppImage" \
+    # Create GitHub release and upload both AppImage and the matching zsync file
+    echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage and ZSync files...${NC}"
+    env -u GITHUB_TOKEN gh release create "$TAG" \
+        "$WORKDIR/ASSella.AppImage" \
+        "$WORKDIR/ASSella.AppImage.zsync" \
         --prerelease \
         --title "ASSella $TAG" \
         --notes-file "$SRC_DIR/release_notes.md"
 else
     echo -e "${YELLOW}Warning: 'gh' CLI not found. Please create the release manually on GitHub and upload:${NC}"
-    echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage${NC}"
+    echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage and $WORKDIR/ASSella.AppImage.zsync${NC}"
 fi
 
 echo -e "${GREEN}=== Build and release process completed successfully! ===${NC}"

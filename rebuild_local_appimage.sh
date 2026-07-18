@@ -41,13 +41,24 @@ cp "$SRC_DIR/src/res/logo/icon.png" "$WORKDIR/squashfs-root/accela.png"
 # Write version string to squashfs-root version file (just to be absolutely sure)
 echo "$VERSION_STR" > "$WORKDIR/squashfs-root/bin/src/res/version"
 
-echo -e "${YELLOW}=== Repacking squashfs (gzip compression) ===${NC}"
-mksquashfs "$WORKDIR/squashfs-root" "$WORKDIR/new_squashfs.img" -comp gzip -noappend -quiet
+echo -e "${YELLOW}=== Building AppImage with appimagetool (ZSync enabled) ===${NC}"
+APPIMAGETOOL="/home/deck/bin/appimagetool"
+if [ ! -f "$APPIMAGETOOL" ]; then
+    echo -e "${RED}Error: appimagetool not found at $APPIMAGETOOL${NC}"
+    exit 1
+fi
 
-echo -e "${YELLOW}=== Stitching AppImage binary ===${NC}"
-dd if="$BACKUP_APPIMAGE" of="$WORKDIR/ASSella.AppImage" bs="$OFFSET" count=1 status=none
-cat "$WORKDIR/new_squashfs.img" >> "$WORKDIR/ASSella.AppImage"
-chmod +x "$WORKDIR/ASSella.AppImage"
+# Clean up any pre-existing zsync file in working directory
+rm -f "$SRC_DIR/ASSella.AppImage.zsync"
+
+export ARCH=x86_64
+"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync" \
+    "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
+
+# Move generated zsync file to workdir
+if [ -f "$SRC_DIR/ASSella.AppImage.zsync" ]; then
+    mv "$SRC_DIR/ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
+fi
 
 echo -e "${YELLOW}=== Verifying built AppImage runs offscreen ===${NC}"
 # We test with offscreen platform. A successful launch will run until timeout (exit code 124).
