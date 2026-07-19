@@ -1944,7 +1944,12 @@ class MainWindow(QMainWindow):
             try:
                 # Check beta branch if local version is pre-release/beta
                 local_clean = _extract_semver(app_version)
-                branch = "beta" if any(x in local_clean.lower() for x in ("beta", "rc")) else "main"
+                if "alpha" in local_clean.lower():
+                    branch = "alpha"
+                elif any(x in local_clean.lower() for x in ("beta", "rc")):
+                    branch = "beta"
+                else:
+                    branch = "main"
                 url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
                 logger.info(f"Checking for tool updates from branch: {branch}")
                 req = urllib.request.Request(

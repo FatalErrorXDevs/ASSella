@@ -174,7 +174,7 @@ class CreditsDialog(QDialog):
         branch = _get_branch_from_version(app_version)
         branch_colors = {
             "beta":  ("#7B3F00", "#E07B00"),
-            "test":  ("#1a3a1a", "#3CB371"),
+            "test":  ("#4A2300", "#FF8C00"),
             "main":  ("#1a2a3a", "#4A90D9"),
         }
         bg, fg = branch_colors.get(branch, ("#2a2a2a", "#888888"))
@@ -336,11 +336,12 @@ class CreditsDialog(QDialog):
         def _check_sync():
             try:
                 local_clean = _extract_semver(app_version)
-                branch = (
-                    "beta"
-                    if any(x in local_clean.lower() for x in ("beta", "rc"))
-                    else "main"
-                )
+                if "alpha" in local_clean.lower():
+                    branch = "alpha"
+                elif any(x in local_clean.lower() for x in ("beta", "rc")):
+                    branch = "beta"
+                else:
+                    branch = "main"
                 url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
                 req = urllib.request.Request(url, headers={"User-Agent": "ASSella-Updater"})
                 with urllib.request.urlopen(req, timeout=10) as response:
