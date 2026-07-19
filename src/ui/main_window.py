@@ -5,7 +5,7 @@ import sys
 from collections import deque
 from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QMetaObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
