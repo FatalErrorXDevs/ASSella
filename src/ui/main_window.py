@@ -1,6 +1,7 @@
 import atexit
 import logging
 import random
+import re
 import sys
 from collections import deque
 from typing import Dict, Optional
@@ -1994,146 +1995,159 @@ class MainWindow(QMainWindow):
             self.bottom_titlebar.show_update_indicator(show)
 
     def run_self_update(self) -> None:
-        """Run the ZSync self-update flow for the AppImage."""
+        """Download and install the latest AppImage directly from GitHub Releases."""
         import os
-        appimage_path = os.environ.get("APPIMAGE")
+        from PyQt6.QtWidgets import QProgressDialog
+
+        # Determine where the installed AppImage lives
+        appimage_path = os.environ.get("APPIMAGE", "")
         default_appimage = "/home/deck/.local/share/ACCELA/ASSella.AppImage"
         if not appimage_path or not os.path.exists(appimage_path):
-            if os.path.exists(default_appimage):
-                appimage_path = default_appimage
-            else:
-                QMessageBox.information(
-                    self,
-                    "Self-Update",
-                    f"Self-update is only available when running from a packaged AppImage.\n(Tried path: {appimage_path})"
-                )
-                return
+            appimage_path = default_appimage
+        if not os.path.exists(appimage_path):
+            QMessageBox.information(
+                self, "Self-Update",
+                "Could not locate the installed ASSella.AppImage to update."
+            )
+            return
 
-        # Confirm update with user
+        remote_version = getattr(self, "_latest_remote_version", None)
+        tag = f"v{remote_version}" if remote_version else "latest"
+
         reply = QMessageBox.question(
-            self,
-            "Install Update",
-            "A new version of ASSella is available.\n\n"
+            self, "Install Update",
+            f"A new version of ASSella is available ({tag}).\n\n"
             "Would you like to download and install it now?\n"
-            "This will perform a fast delta update, only downloading changed files.",
+            "The app will need to be restarted after the update.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Determine target update information (force specific pre-release version if found)
-        remote_version = getattr(self, "_latest_remote_version", None)
-        if remote_version:
-            update_info = f"gh-releases-zsync|niwia|ASSella|v{remote_version}|ASSella-x86_64.AppImage.zsync"
-        else:
-            update_info = "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync"
-
-        # Disable main window input and show progress
-        from PyQt6.QtWidgets import QProgressDialog
-        progress = QProgressDialog("Initializing update...", "Cancel", 0, 100, self)
-        progress.setWindowTitle("Self-Update")
+        progress = QProgressDialog("Connecting to GitHub...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Downloading Update")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setAutoClose(True)
         progress.setMinimumDuration(0)
-        progress.setValue(5)
+        progress.setValue(2)
 
-        def _update_worker():
+        def _download_worker():
+            import urllib.request
+            import urllib.error
+            import json
+            import os
+            import stat
+            import shutil
+            from pathlib import Path
+
             try:
-                import urllib.request
-                import stat
-                import subprocess
-                from pathlib import Path
+                # Step 1: Resolve download URL from GitHub API
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Fetching release info from GitHub..."))
 
-                # 1. Download appimageupdatetool-x86_64.AppImage
-                QMetaObject.invokeMethod(progress, "setLabelText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading updater tool..."))
-                QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 20))
-                
-                updater_url = "https://github.com/AppImage/AppImageUpdate/releases/download/continuous/appimageupdatetool-x86_64.AppImage"
-                temp_dir = Path("/tmp/assella_updater")
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                updater_path = temp_dir / "appimageupdatetool"
-
-                # Check if we already have it to save bandwidth
-                if not updater_path.exists():
-                    req = urllib.request.Request(updater_url, headers={"User-Agent": "ASSella-Updater"})
-                    with urllib.request.urlopen(req, timeout=20) as response, open(updater_path, "wb") as out_file:
-                        out_file.write(response.read())
-
-                # Make executable
-                updater_path.chmod(updater_path.stat().st_mode | stat.S_IEXEC)
-
-                # 2. Run appimageupdatetool on current AppImage
-                QMetaObject.invokeMethod(progress, "setLabelText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Applying delta updates (ZSync)..."))
-                QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 50))
-
-                # Launch updater tool
-                logger.info(f"Running self-update: {updater_path} {appimage_path} with update_info={update_info}")
-                
-                # We run it with output redirection to capture status
-                proc = subprocess.Popen(
-                    [str(updater_path), "-u", update_info, appimage_path],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True
-                )
-                
-                # Monitor progress
-                for line in iter(proc.stdout.readline, ""):
-                    if progress.wasCanceled():
-                        proc.terminate()
-                        break
-                    logger.debug(f"Updater: {line.strip()}")
-                    if "%" in line:
-                        parts = line.split("%")
-                        for p in parts:
-                            last_words = p.strip().split()
-                            if last_words:
-                                try:
-                                    pct = int(last_words[-1])
-                                    if 0 <= pct <= 100:
-                                        scaled_pct = 50 + int(pct * 0.45)
-                                        QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, scaled_pct))
-                                except ValueError:
-                                    pass
-
-                proc.wait()
-
-                if proc.returncode == 0:
-                    QMetaObject.invokeMethod(progress, "setValue", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
-                    QMetaObject.invokeMethod(
-                        self,
-                        "_on_update_success",
-                        Qt.ConnectionType.QueuedConnection
-                    )
+                if tag == "latest":
+                    api_url = "https://api.github.com/repos/niwia/ASSella/releases/latest"
                 else:
-                    if not progress.wasCanceled():
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_on_update_failed",
-                            Qt.ConnectionType.QueuedConnection,
-                            Q_ARG(str, f"Updater exited with code {proc.returncode}")
-                        )
+                    api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
+
+                req = urllib.request.Request(
+                    api_url,
+                    headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    release_data = json.loads(resp.read().decode("utf-8"))
+
+                download_url = None
+                for asset in release_data.get("assets", []):
+                    name = asset.get("name", "")
+                    if name.endswith(".AppImage") and "zsync" not in name:
+                        download_url = asset["browser_download_url"]
+                        break
+
+                if not download_url:
+                    raise RuntimeError("No AppImage asset found in the release.")
+
+                logger.info(f"Self-update: downloading from {download_url}")
+
+                # Step 2: Download to a temp file next to the installed AppImage
+                dest_dir = Path(appimage_path).parent
+                tmp_path = dest_dir / "ASSella.AppImage.part"
+
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading update..."))
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 10))
+
+                req2 = urllib.request.Request(
+                    download_url,
+                    headers={"User-Agent": "ASSella-Updater"}
+                )
+                with urllib.request.urlopen(req2, timeout=60) as response:
+                    total = int(response.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    chunk_size = 512 * 1024  # 512 KB
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            if progress.wasCanceled():
+                                logger.info("Self-update cancelled by user.")
+                                try:
+                                    os.remove(tmp_path)
+                                except OSError:
+                                    pass
+                                return
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = 10 + int((downloaded / total) * 85)
+                                QMetaObject.invokeMethod(progress, "setValue",
+                                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, min(pct, 94)))
+                                mb_done = downloaded / 1_048_576
+                                mb_total = total / 1_048_576
+                                QMetaObject.invokeMethod(progress, "setLabelText",
+                                    Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(str, f"Downloading update... {mb_done:.1f} / {mb_total:.1f} MB"))
+
+                # Step 3: Atomically replace the installed AppImage
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Installing update..."))
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 96))
+
+                os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+                shutil.move(str(tmp_path), appimage_path)
+
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                QMetaObject.invokeMethod(
+                    self, "_on_update_success",
+                    Qt.ConnectionType.QueuedConnection
+                )
+
             except Exception as e:
                 logger.error(f"Self-update failed: {e}", exc_info=True)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
                 QMetaObject.invokeMethod(
-                    self,
-                    "_on_update_failed",
+                    self, "_on_update_failed",
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, str(e))
                 )
 
         import threading
-        t = threading.Thread(target=_update_worker, daemon=True)
-        t.start()
+        threading.Thread(target=_download_worker, daemon=True).start()
 
     @pyqtSlot()
     def _on_update_success(self) -> None:
-        QMessageBox.information(
+        reply = QMessageBox.information(
             self,
-            "Update Successful",
-            "The update has been successfully downloaded and applied next to your running AppImage!\n\n"
-            "Please close the app and launch the new version."
+            "Update Installed",
+            "The update has been downloaded and installed successfully.\n\n"
+            "Please restart ASSella to use the new version.",
         )
 
     @pyqtSlot(str)
@@ -2141,7 +2155,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(
             self,
             "Update Failed",
-            f"Failed to apply the update.\nError: {error_msg}"
+            f"Failed to download or apply the update.\n\nError: {error_msg}"
         )
 
     @staticmethod
