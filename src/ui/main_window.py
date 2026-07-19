@@ -1997,13 +1997,17 @@ class MainWindow(QMainWindow):
         """Run the ZSync self-update flow for the AppImage."""
         import os
         appimage_path = os.environ.get("APPIMAGE")
-        if not appimage_path:
-            QMessageBox.information(
-                self,
-                "Self-Update",
-                "You are running ASSella from source. Self-update is only available when running from a packaged AppImage."
-            )
-            return
+        default_appimage = "/home/deck/.local/share/ACCELA/ASSella.AppImage"
+        if not appimage_path or not os.path.exists(appimage_path):
+            if os.path.exists(default_appimage):
+                appimage_path = default_appimage
+            else:
+                QMessageBox.information(
+                    self,
+                    "Self-Update",
+                    f"Self-update is only available when running from a packaged AppImage.\n(Tried path: {appimage_path})"
+                )
+                return
 
         # Confirm update with user
         reply = QMessageBox.question(
