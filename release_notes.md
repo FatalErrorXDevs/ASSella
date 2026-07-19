@@ -1,6 +1,6 @@
-# Release Notes - ASSella v2.2.4-alpha5
+# Release Notes - ASSella v2.2.4-alpha6
 
-### Updater Overhaul
+### Updater Fix
 
-* **Replaced ZSync/appimageupdatetool with direct GitHub downloader:** The in-app self-updater no longer relies on appimageupdatetool, which was causing SIGABRT crashes (exit code -6) due to AppImage nesting and FUSE conflicts. The updater now queries the GitHub API directly, downloads the AppImage in 512 KB chunks with live MB/total progress, and atomically replaces the installed file.
-* **Fixed missing re module import** in main_window.py that was causing the update checker background thread to silently fail.
+* **Fixed ZSync delta updates:** The in-app self-updater now correctly uses delta updates via appimageupdatetool. The previous SIGABRT crashes were caused by a wrong asset filename pattern (`ASSella-x86_64.AppImage.zsync` instead of `ASSella.AppImage.zsync`) in the update info string. This is now fixed in the build scripts and updater code.
+* **Fallback to full download:** If delta update fails for any reason, the updater automatically falls back to downloading the full AppImage with live MB progress display.

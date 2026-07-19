@@ -52,7 +52,7 @@ fi
 rm -f "$SRC_DIR/ASSella.AppImage.zsync"
 
 export ARCH=x86_64
-"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync" \
+"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync" \
     "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
 
 # Move generated zsync file to workdir

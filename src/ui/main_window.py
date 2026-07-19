@@ -1995,7 +1995,7 @@ class MainWindow(QMainWindow):
             self.bottom_titlebar.show_update_indicator(show)
 
     def run_self_update(self) -> None:
-        """Download and install the latest AppImage directly from GitHub Releases."""
+        """Install update using delta ZSync (appimageupdatetool), with full-download fallback."""
         import os
         from PyQt6.QtWidgets import QProgressDialog
 
@@ -2033,15 +2033,70 @@ class MainWindow(QMainWindow):
 
         def _download_worker():
             import urllib.request
-            import urllib.error
             import json
             import os
             import stat
             import shutil
+            import subprocess
             from pathlib import Path
 
+            tmp_path = None
             try:
-                # Step 1: Resolve download URL from GitHub API
+                # --- Try fast delta update via appimageupdatetool ---
+                updater_path = Path("/tmp/assella_updater/appimageupdatetool")
+
+                if not updater_path.exists():
+                    QMetaObject.invokeMethod(progress, "setLabelText",
+                        Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading delta-update tool..."))
+                    updater_url = "https://github.com/AppImage/AppImageUpdate/releases/download/continuous/appimageupdatetool-x86_64.AppImage"
+                    updater_path.parent.mkdir(parents=True, exist_ok=True)
+                    req0 = urllib.request.Request(updater_url, headers={"User-Agent": "ASSella-Updater"})
+                    with urllib.request.urlopen(req0, timeout=30) as r0, open(updater_path, "wb") as f0:
+                        f0.write(r0.read())
+                    updater_path.chmod(updater_path.stat().st_mode | stat.S_IEXEC)
+
+                update_info = f"gh-releases-zsync|niwia|ASSella|{tag}|ASSella.AppImage.zsync"
+                logger.info(f"Running delta update: {updater_path} -u {update_info} {appimage_path}")
+
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Checking for delta update..."))
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 10))
+
+                proc = subprocess.Popen(
+                    [str(updater_path), "-u", update_info, appimage_path],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                )
+                for line in iter(proc.stdout.readline, ""):
+                    if progress.wasCanceled():
+                        proc.terminate()
+                        return
+                    line = line.strip()
+                    logger.debug(f"Updater: {line}")
+                    m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+                    if m:
+                        pct = 10 + int(float(m.group(1)) * 0.88)
+                        QMetaObject.invokeMethod(progress, "setValue",
+                            Qt.ConnectionType.QueuedConnection, Q_ARG(int, min(pct, 97)))
+                    if line:
+                        QMetaObject.invokeMethod(progress, "setLabelText",
+                            Qt.ConnectionType.QueuedConnection, Q_ARG(str, line))
+                proc.wait()
+
+                if proc.returncode == 0:
+                    QMetaObject.invokeMethod(progress, "setValue",
+                        Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                    QMetaObject.invokeMethod(self, "_on_update_success",
+                        Qt.ConnectionType.QueuedConnection)
+                    return
+                else:
+                    logger.warning(f"appimageupdatetool exited {proc.returncode}, falling back to full download.")
+
+            except Exception as e:
+                logger.warning(f"Delta updater failed ({e}), falling back to full download.")
+
+            # --- Fallback: full AppImage download ---
+            try:
                 QMetaObject.invokeMethod(progress, "setLabelText",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Fetching release info from GitHub..."))
 
@@ -2067,29 +2122,23 @@ class MainWindow(QMainWindow):
                 if not download_url:
                     raise RuntimeError("No AppImage asset found in the release.")
 
-                logger.info(f"Self-update: downloading from {download_url}")
-
-                # Step 2: Download to a temp file next to the installed AppImage
+                logger.info(f"Self-update fallback: downloading from {download_url}")
                 dest_dir = Path(appimage_path).parent
                 tmp_path = dest_dir / "ASSella.AppImage.part"
 
                 QMetaObject.invokeMethod(progress, "setLabelText",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading update..."))
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading full AppImage..."))
                 QMetaObject.invokeMethod(progress, "setValue",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(int, 10))
 
-                req2 = urllib.request.Request(
-                    download_url,
-                    headers={"User-Agent": "ASSella-Updater"}
-                )
+                req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-Updater"})
                 with urllib.request.urlopen(req2, timeout=60) as response:
                     total = int(response.headers.get("Content-Length", 0))
                     downloaded = 0
-                    chunk_size = 512 * 1024  # 512 KB
+                    chunk_size = 512 * 1024
                     with open(tmp_path, "wb") as f:
                         while True:
                             if progress.wasCanceled():
-                                logger.info("Self-update cancelled by user.")
                                 try:
                                     os.remove(tmp_path)
                                 except OSError:
@@ -2108,35 +2157,25 @@ class MainWindow(QMainWindow):
                                 mb_total = total / 1_048_576
                                 QMetaObject.invokeMethod(progress, "setLabelText",
                                     Qt.ConnectionType.QueuedConnection,
-                                    Q_ARG(str, f"Downloading update... {mb_done:.1f} / {mb_total:.1f} MB"))
-
-                # Step 3: Atomically replace the installed AppImage
-                QMetaObject.invokeMethod(progress, "setLabelText",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Installing update..."))
-                QMetaObject.invokeMethod(progress, "setValue",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 96))
+                                    Q_ARG(str, f"Downloading... {mb_done:.1f} / {mb_total:.1f} MB"))
 
                 os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
                 shutil.move(str(tmp_path), appimage_path)
 
                 QMetaObject.invokeMethod(progress, "setValue",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
-                QMetaObject.invokeMethod(
-                    self, "_on_update_success",
-                    Qt.ConnectionType.QueuedConnection
-                )
+                QMetaObject.invokeMethod(self, "_on_update_success",
+                    Qt.ConnectionType.QueuedConnection)
 
             except Exception as e:
-                logger.error(f"Self-update failed: {e}", exc_info=True)
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                QMetaObject.invokeMethod(
-                    self, "_on_update_failed",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, str(e))
-                )
+                logger.error(f"Full download fallback also failed: {e}", exc_info=True)
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                QMetaObject.invokeMethod(self, "_on_update_failed",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(e)))
 
         import threading
         threading.Thread(target=_download_worker, daemon=True).start()

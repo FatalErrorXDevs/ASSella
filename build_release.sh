@@ -65,12 +65,14 @@ fi
 rm -f "$SRC_DIR/ASSella.AppImage.zsync"
 
 export ARCH=x86_64
-"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella-x86_64.AppImage.zsync" \
+"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync" \
     "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
 
 # Move generated zsync file to workdir
 if [ -f "$SRC_DIR/ASSella.AppImage.zsync" ]; then
     mv "$SRC_DIR/ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
+elif [ -f "$WORKDIR/squashfs-root/../ASSella.AppImage.zsync" ]; then
+    mv "$WORKDIR/squashfs-root/../ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
 fi
 
 echo -e "${YELLOW}=== Verifying built AppImage runs offscreen ===${NC}"
