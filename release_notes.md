@@ -1,6 +1,5 @@
-# Release Notes - ASSella v2.2.4-alpha2
+# Release Notes - ASSella v2.2.4-alpha3
 
-### UI Styles & Testing
+### Updater Bug Fixes
 
-* **Alpha/Test Branch Badge Color:** Changed the colored pill badge representing the Alpha/Test branch from green to orange in the Credits dialog header.
-* **Update Verification:** This release serves as a test payload to verify the in-tool self-updater and delta update mechanism.
+* **Fixed updater NameError crash:** Fixed a bug where missing Q_ARG import in main_window.py caused a NameError and freeze at 5% during update thread initialization.
