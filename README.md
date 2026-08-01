@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="src/res/logo/icon.png" width="128" height="128" alt="ASSella Logo" />
-</p>
-
 # ASSella
 
-ASSella is a lightweight fork of ACCELA designed for Linux and Steam Deck.
+ASSella is a fork of ACCELA designed for Linux and Steam Deck.
 
 ASSella 1.0 (Main Branch) is built on top of standard ACCELA with strictly 3 targeted changes:
 1. **Workshop Downloader (beta) bundled** (`workshop_downloader_linux`).
