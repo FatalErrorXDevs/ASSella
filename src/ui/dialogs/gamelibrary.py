@@ -4,24 +4,30 @@ import os
 import platform
 import subprocess
 import sys
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIntValidator, QPixmap
+from PyQt6.QtCore import QSize, Qt, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QAction, QIntValidator, QPixmap, QPainter, QBrush, QLinearGradient, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
+    QGraphicsBlurEffect,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -100,37 +106,149 @@ logger = logging.getLogger(__name__)
 
 
 def format_game_display_name(game_data: dict) -> str:
-    """Return the display name for a game, including the ACCELA marker."""
+    """Return the display name for a game, with branch suffix for non-public branches."""
     name = game_data.get("game_name", "Unknown")
-    if game_data.get("is_accela_install"):
-        return f"{name} [ACCELA]"
-    return name
+    appid = str(game_data.get("appid", ""))
+    parts = [name]
+    if appid and appid not in ("0", "N/A", "unknown"):
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(appid):
+            parts.append("[DLC MODE]")
+        from utils.settings import get_settings
+        branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
+        if branch and branch != "public":
+            parts.append(f"({branch})")
+    return " ".join(parts)
+
+
+class ElidedLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+        self.setWordWrap(True)
+        self.setToolTip(text)
+        
+    def setText(self, text):
+        self._full_text = text
+        self.setToolTip(text)
+        self.update_elision()
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_elision()
+        
+    def sizeHint(self) -> QSize:
+        sh = super().sizeHint()
+        from PyQt6.QtGui import QFontMetrics
+        fm = QFontMetrics(self.font())
+        line_height = fm.lineSpacing()
+        # Report height of exactly 2 lines (or 1 if short)
+        w = self.width() or 400
+        if fm.horizontalAdvance(self._full_text) <= w:
+            sh.setHeight(line_height)
+        else:
+            sh.setHeight(line_height * 2)
+        return sh
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def update_elision(self):
+        text = self._full_text
+        from PyQt6.QtGui import QFontMetrics
+        from PyQt6.QtCore import Qt
+        fm = QFontMetrics(self.font())
+        if not text:
+            super().setText("")
+            self.setFixedHeight(fm.lineSpacing())
+            return
+            
+        width = self.width()
+        if width <= 10:
+            super().setText(text)
+            self.setFixedHeight(fm.lineSpacing())
+            return
+            
+        if fm.horizontalAdvance(text) <= width:
+            super().setText(text)
+            self.setFixedHeight(fm.lineSpacing())
+            return
+            
+        # Simple line-breaking for up to 2 lines
+        words = text.split(" ")
+        lines = []
+        current_line = []
+        for word in words:
+            test_line = " ".join(current_line + [word]) if current_line else word
+            if fm.horizontalAdvance(test_line) <= width:
+                current_line.append(word)
+            else:
+                if len(lines) == 0:
+                    lines.append(" ".join(current_line))
+                    current_line = [word]
+                else:
+                    # Second line, we need to elide the rest
+                    remaining = " ".join(current_line + [word] + words[words.index(word)+1:])
+                    elided = fm.elidedText(remaining, Qt.TextElideMode.ElideRight, width)
+                    lines.append(elided)
+                    current_line = []
+                    break
+        if current_line:
+            if len(lines) < 2:
+                lines.append(" ".join(current_line))
+        elided_text = "\n".join(lines[:2])
+        super().setText(elided_text)
+        self.setFixedHeight(fm.lineSpacing() * len(lines[:2]))
 
 
 class GameItemWidget(QWidget):
     """
     Custom widget for displaying a game item in the library list.
-    Layout: [ Image ] [ Name/Size/Status ]
+    Layout: [ Checkbox (select mode) ] [ Image ] [ Name/Size/Status ]
     """
 
     def __init__(
-        self, game_data: dict, size_str: str, accent_color: str, background_color: str
+        self,
+        game_data: dict,
+        size_str: str,
+        accent_color: str,
+        background_color: str,
+        select_mode: bool = False,
+        is_selected: bool = False,
+        applist_2_0_enabled: bool = True,
+        parent_dialog = None,
     ):
         super().__init__()
         self.game_data = game_data
         self.accent_color = accent_color
         self.background_color = background_color
+        self._select_mode = select_mode
+        self._is_selected = is_selected
+        self.checkbox = None
+        self.applist_2_0_enabled = applist_2_0_enabled
+        self.parent_dialog = parent_dialog
         self._init_ui(size_str)
 
     def _init_ui(self, size_str: str) -> None:
         """Initialize the UI components."""
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(1, 1, 16, 1)
+        layout.setSpacing(16)
+
+        # Check setting
+        applist_2_0_enabled = self.applist_2_0_enabled
+
+        # --- Checkbox (select mode only, old style) ---
+        if not applist_2_0_enabled and self._select_mode:
+            self.checkbox = QCheckBox()
+            self.checkbox.setChecked(self._is_selected)
+            self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self.checkbox.setStyleSheet("QCheckBox::indicator { width: 18px; height: 18px; }")
+            layout.addWidget(self.checkbox)
 
         # --- Image Section ---
         self.image_label = QLabel()
-        self.image_label.setFixedSize(230, 108)  # Standard Steam Header Ratio
+        self.image_label.setFixedSize(220, 128)  # Fits perfectly in 130px card height minus borders
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         name = self.game_data.get("game_name", "Unknown")
@@ -138,70 +256,361 @@ class GameItemWidget(QWidget):
         self.image_label.setText(name[:2].upper())
 
         self.image_label.setStyleSheet(
-            f"background-color: {self.background_color}; "
+            f"border-top-left-radius: 11px; "
+            f"border-bottom-left-radius: 11px; "
+            f"border-top-right-radius: 0px; "
+            f"border-bottom-right-radius: 0px; "
+            f"background-color: rgba(255, 255, 255, 0.02); "
             f"color: {self.accent_color}; "
-            f"border-radius: 4px; "
         )
         layout.addWidget(self.image_label)
 
+        # --- Checkbox Overlay (new style) ---
+        if applist_2_0_enabled:
+            self.checkbox = QCheckBox(self.image_label)
+            self.checkbox.setChecked(self._is_selected)
+            self.checkbox.move(10, 10)
+            self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self.checkbox.setStyleSheet(
+                f"""
+                QCheckBox::indicator {{
+                    width: 20px;
+                    height: 20px;
+                    border: 2px solid rgba(255, 255, 255, 180);
+                    border-radius: 10px;
+                    background-color: rgba(0, 0, 0, 150);
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: {self.accent_color};
+                    border-color: {self.accent_color};
+                }}
+                """
+            )
+            self.checkbox.setVisible(self._select_mode)
+
         # --- Info Section (Vertical) ---
         info_layout = QVBoxLayout()
-        info_layout.setContentsMargins(0, 5, 0, 5)
-        info_layout.setSpacing(2)
+        info_layout.setContentsMargins(0, 8, 0, 8)
+        info_layout.setSpacing(6)
 
-        # Game name
-        name_label = QLabel(display_name)
-        name_label.setStyleSheet(
-            f"font-weight: bold; font-size: 14px; color: {self.accent_color};"
-        )
-        name_label.setWordWrap(True)
-        info_layout.addWidget(name_label)
+        self.name_label = ElidedLabel(display_name)
+        font = self.name_label.font()
+        font.setPointSize(12)
+        font.setBold(True)
+        self.name_label.setFont(font)
+        self.name_label.setStyleSheet("color: #FFFFFF; font-size: 12pt; font-weight: bold;")
+        info_layout.addWidget(self.name_label)
 
         # Size
         size_label = QLabel(f"Size: {size_str}")
-        size_label.setStyleSheet(f"color: {self.accent_color};")
+        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
         info_layout.addWidget(size_label)
 
-        # Update status
-        self._add_status_label(info_layout)
+        # Manifest cache status
+        self.manifest_label = QLabel()
+        info_layout.addWidget(self.manifest_label)
+        self.update_manifest_label()
 
         info_layout.addStretch()
-        layout.addLayout(info_layout)
+        layout.addLayout(info_layout, 1)
 
-    def _add_status_label(self, layout: QVBoxLayout) -> None:
-        """Add the update status label based on game data."""
+        # Right column for Badges (status, denuvo, proton)
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 8, 0, 8)
+        right_col.setSpacing(6)
+
+        # Update status badge
+        self.status_label = QLabel()
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         update_status = self.game_data.get("update_status", "cannot_determine")
-        status_label = QLabel()
-
         status_map = {
-            "update_available": ("New version available", self.accent_color),
-            "up_to_date": ("Up to date", "#00FF00"),
-            "checking": ("Checking for updates...", "#FFA500"),
+            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+        }
+        text, color, bg_color = status_map.get(
+            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
+        )
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 10px; "
+            f"padding: 3px 10px; "
+            f"font-size: 11px; "
+            f"font-weight: bold;"
+        )
+        right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
+
+        # Denuvo badge — populated lazily after the list is built
+        self.denuvo_badge = QLabel()
+        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.denuvo_badge.hide()
+        right_col.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignRight)
+
+        right_col.addStretch(1)
+
+        # ProtonDB badge — populated lazily after the list is built
+        self.proton_badge = QLabel()
+        self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.proton_badge.hide()
+        right_col.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignRight)
+
+        layout.addLayout(right_col)
+
+
+    def update_manifest_label(self) -> None:
+        """Update the manifest status label in-place."""
+        if not hasattr(self, "manifest_label") or not self.manifest_label:
+            return
+
+        appid = self.game_data.get("appid", "0")
+        update_status = self.game_data.get("update_status", "cannot_determine")
+
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.manifest_label.setText("Manifest: N/A")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+            return
+
+        last_updated = None
+        if self.parent_dialog and hasattr(self.parent_dialog, "_manifest_mtimes"):
+            last_updated = self.parent_dialog._manifest_mtimes.get(appid)
+
+        if last_updated is None:
+            from utils.helpers import get_base_path
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            if fpath.exists():
+                try:
+                    last_updated = fpath.stat().st_mtime
+                except Exception:
+                    pass
+
+        if not last_updated:
+            self.manifest_label.setText("Manifest: Not Found")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+        else:
+            import time
+            age_seconds = time.time() - last_updated
+            if age_seconds < 0:
+                age_seconds = 0
+
+            if age_seconds < 60:
+                age_str = f"{int(age_seconds)}s"
+            elif age_seconds < 3600:
+                age_str = f"{int(age_seconds // 60)}m"
+            elif age_seconds < 86400:
+                age_str = f"{int(age_seconds // 3600)}h"
+            else:
+                days = int(age_seconds // 86400)
+                if days < 30:
+                    age_str = f"{days}d"
+                elif days < 365:
+                    age_str = f"{days // 30}mo"
+                else:
+                    age_str = f"{days // 365}y"
+
+            self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px; font-style: italic;")
+
+    def update_status(self, update_status: str) -> None:
+        """Update update and manifest status labels in-place."""
+        self.game_data["update_status"] = update_status
+        status_map = {
+            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
         }
 
-        text, color = status_map.get(
-            update_status, ("Unable to check updates", "#AAAAAA")
+        text, color, bg_color = status_map.get(
+            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
         )
 
-        status_label.setText(text)
-        status_label.setStyleSheet(f"color: {color}; font-style: italic;")
-        layout.addWidget(status_label)
+        if hasattr(self, "status_label") and self.status_label:
+            self.status_label.setText(text)
+            self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            self.status_label.setStyleSheet(
+                f"color: {color}; "
+                f"background-color: {bg_color}; "
+                f"border-radius: 10px; "
+                f"padding: 3px 10px; "
+                f"font-size: 11px; "
+                f"font-weight: bold;"
+            )
+
+        self.update_manifest_label()
+        self.update_denuvo_badge()
+        self.update_proton_badge()
+
+
+
+    def update_denuvo_badge(self) -> None:
+        """Update the Denuvo status badge in-place."""
+        if not hasattr(self, "denuvo_badge") or not self.denuvo_badge:
+            return
+
+        appid = self.game_data.get("appid", "0")
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.denuvo_badge.hide()
+            return
+
+        from core.ratings import get_denuvo_status
+        status = get_denuvo_status(appid)
+ 
+        if not status:
+            self.denuvo_badge.hide()
+            return
+ 
+        if status == "cracked":
+            text = "Denuvo Cracked"
+            color = "#81C784"
+            bg_color = "rgba(129, 199, 132, 0.15)"
+        elif status == "hypervisor":
+            text = "Denuvo Hypervisor"
+            color = "#FFA726"
+            bg_color = "rgba(255, 167, 38, 0.12)"
+        else:  # uncracked
+            text = "Denuvo Uncracked"
+            color = "#E57373"
+            bg_color = "rgba(229, 115, 115, 0.15)"
+ 
+        self.denuvo_badge.setText(text)
+        self.denuvo_badge.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 10px; "
+            f"padding: 3px 10px; "
+            f"font-size: 11px; "
+            f"font-weight: bold;"
+        )
+        self.denuvo_badge.show()
+
+    def update_proton_badge(self) -> None:
+        """Update the ProtonDB rating badge in-place."""
+        if not hasattr(self, "proton_badge") or not self.proton_badge:
+            return
+
+        appid = self.game_data.get("appid", "0")
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.proton_badge.hide()
+            return
+
+        from core.ratings import get_protondb_tier
+        tier = get_protondb_tier(appid)
+
+        if not tier:
+            # Currently loading asynchronously
+            self.proton_badge.setText("LOADING")
+            self.proton_badge.setStyleSheet(
+                "color: #888888; "
+                "background-color: rgba(255, 255, 255, 0.05); "
+                "border-radius: 3px; "
+                "padding: 4px 12px; "
+                "font-size: 10px; "
+                "font-weight: bold;"
+            )
+            self.proton_badge.show()
+            return
+
+        if tier == "unknown":
+            self.proton_badge.hide()
+            return
+
+        if tier == "platinum":
+            text = "PLATINUM"
+            color = "#0d47a1"
+            bg_color = "#b3e5fc"
+        elif tier == "gold":
+            text = "GOLD"
+            color = "#5d4037"
+            bg_color = "#ffd54f"
+        elif tier == "silver":
+            text = "SILVER"
+            color = "#263238"
+            bg_color = "#cfd8dc"
+        elif tier == "bronze":
+            text = "BRONZE"
+            color = "#4e342e"
+            bg_color = "#ffab91"
+        elif tier == "borked":
+            text = "BORKED"
+            color = "#ffffff"
+            bg_color = "#ef5350"
+        elif tier == "native":
+            text = "NATIVE"
+            color = "#1b5e20"
+            bg_color = "#a5d6a7"
+        else:
+            self.proton_badge.hide()
+            return
+
+        self.proton_badge.setText(text)
+        self.proton_badge.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 3px; "
+            f"padding: 4px 12px; "
+            f"font-size: 10px; "
+            f"font-weight: bold;"
+        )
+        self.proton_badge.show()
+
+
 
     def set_image(self, pixmap: QPixmap) -> None:
-        """Sets the image on the label, scaling it nicely."""
+        """Sets the image on the label, scaling it nicely with right-fade blend."""
         if not pixmap or pixmap.isNull():
             return
 
+        target_size = self.image_label.size()
         scaled = pixmap.scaled(
-            self.image_label.size(),
+            target_size,
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.image_label.setPixmap(scaled)
+
+        cropped_faded = QPixmap(target_size)
+        cropped_faded.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(cropped_faded)
+        dx = (target_size.width() - scaled.width()) // 2
+        dy = (target_size.height() - scaled.height()) // 2
+        painter.drawPixmap(dx, dy, scaled)
+
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        gradient = QLinearGradient(0, 0, target_size.width(), 0)
+        gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
+        gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
+        gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+        painter.fillRect(cropped_faded.rect(), QBrush(gradient))
+        painter.end()
+
+        self.image_label.setPixmap(cropped_faded)
+
+    def set_selected(self, selected: bool) -> None:
+        """Update the checkbox checked state visually."""
+        self._is_selected = selected
+        if self.checkbox is not None:
+            self.checkbox.setChecked(selected)
 
     def sizeHint(self) -> QSize:
         """Return size hint that matches the desired row height."""
-        return QSize(400, 118)
+        return QSize(400, 130)
+
+
+class BlurredHeaderWidget(QWidget):
+    """Custom widget containing a blurred background image and overlay."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bg_label = QLabel(self)
+        self.bg_label.setScaledContents(True)
+        self.overlay = QWidget(self)
+        self.overlay.setStyleSheet("background-color: rgba(0, 0, 0, 165);")
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.bg_label.setGeometry(0, 0, self.width(), self.height())
+        self.overlay.setGeometry(0, 0, self.width(), self.height())
 
 
 class GameLibraryDialog(QDialog):
@@ -210,8 +619,10 @@ class GameLibraryDialog(QDialog):
     goldberg_check_complete = pyqtSignal(bool)  # is_applied
     manifest_download_complete = pyqtSignal(str, str, dict)  # fpath, error, game_data
     uninstall_complete = pyqtSignal(bool, str)  # success, error_message
+    zip_parse_complete = pyqtSignal(object, str, dict, object, object)  # parsed_data, filepath, game_data, dialog, parse_progress
+    hubcap_status_check_complete = pyqtSignal(dict, dict, object, object)  # result, game_data, dialog, check_progress
 
-    def __init__(self, main_window):
+    def __init__(self, main_window, show_details_for_appid=None):
         super().__init__(main_window)
         self.main_window = main_window
         self.game_manager = getattr(main_window, "game_manager", None)
@@ -219,19 +630,28 @@ class GameLibraryDialog(QDialog):
         self.executor = ThreadPoolExecutor(max_workers=4)
 
         # Load theme colors
-        self.accent_color = "#C06C84"
-        self.background_color = "#000000"
+        self.accent_color = "#a1c9fd"
+        self.background_color = "#111318"
 
         if self.settings:
-            self.accent_color = self.settings.value("accent_color", "#C06C84")
-            self.background_color = self.settings.value("background_color", "#000000")
+            self.accent_color = self.settings.value("accent_color", "#a1c9fd")
+            self.background_color = self.settings.value("background_color", "#111318")
+        self.applist_2_0_enabled = True
+
+        # Search debounce timer
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.timeout.connect(self._refresh_game_list)
 
         # State tracking
         self._active_fetchers = {}
-        self._image_fetch_queue = []
+        self._image_fetch_queue = deque()
         self._max_concurrent_fetches = 5
         self._current_fetches = 0
         self._image_cache = {}
+        self._items_by_appid = {}
+        self._manifest_mtimes = {}
+        self._pending_image_fetches = []
         self._dialog_open = False
         self._refreshing = False
         self._closing = False
@@ -241,12 +661,23 @@ class GameLibraryDialog(QDialog):
         self._uninstall_progress_dialog = None
         self._details_dialog = None
 
+        # Multi-select state
+        self._select_mode = False
+        self._selected_appids: set = set()
+
         self._setup_window()
         self._setup_ui()
         self._connect_signals()
 
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
+
         # Initial Load
         self._refresh_game_list()
+
+        if show_details_for_appid:
+            QTimer.singleShot(0, lambda: self._show_details_for_appid(show_details_for_appid))
 
     def _setup_window(self) -> None:
         """Configure main window properties and styles."""
@@ -257,22 +688,30 @@ class GameLibraryDialog(QDialog):
 
         self.setStyleSheet(
             f"""
-            QDialog {{ background-color: {self.background_color}; color: {self.accent_color}; }}
+            QDialog {{ background-color: {self.background_color}; color: #FFFFFF; }}
             
             QListWidget {{ 
                 background-color: {self.background_color}; 
                 border: none; 
-                border-radius: 4px; 
+                padding: 10px 0px;
             }}
             QListWidget::item {{ 
-                border-bottom: 1px solid #333; 
-                color: {self.accent_color};
+                background-color: rgba(255, 255, 255, 0.03); 
+                border: 1px solid rgba(255, 255, 255, 0.08); 
+                border-radius: 12px;
+                margin: 6px 0px;
+                color: #FFFFFF;
+            }}
+            QListWidget::item:hover {{ 
+                background-color: rgba(255, 255, 255, 0.07); 
+                border-color: rgba(255, 255, 255, 0.16); 
             }}
             QListWidget::item:selected {{ 
-                background-color: #1A1A1A; 
+                background-color: rgba(255, 255, 255, 0.12); 
+                border-color: {self.accent_color}; 
             }}
             
-            QLabel {{ color: {self.accent_color}; }}
+            QLabel {{ color: rgba(255, 255, 255, 0.85); }}
             
             QComboBox {{ 
                 background-color: {self.background_color}; 
@@ -290,31 +729,292 @@ class GameLibraryDialog(QDialog):
         """
         )
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_selection_fab()
+
+    def _position_selection_fab(self):
+        if hasattr(self, "selection_fab") and self.selection_fab and self.selection_fab.isVisible():
+            self.selection_fab.adjustSize()
+            x = self.games_list.x() + self.games_list.width() - self.selection_fab.width() - 25
+            y = self.games_list.y() + self.games_list.height() - self.selection_fab.height() - 25
+            self.selection_fab.move(x, y)
+            self.selection_fab.raise_()
+
+    def _show_fab_menu(self):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtCore import QPoint
+        
+        menu = QMenu(self)
+        menu.setStyleSheet(self.styleSheet())
+        
+        act_update = menu.addAction("Update Selected")
+        act_uninstall = menu.addAction("Uninstall Selected")
+        
+        act_placeholder = menu.addAction("Placeholder Option")
+        act_placeholder.setEnabled(False)
+        
+        # Position menu above the FAB
+        pos = self.selection_fab.mapToGlobal(QPoint(0, -menu.sizeHint().height()))
+        selected = menu.exec(pos)
+        
+        if selected == act_update:
+            self._on_queue_selected()
+        elif selected == act_uninstall:
+            self._on_uninstall_selected()
+
+    def _on_uninstall_selected(self) -> None:
+        """Batch uninstall all selected games."""
+        if not self._selected_appids:
+            return
+
+        # Gather game data for selected appids
+        selected_games = []
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                selected_games.append(game_data)
+
+        if not selected_games:
+            return
+
+        game_names_str = "\n".join(f"\u2022 {g.get('game_name', 'Unknown')}" for g in selected_games[:10])
+        if len(selected_games) > 10:
+            game_names_str += f"\n\u2022 ...and {len(selected_games) - 10} more."
+
+        confirm_msg = (
+            f"Are you sure you want to uninstall the following {len(selected_games)} games?\n\n"
+            f"{game_names_str}\n\n"
+            "This will delete all files in the game directories and their Steam .acf files!"
+        )
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Batch Uninstall",
+            confirm_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        progress = QProgressDialog("Uninstalling games...", None, 0, len(selected_games), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        success_count = 0
+        failed_names = []
+
+        for idx, game_data in enumerate(selected_games):
+            progress.setLabelText(f"Uninstalling {game_data.get('game_name', 'game')}...")
+            progress.setValue(idx)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+            try:
+                success, err = self.game_manager.uninstall_game(
+                    game_data, remove_compatdata=False, remove_saves=False, remove_sls=False
+                )
+                if success:
+                    success_count += 1
+                else:
+                    failed_names.append(f"{game_data.get('game_name')} ({err})")
+            except Exception as e:
+                failed_names.append(f"{game_data.get('game_name')} ({e})")
+
+        progress.setValue(len(selected_games))
+        progress.close()
+
+        # Exit select mode and refresh list
+        self.select_mode_button.setChecked(False)
+        self._toggle_select_mode()
+        self._refresh_game_list()
+
+        if failed_names:
+            failed_str = "\n".join(failed_names[:10])
+            if len(failed_names) > 10:
+                failed_str += f"\n\u2022 ...and {len(failed_names) - 10} more."
+            QMessageBox.warning(
+                self,
+                "Uninstall Summary",
+                f"Successfully uninstalled {success_count} games.\n\n"
+                f"Failed to uninstall:\n{failed_str}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Uninstall Complete",
+                f"Successfully uninstalled all {success_count} selected games."
+            )
+
     def _setup_ui(self) -> None:
         """Create and arrange UI elements."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        applist_2_0_enabled = self.applist_2_0_enabled
 
         # --- Top Bar ---
         top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
 
         self.scan_button = QPushButton("Scan Libraries")
         self.scan_button.clicked.connect(self._scan_for_games)
-        top_layout.addWidget(self.scan_button)
 
-        top_layout.addStretch()
-
-        sort_label = QLabel("Sort by:")
-        top_layout.addWidget(sort_label)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search games..." if applist_2_0_enabled else "Filter games...")
+        self.search_input.textChanged.connect(self._on_search_changed)
 
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Recently Installed", "recently_installed")
+        self.sort_combo.addItem("Has Update First", "update_first")
+        self.sort_combo.addItem("DLC Only First", "dlc_only_first")
         self.sort_combo.addItem("Name (A-Z)", "name_asc")
         self.sort_combo.addItem("Name (Z-A)", "name_desc")
         self.sort_combo.addItem("Size (Smallest)", "size_asc")
         self.sort_combo.addItem("Size (Largest)", "size_desc")
         self.sort_combo.addItem("AppID", "appid")
+
+        # Load last saved sort option
+        if self.settings:
+            saved_sort = self.settings.value("library_sort_option", "recently_installed", type=str)
+            idx = self.sort_combo.findData(saved_sort)
+            if idx != -1:
+                self.sort_combo.setCurrentIndex(idx)
+
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
-        top_layout.addWidget(self.sort_combo)
+
+        self.select_mode_button = QPushButton("Select")
+        self.select_mode_button.setCheckable(True)
+        self.select_mode_button.setFixedWidth(80)
+        self.select_mode_button.clicked.connect(self._toggle_select_mode)
+
+        if applist_2_0_enabled:
+            self.search_input.setFixedWidth(220)
+            self.search_input.setFixedHeight(36)
+            self.search_input.setStyleSheet(
+                f"""
+                QLineEdit {{
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                }}
+                QLineEdit:focus {{
+                    border: 2px solid {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.08);
+                    padding: 0px 15px;
+                }}
+                """
+            )
+            self.sort_combo.setFixedHeight(36)
+            self.sort_combo.setStyleSheet(
+                f"""
+                QComboBox {{
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                }}
+                QComboBox:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: rgba(255, 255, 255, 0.2);
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: 0px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {self.background_color};
+                    color: #FFFFFF;
+                    selection-background-color: rgba(255, 255, 255, 0.12);
+                    selection-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 8px;
+                    padding: 4px;
+                }}
+                """
+            )
+            self.select_mode_button.setFixedWidth(85)
+            self.select_mode_button.setFixedHeight(36)
+            self.select_mode_button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: rgba(255, 255, 255, 0.2);
+                }}
+                QPushButton:checked {{
+                    background-color: {self.accent_color};
+                    color: #000000;
+                    border: none;
+                }}
+                """
+            )
+            top_layout.addWidget(self.search_input)
+            top_layout.addStretch()
+
+            # Scan Imports button
+            self.scan_imports_button = QPushButton("Scan for LUA")
+            self.scan_imports_button.setToolTip(
+                "Scan for user-provided .lua files in the cached_luas folder "
+                "that are not yet registered in the library"
+            )
+            self.scan_imports_button.setFixedHeight(36)
+            self.scan_imports_button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: rgba(255, 255, 255, 0.2);
+                }}
+                QPushButton:pressed {{
+                    background-color: {self.accent_color};
+                    color: #000000;
+                    border: none;
+                }}
+                """
+            )
+            self.scan_imports_button.clicked.connect(self._on_scan_imports_clicked)
+            top_layout.addWidget(self.scan_imports_button)
+
+            top_layout.addWidget(QLabel("Sort by:"))
+            top_layout.addWidget(self.sort_combo)
+            top_layout.addWidget(self.select_mode_button)
+        else:
+            self.search_input.setFixedWidth(150)
+            top_layout.addWidget(self.scan_button)
+            top_layout.addStretch()
+            top_layout.addWidget(QLabel("Search:"))
+            top_layout.addWidget(self.search_input)
+            top_layout.addWidget(QLabel("Sort by:"))
+            top_layout.addWidget(self.sort_combo)
+            top_layout.addWidget(self.select_mode_button)
 
         layout.addLayout(top_layout)
 
@@ -322,9 +1022,41 @@ class GameLibraryDialog(QDialog):
         self.games_list = QListWidget()
         self.games_list.setSpacing(2)
         self.games_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.games_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.games_list)
 
-        # --- Footer ---
+        # --- Selection FAB (floating button) ---
+        self.selection_fab = QPushButton("Actions  ▼", self)
+        self.selection_fab.setVisible(False)
+        self.selection_fab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.selection_fab.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                border: none;
+                border-radius: 18px;
+                padding: 8px 16px;
+                font-size: 9.5pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            """
+        )
+        self.selection_fab.clicked.connect(self._show_fab_menu)
+
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        from PyQt6.QtGui import QColor
+        shadow = QGraphicsDropShadowEffect(self.selection_fab)
+        shadow.setBlurRadius(15)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setOffset(0, 4)
+        self.selection_fab.setGraphicsEffect(shadow)
+
+        # --- Status Footer ---
         self.info_label = QLabel("Found 0 installed Steam games")
         layout.addWidget(self.info_label)
 
@@ -342,11 +1074,17 @@ class GameLibraryDialog(QDialog):
         self.game_manager.game_update_status_changed.connect(
             self._on_game_update_status_changed, Qt.ConnectionType.UniqueConnection
         )
+        self.game_manager.all_updates_checked.connect(
+            self._on_all_updates_checked, Qt.ConnectionType.UniqueConnection
+        )
 
         self.games_list.itemClicked.connect(self._on_item_selected)
+        self.games_list.customContextMenuRequested.connect(self._show_games_list_context_menu)
         self.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.manifest_download_complete.connect(self._on_manifest_download_complete)
         self.uninstall_complete.connect(self._on_uninstall_complete)
+        self.zip_parse_complete.connect(self._on_zip_parse_complete)
+        self.hubcap_status_check_complete.connect(self._on_hubcap_status_check_complete)
 
     # --- Scanning & Updates ---
 
@@ -368,32 +1106,21 @@ class GameLibraryDialog(QDialog):
         self.scan_button.setText("Scan Libraries")
 
         if count > 0:
+            # Update checks are triggered separately; wait for all_updates_checked signal
             self._checking_updates = True
-            QTimer.singleShot(100, self._check_if_updates_complete)
+            self.info_label.setText(
+                f"Found {count} game(s) — checking for updates..."
+            )
             return
 
         self.info_label.setText(f"Scan complete: Found {count} installed Steam game(s).")
         self._scanning = False
-        # Force refresh to clear "Scanning..." state if 0 found
         self._refresh_game_list()
 
-    def _check_if_updates_complete(self) -> None:
+    def _on_all_updates_checked(self) -> None:
+        """Called when the full batch update check finishes (replaces the 500ms polling loop)."""
         if not self._checking_updates:
             return
-
-        # Check if any items are still in "checking" state
-        checking = False
-        for i in range(self.games_list.count()):
-            item = self.games_list.item(i)
-            game_data = item.data(Qt.ItemDataRole.UserRole)
-            if game_data and game_data.get("update_status") == "checking":
-                checking = True
-                break
-
-        if checking:
-            QTimer.singleShot(500, self._check_if_updates_complete)
-            return
-
         self._checking_updates = False
         self._scanning = False
         self._refresh_game_list()
@@ -424,28 +1151,305 @@ class GameLibraryDialog(QDialog):
         game_data["update_status"] = update_status
         item.setData(Qt.ItemDataRole.UserRole, game_data)
 
-        # Update widget
+        # Update widget in-place directly
         widget = self.games_list.itemWidget(item)
-        if not isinstance(widget, GameItemWidget):
-            return
-
-        size_str = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
-        new_widget = GameItemWidget(
-            game_data, size_str, self.accent_color, self.background_color
-        )
-
-        # Preserve image if it was loaded
-        if appid in self._image_cache:
-            pixmap = QPixmap()
-            pixmap.loadFromData(self._image_cache[appid])
-            new_widget.set_image(pixmap)
-
-        self.games_list.setItemWidget(item, new_widget)
+        if isinstance(widget, GameItemWidget):
+            widget.update_status(update_status)
 
     # --- List Management ---
 
     def _on_sort_changed(self) -> None:
+        if self.settings:
+            sort_option = self.sort_combo.currentData()
+            self.settings.setValue("library_sort_option", sort_option)
         self._refresh_game_list()
+
+    def _on_search_changed(self) -> None:
+        self.search_timer.start(300)
+
+    def _on_scan_imports_clicked(self) -> None:
+        """Handle the Scan Imports button click — scan cached_luas/ for unregistered lua files."""
+        try:
+            from managers.import_manager import ImportManager
+        except ImportError:
+            QMessageBox.critical(self, "Error", "Import manager module not found.")
+            return
+
+        self.scan_imports_button.setEnabled(False)
+        self.scan_imports_button.setText("Scanning...")
+
+        def _scan_in_background():
+            try:
+                mgr = ImportManager()
+                results = mgr.scan_unregistered_luas()
+                QMetaObject.invokeMethod(
+                    self, "_on_scan_imports_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(list, results),
+                )
+            except Exception as e:
+                logger.error(f"[ScanImports] Scan failed: {e}", exc_info=True)
+                QMetaObject.invokeMethod(
+                    self, "_on_scan_imports_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(list, []),
+                )
+
+        self.executor.submit(_scan_in_background)
+
+    @pyqtSlot(list)
+    def _on_scan_imports_complete(self, results: list) -> None:
+        """Handle scan results on the main thread."""
+        self.scan_imports_button.setEnabled(True)
+        self.scan_imports_button.setText("Scan for LUA")
+
+        if not results:
+            QMessageBox.information(
+                self, "Scan Complete",
+                "No new .lua files found in the cached_luas folder.\n\n"
+                "To import a game, place its .lua file in:\n"
+                f"{get_base_path() / 'cached_luas'}"
+            )
+            return
+
+        # Show results dialog
+        self._show_import_results_dialog(results)
+
+    def _show_import_results_dialog(self, results: list) -> None:
+        """Show a dialog listing discovered unregistered luas with import options."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Import Scanner — {len(results)} game(s) found")
+        dialog.setMinimumWidth(550)
+        dialog.setMinimumHeight(350)
+        dialog.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {self.background_color};
+                color: #FFFFFF;
+            }}
+            QLabel {{
+                color: rgba(255, 255, 255, 0.85);
+            }}
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.08);
+            }}
+            QListWidget {{
+                background-color: transparent;
+                border: none;
+            }}
+            QListWidget::item {{
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                margin: 4px 0px;
+                padding: 10px;
+                color: #FFFFFF;
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border-color: {self.accent_color};
+            }}
+            """
+        )
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QLabel(
+            f"Found {len(results)} game(s) with .lua files not yet registered in your library.\n"
+            "Select a game to import, or Import All."
+        )
+        header.setWordWrap(True)
+        header.setStyleSheet("font-size: 13px; color: rgba(255,255,255,0.75);")
+        layout.addWidget(header)
+
+        result_list = QListWidget()
+        result_list.setSpacing(2)
+        for r in results:
+            status_icon = "✅" if r["has_manifest_zip"] else "⚠️"
+            status_text = "Ready (zip found)" if r["has_manifest_zip"] else "Needs API fetch"
+            item_text = (
+                f"{r['game_name']}  (AppID: {r['appid']})\n"
+                f"  {status_icon} {status_text}  |  {r['depot_count']} depot key(s)"
+            )
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, r)
+            result_list.addItem(item)
+        layout.addWidget(result_list)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        import_selected_btn = QPushButton("Import Selected")
+        import_selected_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ opacity: 0.9; }}
+            """
+        )
+
+        import_all_btn = QPushButton("Import All")
+        close_btn = QPushButton("Close")
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(import_selected_btn)
+        btn_layout.addWidget(import_all_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        close_btn.clicked.connect(dialog.close)
+
+        def _import_selected():
+            current = result_list.currentItem()
+            if not current:
+                QMessageBox.warning(dialog, "No Selection", "Please select a game to import.")
+                return
+            data = current.data(Qt.ItemDataRole.UserRole)
+            dialog.close()
+            self._execute_import([data])
+
+        def _import_all():
+            all_items = []
+            for i in range(result_list.count()):
+                all_items.append(result_list.item(i).data(Qt.ItemDataRole.UserRole))
+            dialog.close()
+            self._execute_import(all_items)
+
+        import_selected_btn.clicked.connect(_import_selected)
+        import_all_btn.clicked.connect(_import_all)
+        dialog.exec()
+
+    def _execute_import(self, items: list) -> None:
+        """Execute the import workflow for a list of scan results."""
+        if not items:
+            return
+
+        progress = QProgressDialog(
+            f"Importing {len(items)} game(s)...", "Cancel", 0, len(items), self
+        )
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        def _import_in_background():
+            try:
+                from managers.import_manager import ImportManager
+                mgr = ImportManager()
+                results = []
+
+                for idx, item in enumerate(items):
+                    if progress.wasCanceled():
+                        break
+
+                    appid = item["appid"]
+                    lua_path = Path(item["lua_path"])
+                    game_name = item.get("game_name", f"App {appid}")
+
+                    logger.info(f"[ScanImports] Processing import for {game_name} ({appid})")
+
+                    # Step 1: Import lua (parse, inject DB, check counterpart)
+                    import_result = mgr.import_lua(lua_path)
+
+                    if import_result.get("status") == "error":
+                        results.append({
+                            "appid": appid, "game_name": game_name,
+                            "status": "error", "error": import_result.get("error", "Unknown error"),
+                        })
+                        continue
+
+                    # Step 2: Resolve missing counterpart if needed
+                    if import_result.get("needs_api"):
+                        api_type = import_result["api_type"]
+                        logger.info(
+                            f"[ScanImports] Resolving counterpart for {appid} via {api_type} API"
+                        )
+                        sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
+                        zip_path, error = mgr.resolve_missing_counterpart(appid, api_type, branch=sel_b)
+                        if error:
+                            results.append({
+                                "appid": appid, "game_name": game_name,
+                                "status": "api_error", "error": error,
+                                "api_type": api_type,
+                            })
+                            continue
+                        import_result["zip_path"] = zip_path
+                        import_result["status"] = "ready"
+
+                    results.append({
+                        "appid": appid,
+                        "game_name": game_name,
+                        "status": import_result["status"],
+                        "zip_path": import_result.get("zip_path"),
+                    })
+
+                QMetaObject.invokeMethod(
+                    self, "_on_import_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(list, results),
+                )
+            except Exception as e:
+                logger.error(f"[ScanImports] Import failed: {e}", exc_info=True)
+                QMetaObject.invokeMethod(
+                    self, "_on_import_complete",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(list, [{"status": "error", "error": str(e)}]),
+                )
+
+        self.executor.submit(_import_in_background)
+
+    @pyqtSlot(list)
+    def _on_import_complete(self, results: list) -> None:
+        """Handle import results on the main thread."""
+        if not results:
+            return
+
+        ready_count = sum(1 for r in results if r.get("status") == "ready")
+        error_count = sum(1 for r in results if r.get("status") in ("error", "api_error"))
+
+        summary_parts = []
+        for r in results:
+            appid = r.get("appid", "?")
+            name = r.get("game_name", f"App {appid}")
+            if r["status"] == "ready":
+                summary_parts.append(f"✅ {name} (AppID {appid}) — Ready")
+            elif r["status"] == "error":
+                summary_parts.append(f"❌ {name} (AppID {appid}) — {r.get('error', 'Failed')}")
+            elif r["status"] == "api_error":
+                summary_parts.append(
+                    f"⚠️ {name} (AppID {appid}) — API fetch failed: {r.get('error', 'Unknown')}"
+                )
+
+        summary_text = "\n".join(summary_parts)
+        msg_title = "Import Complete"
+        if error_count > 0 and ready_count == 0:
+            msg_title = "Import Failed"
+
+        QMessageBox.information(
+            self, msg_title,
+            f"Import results ({ready_count} ready, {error_count} failed):\n\n{summary_text}\n\n"
+            "Games marked as 'Ready' are now registered and can be downloaded\n"
+            "from the main AppID entry or will appear in update checks."
+        )
+
+        # Refresh the game list to show any newly available games
+        self._refresh_game_list()
+
 
     @staticmethod
     def _get_sort_key(game, sort_option):
@@ -469,6 +1473,14 @@ class GameLibraryDialog(QDialog):
             if path and os.path.exists(path):
                 return os.path.getmtime(path)
             return 0
+        if sort_option == "update_first":
+            # Games with an update available sort first (0), then everything else (1)
+            has_update = game.get("update_status") == "update_available"
+            return (0 if has_update else 1, game.get("game_name", "").lower())
+        if sort_option == "dlc_only_first":
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc = is_dlc_only_mode(str(game.get("appid", "")))
+            return (0 if is_dlc else 1, game.get("game_name", "").lower())
         return game.get("game_name", "").lower()
 
     def _sort_games(self, games: list) -> list:
@@ -485,36 +1497,105 @@ class GameLibraryDialog(QDialog):
             return
 
         self._refreshing = True
+
+        # Cancel any active image fetches and clear the queue
+        for fetcher in list(self._active_fetchers.values()):
+            try:
+                fetcher.stop()
+            except Exception:
+                pass
+        self._active_fetchers.clear()
+        self._image_fetch_queue.clear()
+        self._pending_image_fetches.clear()
+        self._current_fetches = 0
+
         self.games_list.clear()
+        self._items_by_appid.clear()
+        self._manifest_mtimes.clear()
+
+        # Pre-scan manifests directory for mtimes
+        try:
+            from utils.helpers import get_base_path
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            if manifests_dir.exists():
+                with os.scandir(manifests_dir) as entries:
+                    for entry in entries:
+                        if entry.is_file() and entry.name.startswith("accela_fetch_") and entry.name.endswith(".zip"):
+                            parts = entry.name.split("_")
+                            if len(parts) >= 3:
+                                appid_part = parts[2].split(".")[0]
+                                try:
+                                    self._manifest_mtimes[appid_part] = entry.stat().st_mtime
+                                except Exception:
+                                    pass
+        except Exception as e:
+            logger.warning(f"Failed to pre-scan hubcap_manifests: {e}")
 
         if not self.game_manager:
             self._refreshing = False
             return
 
         games = self.game_manager.get_all_games()
+        
+        # Filter games by search term (case-insensitive)
+        has_filter = False
+        if hasattr(self, "search_input"):
+            query = self.search_input.text().strip().lower()
+            if query:
+                games = [g for g in games if query in g.get("game_name", "").lower()]
+                has_filter = True
+
         games = self._sort_games(games)
+        
+        # Limit displayed games count when filtering to prevent heavy UI layout lag
+        truncated = False
+        if has_filter and len(games) > 150:
+            showing_games = games[:150]
+            truncated = True
+        else:
+            showing_games = games
+
         total_size = 0
         accela_count = 0
 
-        for game in games:
+        for game in showing_games:
             if game.get("is_accela_install"):
                 accela_count += 1
             total_size += self._add_game_to_list(game)
 
-        self.info_label.setText(
-            f"Found {len(games)} Steam game(s) ({accela_count} ACCELA-managed) - "
-            f"Total Size: {GameLibraryDialog._format_size(total_size)}"
-        )
+        if truncated:
+            self.info_label.setText(
+                f"Showing top 150 of {len(games)} game(s) ({accela_count} ACCELA-managed) - "
+                f"Please refine your search query."
+            )
+        else:
+            self.info_label.setText(
+                f"Found {len(games)} Steam game(s) ({accela_count} ACCELA-managed) - "
+                f"Total Size: {GameLibraryDialog._format_size(total_size)}"
+            )
         self._refreshing = False
+
+        # Defer image downloads first (100ms), then ratings badges (300ms).
+        # This keeps widget construction and layout completely free of any
+        # network/lock/thread work.
+        QTimer.singleShot(100, self._start_pending_image_fetches)
+        QTimer.singleShot(300, self._populate_ratings_badges)
+
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
         size = game.get("size_on_disk", 0)
+        appid = str(game.get("appid", "0"))
+        is_selected = appid in self._selected_appids
         widget = GameItemWidget(
             game,
             GameLibraryDialog._format_size(size),
             self.accent_color,
             self.background_color,
+            select_mode=self._select_mode,
+            is_selected=is_selected,
+            applist_2_0_enabled=self.applist_2_0_enabled,
+            parent_dialog=self,
         )
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, game)
@@ -522,11 +1603,15 @@ class GameLibraryDialog(QDialog):
         self.games_list.addItem(item)
         self.games_list.setItemWidget(item, widget)
 
+        # Save to lookup index
+        if appid not in ("0", "N/A", "unknown"):
+            self._items_by_appid[appid] = item
+
         app_id = str(game.get("appid", "0"))
         if app_id in ("0", "N/A", "unknown"):
             self.executor.submit(self._resolve_and_update_item, item, game)
         else:
-            self._fetch_item_image(item, app_id)
+            self._pending_image_fetches.append((item, app_id))
 
         return size
 
@@ -539,6 +1624,54 @@ class GameLibraryDialog(QDialog):
             QTimer.singleShot(
                 0, lambda: self._update_item_with_resolved_id(item, game_data)
             )
+
+    def _start_pending_image_fetches(self) -> None:
+        """Sequential start of delayed image fetches."""
+        if self._closing or not hasattr(self, "_pending_image_fetches"):
+            return
+        for item, app_id in self._pending_image_fetches:
+            self._fetch_item_image(item, app_id)
+        self._pending_image_fetches.clear()
+
+    def _populate_ratings_badges(self) -> None:
+        """
+        Called once after the game list is fully drawn.
+        1) Immediately paints any already-cached Denuvo + ProtonDB badges
+           (in-memory reads, zero I/O on the GUI thread).
+        2) Queues background ProtonDB fetches for uncached games via the
+           single sequential worker — one request at a time, no burst.
+        """
+        if self._closing:
+            return
+
+        from core.ratings import prefetch_protondb_for_appids
+
+        appids_to_prefetch = []
+        count = self.games_list.count()
+        for i in range(count):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            widget = self.games_list.itemWidget(item)
+            if not isinstance(widget, GameItemWidget):
+                continue
+            # Paint Denuvo badge immediately (in-memory, instant)
+            widget.update_denuvo_badge()
+            # Paint ProtonDB badge if already cached (in-memory, instant);
+            # if not cached, update_proton_badge() returns after hiding the badge.
+            widget.update_proton_badge()
+            # Collect appid for background prefetch
+            appid = str(widget.game_data.get("appid", "0"))
+            if appid and appid not in ("0", "N/A", "unknown"):
+                appids_to_prefetch.append(appid)
+
+        # Hand off uncached appids to the background worker queue.
+        # The worker will process them sequentially with a 200ms sleep between
+        # each request, then fire a debounced UI refresh when done.
+        if appids_to_prefetch:
+            prefetch_protondb_for_appids(appids_to_prefetch)
+
+
 
     @staticmethod
     def _resolve_appid_by_name(name: str) -> str | None:
@@ -566,11 +1699,14 @@ class GameLibraryDialog(QDialog):
         if self._closing:
             return
         item.setData(Qt.ItemDataRole.UserRole, game_data)
+        appid = game_data.get("appid")
+        if appid and appid not in ("0", "N/A", "unknown"):
+            self._items_by_appid[appid] = item
         self._fetch_item_image(item, game_data["appid"])
 
     def _on_item_selected(self, item: QListWidgetItem) -> None:
         """Handle click on list item."""
-        if self._dialog_open or self._refreshing:
+        if self._refreshing:
             return
 
         if not item:
@@ -580,11 +1716,266 @@ class GameLibraryDialog(QDialog):
         if not game_data:
             return
 
+        # In select mode: toggle selection, don't open dialog
+        if self._select_mode:
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                self._selected_appids.discard(appid)
+            else:
+                self._selected_appids.add(appid)
+            # Update checkbox visual on the widget
+            widget = self.games_list.itemWidget(item)
+            if isinstance(widget, GameItemWidget):
+                widget.set_selected(appid in self._selected_appids)
+            self._update_selection_footer()
+            return
+
+        if self._dialog_open:
+            return
+
         # Debounce
         self._dialog_open = True
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
 
         self._show_game_details_dialog(game_data)
+
+    # --- Select Mode ---
+
+    def _toggle_select_mode(self) -> None:
+        """Enable or disable multi-select mode."""
+        self._select_mode = self.select_mode_button.isChecked()
+        if not self._select_mode:
+            self._selected_appids.clear()
+
+        self._update_selection_footer()
+        self._refresh_game_list()
+
+    def _update_selection_footer(self) -> None:
+        """Update the selection FAB state and count."""
+        count = len(self._selected_appids)
+        if self._select_mode and count > 0:
+            self.selection_fab.setText(f"Actions ({count})  ▼")
+            self.selection_fab.setVisible(True)
+            self._position_selection_fab()
+        else:
+            self.selection_fab.setVisible(False)
+
+    def _clear_selection(self) -> None:
+        """Clear all selections and refresh visual state."""
+        self._selected_appids.clear()
+        self._update_selection_footer()
+        # Update all visible checkboxes
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            widget = self.games_list.itemWidget(item)
+            if isinstance(widget, GameItemWidget):
+                widget.set_selected(False)
+
+    def _on_queue_selected(self) -> None:
+        """Directly enqueue selected games without any intermediate dialog."""
+        if not self._selected_appids:
+            return
+
+        # Gather game data for selected appids
+        selected_games = []
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                selected_games.append(game_data)
+
+        if not selected_games:
+            return
+
+        # Disable the button so it can't be double-clicked
+        self.selection_fab.setEnabled(False)
+        self.selection_fab.setText("Queueing...")
+        self.info_label.setText(f"Queueing {len(selected_games)} game(s)...")
+
+        # Exit select mode immediately
+        self.select_mode_button.setChecked(False)
+        self._toggle_select_mode()
+
+        # Run the heavy work (zip parse + depot resolve) off the main thread
+        import threading
+        threading.Thread(
+            target=self._enqueue_games_background,
+            args=(selected_games,),
+            daemon=True
+        ).start()
+
+    def _enqueue_games_background(self, selected_games: list) -> None:
+        """Background thread: enqueue each game using the normal download+depot flow."""
+        queued_count = 0
+        total = len(selected_games)
+        for i, game_data in enumerate(selected_games):
+            appid = str(game_data.get("appid", "0"))
+            if appid in ("0", "N/A", "unknown"):
+                logger.warning(f"Skipping batch queue for game with invalid appid: {game_data.get('game_name')}")
+                continue
+            try:
+                success = self._enqueue_single_game(game_data)
+                if success:
+                    queued_count += 1
+            except Exception as e:
+                logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
+
+        # Update UI back on main thread
+        QMetaObject.invokeMethod(
+            self,
+            "_on_enqueue_finished",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(int, queued_count),
+            Q_ARG(int, total),
+        )
+
+    @pyqtSlot(int, int)
+    def _on_enqueue_finished(self, queued_count: int, total: int) -> None:
+        """Called on main thread after background enqueueing is done."""
+        if queued_count > 0:
+            self.info_label.setText(f"\u2713 Queued {queued_count} of {total} game(s) \u2014 downloads starting.")
+        else:
+            self.info_label.setText("Nothing queued. Check App IDs are valid.")
+
+    def _enqueue_single_game(self, game_data: dict) -> bool:
+        """Enqueue a single game through the manifest fetch + depot selection flow."""
+        try:
+            appid = str(game_data.get("appid", "0"))
+            name = game_data.get("game_name", "Unknown")
+            update_status = game_data.get("update_status")
+
+            from utils.helpers import get_base_path
+            from core import morrenus_api as _api
+            from utils.settings import get_settings
+            settings = get_settings()
+
+            # Check local cache first
+            local_path = None
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
+
+            if fpath.exists() and (update_status != "update_available" or is_fresh):
+                local_path = str(fpath)
+
+            if not local_path:
+                # Download manifest
+                fpath, error = _api.download_manifest(appid)
+                if error or not fpath:
+                    logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
+                    return False
+                local_path = str(fpath)
+                # Manifest is fresh now
+                settings.setValue(f"manifest_is_fresh/{appid}", True)
+                latest_id = settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                if latest_id:
+                    settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
+
+            # Parse for depots
+            from core.tasks.process_zip_task import ProcessZipTask
+
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(local_path)
+
+            metadata = {
+                "appid": appid,
+                "library_path": game_data.get("library_path"),
+                "install_path": game_data.get("install_path"),
+                "game_name": name,
+            }
+
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                depots = parsed_data.get("depots")
+
+                selected_depots = None
+
+                # Smart selection logic
+                import json
+                smart_active = settings.value("smart_depot_selection", False, type=bool)
+                val = settings.value(f"depot_selection/{appid}", "", type=str)
+                should_prompt = True
+
+                if smart_active and val:
+                    try:
+                        data = json.loads(val)
+                        cached_selected = data.get("selected", [])
+                        cached_all = data.get("all_available", [])
+                        current_depots = list(depots.keys())
+                        has_new_depot = any(d not in cached_all for d in current_depots)
+                        if not has_new_depot:
+                            selected_depots = [d for d in cached_selected if d in depots]
+                            should_prompt = False
+                            logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
+                    except Exception as e:
+                        logger.warning(f"Error parsing cached depot selection: {e}")
+
+                if should_prompt:
+                    if auto_skip and len(depots) == 1:
+                        selected_depots = list(depots.keys())
+                    else:
+                        # Depot dialog must run on the main thread
+                        result_holder = [None]
+                        done_event = __import__("threading").Event()
+
+                        def _show_depot_dialog():
+                            try:
+                                depot_dialog = DepotSelectionDialog(
+                                    parsed_data["appid"],
+                                    parsed_data.get("game_name", name),
+                                    depots,
+                                    parsed_data.get("header_url"),
+                                    self.main_window,
+                                )
+                                if depot_dialog.exec():
+                                    result_holder[0] = depot_dialog.get_selected_depots()
+                            finally:
+                                done_event.set()
+
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_run_on_main_thread",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(object, _show_depot_dialog),
+                        )
+                        done_event.wait(timeout=120)
+                        selected_depots = result_holder[0]
+
+                if not selected_depots:
+                    logger.info(f"Batch queue: user cancelled depot selection for {name}")
+                    return False
+
+                metadata["selected_depots_list"] = selected_depots
+                # Cache the choice
+                try:
+                    settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                        })
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
+
+            self.main_window.job_queue.add_job(local_path, metadata)
+            logger.info(f"Batch queued: {name} (appid={appid})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Batch queue failed for {game_data.get('game_name')}: {e}", exc_info=True)
+            return False
+
+    @pyqtSlot(object)
+    def _run_on_main_thread(self, fn) -> None:
+        """Slot to execute a callable on the main thread (used by background enqueue thread)."""
+        fn()
 
     # --- Image Handling ---
 
@@ -603,7 +1994,7 @@ class GameLibraryDialog(QDialog):
         if not self._image_fetch_queue:
             return
 
-        app_id = self._image_fetch_queue.pop(0)
+        app_id = self._image_fetch_queue.popleft()
         self._current_fetches += 1
         
         QTimer.singleShot(0, lambda: self._do_fetch_image(app_id))
@@ -647,9 +2038,9 @@ class GameLibraryDialog(QDialog):
 
         self._image_cache[app_id] = image_data
 
-        # Find item and widget
-        for i in range(self.games_list.count()):
-            item = self.games_list.item(i)
+        # Find item and widget using O(1) lookup index
+        item = self._items_by_appid.get(app_id)
+        if item:
             self._update_item_image_if_match(item, app_id, image_data)
 
     def _check_appid_match(self, data: dict, app_id: str) -> bool:
@@ -724,270 +2115,14 @@ class GameLibraryDialog(QDialog):
     # --- Game Details Dialog ---
 
     def _show_game_details_dialog(self, game_data: dict) -> None:
-        """Show detailed game info in a tabbed dialog."""
-        self._details_dialog = QDialog(self)
-        self._details_dialog.setWindowTitle("Game Details")
-        self._details_dialog.setMinimumWidth(500)
-        self._details_dialog.setModal(True)
-
-        # Consistent styling using background_color
-        self._details_dialog.setStyleSheet(
-            self.styleSheet()
-            + f"""
-            QTabWidget::pane {{ border: none; background-color: {self.background_color}; }}
-            QTabBar::tab {{ 
-                background: {self.background_color}; 
-                color: #888; 
-                padding: 8px 16px; 
-            }}
-            QTabBar::tab:selected {{ 
-                color: {self.accent_color}; 
-                border-bottom: 2px solid {self.accent_color}; 
-            }}
-            QWidget {{ background-color: {self.background_color}; }}
-        """
-        )
-
-        main_layout = QVBoxLayout(self._details_dialog)
-        tab_widget = QTabWidget()
-
-        self._create_overview_tab(tab_widget, game_data, self._details_dialog)
-        self._create_uninstall_tab(tab_widget, game_data, self._details_dialog)
-        self._create_tools_tab(tab_widget, game_data, self._details_dialog)
-
-        main_layout.addWidget(tab_widget)
-        self._details_dialog.exec()
-        self._details_dialog = None
-
-    def _create_overview_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Overview tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(15)
-
-        # Header Info
-        name_lbl = QLabel(format_game_display_name(game_data))
-        name_lbl.setStyleSheet(
-            f"font-size: 20px; font-weight: bold; color: {self.accent_color};"
-        )
-        layout.addWidget(name_lbl)
-
-        status_text = {
-            "update_available": "New version available",
-            "up_to_date": "Up to date",
-            "checking": "Checking for updates...",
-        }.get(game_data.get("update_status"), "Unknown")
-
-        status_lbl = QLabel(status_text)
-        status_lbl.setStyleSheet(f"color: {self.accent_color}; font-style: italic;")
-        layout.addWidget(status_lbl)
-
-        # Info Grid
-        form = QFormLayout()
-
-        def _lbl(text):
-            label = QLabel(text)
-            label.setStyleSheet(f"color: {self.accent_color};")
-            return label
-
-        form.addRow(_lbl("App ID:"), _lbl(str(game_data.get("appid"))))
-        form.addRow(_lbl("Source:"), _lbl(str(game_data.get("source", "Steam"))))
-        size = GameLibraryDialog._format_size(game_data.get("size_on_disk", 0))
-        form.addRow(_lbl("Size:"), _lbl(size))
-        form.addRow(_lbl("Path:"), _lbl(str(game_data.get("install_path"))))
-        layout.addLayout(form)
-
-        # Linux FakeAppID
-        if platform.system() == "Linux":
-            self._add_fake_appid_controls(layout, game_data)
-
-        # Validate/Update Button
-        validate_btn = QPushButton()
-        is_update = game_data.get("update_status") == "update_available"
-        validate_btn.setText("Download Update" if is_update else "Validate Files")
-        validate_btn.clicked.connect(
-            lambda: self._fetch_game_manifest(game_data, dialog)
-        )
-        layout.addWidget(validate_btn)
-
-        # Footer Actions
-        btn_layout = QHBoxLayout()
-        open_btn = QPushButton("Open Folder")
-        open_btn.clicked.connect(
-            lambda: GameLibraryDialog._open_folder(game_data.get("install_path"))
-        )
-        btn_layout.addWidget(open_btn)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addStretch()
-        layout.addLayout(btn_layout)
-        tab_widget.addTab(tab, "Overview")
-
-    def _add_fake_appid_controls(self, layout, game_data) -> None:
-        """Helper to add Linux FakeAppID UI controls."""
-        if not is_slssteam_config_management_enabled():
-            return
-
-        hbox = QHBoxLayout()
-        checkbox = QCheckBox("Add to SLSonline as:")
-        checkbox.setStyleSheet(f"color: {self.accent_color};")
-        checkbox.setToolTip("Add to FakeAppIds in SLSsteam config.yaml")
-        hbox.addWidget(checkbox)
-
-        hbox.addStretch()
-
-        inp = QLineEdit()
-        inp.setPlaceholderText("Spacewar (480)")
-        inp.setFixedWidth(150)
-        inp.setValidator(QIntValidator())
-        hbox.addWidget(inp)
-
-        save_btn = QPushButton("Save")
-        save_btn.setFixedWidth(70)
-        hbox.addWidget(save_btn)
-
-        layout.addLayout(hbox)
-
-        appid = str(game_data.get("appid", "0"))
-        if appid in ("0", "N/A", "unknown", "480"):
-            checkbox.setEnabled(False)
-            inp.setEnabled(False)
-            save_btn.setEnabled(False)
-            return
-
-        # Check initial state
-        config = get_user_config_path()
-        if config.exists():
-            existing_fake_id = get_fake_appid(config, appid)
-            if existing_fake_id:
-                checkbox.setChecked(True)
-                inp.setText(existing_fake_id)
-            else:
-                checkbox.setChecked(False)
-
-        # Connect logic
-        def _toggle(state):
-            fake_id = inp.text().strip() or "480"
-            name = game_data.get("game_name", "Unknown")
-            if state == Qt.CheckState.Checked.value:
-                # Ensure clean slate
-                current_in_config = get_fake_appid(config, appid)
-                if current_in_config:
-                    remove_fake_app_id(config, appid, current_in_config)
-
-                if not add_fake_app_id(config, appid, name, fake_id):
-                    checkbox.setChecked(False)
-            else:
-                current_in_config = get_fake_appid(config, appid)
-                if current_in_config:
-                    if not remove_fake_app_id(config, appid, current_in_config):
-                        checkbox.setChecked(True)
-
-        def _update_fake_id():
-            if checkbox.isChecked():
-                fake_id = inp.text().strip() or "480"
-                name = game_data.get("game_name", "Unknown")
-
-                current_fake_id = get_fake_appid(config, appid)
-                if current_fake_id:
-                    remove_fake_app_id(config, appid, current_fake_id)
-
-                add_fake_app_id(config, appid, name, fake_id)
-                QMessageBox.information(self, "Success", "AppID updated successfully.")
-
-        checkbox.stateChanged.connect(_toggle)
-        save_btn.clicked.connect(_update_fake_id)
-
-    def _create_uninstall_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Uninstall tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        lbl = QLabel("Remove this game and its files?")
-        lbl.setStyleSheet(f"color: {self.accent_color};")
-        layout.addWidget(lbl)
-
-        opts = {}
-        if platform.system() == "Linux":
-            opts["compat"] = QCheckBox("Remove Proton/Wine Data")
-            opts["saves"] = QCheckBox("Remove Cloud Saves")
-            opts["compat"].setStyleSheet(f"color: {self.accent_color};")
-            opts["saves"].setStyleSheet(f"color: {self.accent_color};")
-            layout.addWidget(opts["compat"])
-            layout.addWidget(opts["saves"])
-
-        btn = QPushButton("Uninstall Game")
-        btn.clicked.connect(lambda: self._uninstall_game(game_data, dialog, opts))
-        layout.addWidget(btn)
-        layout.addStretch()
-
-        tab_widget.addTab(tab, "Uninstall")
-
-    def _create_tools_tab(self, tab_widget, game_data, dialog) -> None:
-        """Helper to create the Tools tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        path = game_data.get("install_path")
-        name = game_data.get("game_name")
-        appid = str(game_data.get("appid", ""))
-
-        # Steamless
-        sl_btn = QPushButton("Remove DRM (Steamless)")
-        sl_btn.clicked.connect(
-            lambda: self.main_window.task_manager.run_steamless_for_game(path, name)
-        )
-        layout.addWidget(sl_btn)
-
-        # Steamless AIO
-        sl_aio_btn = QPushButton("Remove DRM (Steamless-AIO)")
-        sl_aio_btn.clicked.connect(
-            lambda: self.main_window.task_manager.run_steamless_aio_for_game(path, name)
-        )
-        layout.addWidget(sl_aio_btn)
-
-        # ACF Fix
-        fix_btn = QPushButton("Fix Install (Remove .acf)")
-        fix_btn.clicked.connect(lambda: self._fix_game_install(game_data))
-        layout.addWidget(fix_btn)
-
-        # Goldberg
-        self.gb_btn = QPushButton("Checking Goldberg status...")
-        self.gb_btn.setEnabled(False)
-        layout.addWidget(self.gb_btn)
-
-        # Start background check
-        self.executor.submit(self._check_goldberg_async, path)
-
-        def _on_gb_click():
-            if not self.main_window or not self.main_window.task_manager:
-                return
-
-            # Re-check status synchronously for the action (since we need current state)
-            # Or better, rely on button text/state which we updated
-            is_applied = "Remove" in self.gb_btn.text()
-
-            if is_applied:
-                self.main_window.task_manager.remove_goldberg_from_game(
-                    path, appid, name, show_dialog=True
-                )
-            else:
-                self.main_window.task_manager.apply_goldberg_to_game(
-                    path, appid, name, show_dialog=True
-                )
-
-            # Re-trigger async check to update button
-            self.gb_btn.setText("Updating status...")
-            self.gb_btn.setEnabled(False)
-            self.executor.submit(self._check_goldberg_async, path)
-
-        self.gb_btn.clicked.connect(_on_gb_click)
-
-        layout.addStretch()
-        tab_widget.addTab(tab, "Tools")
+        try:
+            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+            dialog = GameDetailsDialogV2(self, game_data)
+            self._details_dialog = dialog
+            dialog.exec()
+            self._details_dialog = None
+        except Exception as e:
+            logger.error(f"Failed to load Game Details V2: {e}", exc_info=True)
 
     def _check_goldberg_async(self, path: str) -> None:
         """Background task to check Goldberg status."""
@@ -1012,55 +2147,180 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog) -> None:
-        app_id = str(game_data.get("appid", "0"))
-
-        if app_id in ("0", "N/A", "unknown"):
-            QMessageBox.warning(self, "Error", "Invalid App ID.")
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None, branch: str = "public") -> None:
+        """Trigger background manifest download and show progress."""
+        api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
+        if not api_key:
+            QMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
             return
+
+        app_id = str(game_data.get("appid"))
+        if app_id in ("0", "N/A", "unknown"):
+            QMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
+            return
+
+        if not hasattr(self, "_active_fetches"):
+            self._active_fetches = set()
+        if app_id in self._active_fetches:
+            logger.warning(f"Fetch/update already in progress for AppID {app_id}, ignoring duplicate request.")
+            return
+        self._active_fetches.add(app_id)
 
         name = game_data.get("game_name", "Unknown")
         status = game_data.get("update_status")
 
-        # Determine if we can use local cache
-        local_path = None
-        if status != "update_available":
-            fpath = (
-                get_base_path() / "morrenus_manifests" / f"accela_fetch_{app_id}.zip"
-            )
-            if fpath.exists():
-                local_path = str(fpath)
+        # Persist selected branch and attach to game_data
+        game_data = dict(game_data)
+        game_data["branch"] = branch or "public"
+        self.settings.setValue(f"selected_branch/{app_id}", branch or "public")
 
-        if not local_path:
-            self._handle_download_manifest(app_id, name, game_data, dialog)
+        # Flag rollback so downstream won't mark manifest as fresh
+        is_rollback = local_path_override is not None
+
+        # ── Local zip path (for Verify or Rollback) ─────────────────────────
+        if branch and branch != "public":
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}_branch_{branch}.zip"
         else:
-            self._submit_job(local_path, game_data, dialog)
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
+        is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
-    def _handle_download_manifest(self, app_id, name, game_data, dialog):
-        """Logic separated to flatten nesting in fetch_game_manifest."""
-        if not self._confirm_action(
-            "Confirm Download",
-            f"Download manifest for '{name}'?\nThis will use your API quota.",
-        ):
+        local_path = None
+        if is_rollback and local_path_override and Path(local_path_override).exists():
+            local_path = local_path_override
+        elif fpath.exists() and (status != "update_available" or is_fresh):
+            local_path = str(fpath)
+
+        if local_path and not download_only:
+            logger.info(f"Using local manifest zip for verify/rollback: {local_path}")
+            if hasattr(self, "_active_fetches"):
+                self._active_fetches.discard(app_id)
+            self._submit_job(local_path, game_data, dialog)
             return
 
+        # ── Smart Update Mode routing (for network updates) ─────────────────
+        # Route to SmartUpdateTask only when an update is available or local zip is missing
+        smart_mode = True
+        if smart_mode and not is_rollback and not download_only and status == "update_available":
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager()
+                if dkm.has_depot_keys(app_id):
+                    logger.info(f"[Smart Update] Routing {name} ({app_id}) branch '{branch}' through SmartUpdateTask")
+                    self._handle_smart_update(app_id, name, game_data, dialog, branch=branch)
+                    return
+                else:
+                    logger.warning(
+                        f"[Smart Update] {name} ({app_id}): no cached keys — "
+                        "falling back to classic path. Run a full manifest fetch to enable Smart Mode."
+                    )
+                    from PyQt6.QtWidgets import QMessageBox
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                        self,
+                        "Smart Update Mode",
+                        f"Smart Update Mode is enabled but {name} has no cached depot keys yet.\n\n"
+                        "Using classic fetch. Smart Mode will activate automatically after the first successful fetch."
+                    ))
+            except Exception as _smart_err:
+                logger.error(f"[Smart Update] Smart mode routing error for {app_id}: {_smart_err}")
+
+        if not local_path:
+            if download_only:
+                game_data = game_data.copy()
+                game_data["_download_only"] = True
+            if status == "update_available" and not download_only:
+                self._check_hubcap_status_first(app_id, game_data, dialog, branch=branch)
+            else:
+                self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
+        else:
+            if not download_only:
+                # For rollback builds, mark game data so we don't clear update_available
+                if is_rollback:
+                    game_data = game_data.copy()
+                    game_data["_is_rollback"] = True
+                self._submit_job(local_path, game_data, dialog)
+
+    def _handle_smart_update(self, app_id: str, name: str, game_data: dict, dialog, branch: str = "public") -> None:
+        """
+        Handles a Smart Update Mode fetch: runs SmartUpdateTask in a background thread
+        and routes the result to _submit_job on success, or falls back to classic path
+        on needs_full_zip signal.
+        """
+        from core.tasks.smart_update_task import SmartUpdateTask
+        from utils.task_runner import TaskRunner
+
+        logger.info(f"[Smart Update] Starting SmartUpdateTask for {name} ({app_id})")
+
+        task = SmartUpdateTask(app_id, name, branch=branch)
+        runner = TaskRunner(self)
+
+        # Store runner to prevent GC
+        if not hasattr(self, "_smart_runners"):
+            self._smart_runners = []
+        self._smart_runners.append(runner)
+
+        def on_smart_finished(assembled_game_data: dict):
+            logger.info(f"[Smart Update] SmartUpdateTask finished for {name} ({app_id}) — submitting job")
+            # Merge essential fields from original game_data (install_path, etc.) into assembled data
+            merged = dict(game_data)
+            merged.update(assembled_game_data)
+            # Write a temp zip placeholder so _submit_job can find a path
+            import io, zipfile, tempfile, os
+            tmp_dir = get_base_path() / "hubcap_manifests"
+            tmp_path = str(tmp_dir / f"accela_fetch_{app_id}.zip")
+            # The SmartUpdateTask already saved the zip; just submit with that path
+            self._submit_job(tmp_path, merged, dialog)
+            self.settings.setValue(f"manifest_is_fresh/{app_id}", True)
+            if assembled_game_data.get("buildid"):
+                self.settings.setValue(f"fetched_buildid/{app_id}", assembled_game_data["buildid"])
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        def on_needs_full_zip(reason: str):
+            logger.warning(f"[Smart Update] {name} ({app_id}) needs full zip: {reason}")
+            # Fall back to classic path transparently
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        def on_error(err_msg: str):
+            logger.error(f"[Smart Update] Error for {name} ({app_id}): {err_msg}")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Smart Update Failed", f"Smart update failed for {name}:\n{err_msg}\n\nFalling back to classic fetch.")
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        task.finished.connect(on_smart_finished)
+        task.needs_full_zip.connect(on_needs_full_zip)
+        task.error.connect(on_error)
+        task.progress.connect(lambda msg: logger.info(msg))
+
+        runner.run(task.run)
+
+
+    def _handle_download_manifest(self, app_id, name, game_data, dialog, branch: str = "public"):
+        """Logic separated to flatten nesting in fetch_game_manifest."""
         if not morrenus_api:
             QMessageBox.critical(self, "Error", "API module missing.")
             return
 
-        self._download_progress_dialog = QProgressDialog(
-            f"Downloading {name}...", "Cancel", 0, 0, self
-        )
-        self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self._download_progress_dialog.show()
+        download_only = game_data.get("_download_only", False)
+
+        if not download_only:
+            self._download_progress_dialog = QProgressDialog(
+                f"Downloading {name}...", "Cancel", 0, 0, self
+            )
+            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self._download_progress_dialog.show()
 
         # Start async download
-        self.executor.submit(self._download_manifest_async, app_id, game_data)
+        self.executor.submit(self._download_manifest_async, app_id, game_data, branch)
 
-    def _download_manifest_async(self, app_id: str, game_data: dict) -> None:
+    def _download_manifest_async(self, app_id: str, game_data: dict, branch: str = "public") -> None:
         """Background task to download manifest."""
         try:
-            fpath, error = morrenus_api.download_manifest(app_id)
+            fpath, error = morrenus_api.download_manifest(app_id, branch=branch)
             self.manifest_download_complete.emit(
                 str(fpath) if fpath else "", str(error) if error else "", game_data
             )
@@ -1071,29 +2331,415 @@ class GameLibraryDialog(QDialog):
         self, fpath: str, error: str, game_data: dict
     ) -> None:
         """Slot to handle manifest download completion."""
+        appid = str(game_data.get("appid"))
+        if hasattr(self, "_active_fetches"):
+            self._active_fetches.discard(appid)
+
         if self._download_progress_dialog:
             self._download_progress_dialog.close()
             self._download_progress_dialog = None
 
+        download_only = game_data.get("_download_only", False)
+
+        if hasattr(self, "_configure_depots_after_download") and self._configure_depots_after_download:
+            target_game = self._configure_depots_after_download
+            self._configure_depots_after_download = None
+            if fpath:
+                appid = str(target_game.get("appid"))
+                self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+                if latest_id:
+                    self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
+                self._show_depot_selection_dialog(fpath, target_game)
+            else:
+                if not download_only:
+                    QMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
+                else:
+                    logger.error(f"Background manifest download failed: {error}")
+            return
+
         if fpath:
+            # Mark manifest as fresh now
+            appid = str(game_data.get("appid"))
+            self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+            latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
+            if latest_id:
+                self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
+
+            if download_only:
+                try:
+                    from core.tasks.process_zip_task import ProcessZipTask
+                    zip_task = ProcessZipTask()
+                    zip_task.run(fpath)
+                    logger.info(f"Refetch complete: parsed zip and imported keys/token for appid {appid}")
+                except Exception as e:
+                    logger.error(f"Failed to parse zip and import keys/token for appid {appid}: {e}")
+                
+                name = game_data.get("game_name", f"App {appid}")
+                QMessageBox.information(self, "Refetch Manifest", f"Refetched manifest zip successfully for {name}!")
+            
             # If we have a valid path, submit the job
-            # We need to access the dialog passed to _fetch_game_manifest, but it's not stored.
-            # However, we stored _details_dialog in _show_game_details_dialog.
-            if self._details_dialog:
-                self._submit_job(fpath, game_data, self._details_dialog)
+            if not download_only and self._details_dialog:
+                try:
+                    self._submit_job(fpath, game_data, self._details_dialog)
+                except RuntimeError:
+                    pass
+            elif download_only and self._details_dialog:
+                try:
+                    if hasattr(self._details_dialog, "validate_btn") and self._details_dialog.validate_btn:
+                        self._details_dialog.validate_btn.set_loading(False)
+                        self._details_dialog.validate_btn.setEnabled(True)
+                    self._details_dialog._update_validate_button()
+                except RuntimeError:
+                    pass
         else:
-            QMessageBox.critical(self, "Error", f"Failed: {error}")
+            if not download_only:
+                QMessageBox.critical(self, "Error", f"Failed: {error}")
+            else:
+                name = game_data.get("game_name", f"App {game_data.get('appid')}")
+                QMessageBox.critical(self, "Refetch Manifest Error", f"Failed to refetch manifest for {name}:\n{error}")
+                logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
+            if self._details_dialog:
+                try:
+                    if hasattr(self._details_dialog, "validate_btn") and self._details_dialog.validate_btn:
+                        self._details_dialog.validate_btn.set_loading(False)
+                        self._details_dialog.validate_btn.setEnabled(True)
+                    self._details_dialog._update_validate_button()
+                except RuntimeError:
+                    pass
+
+    def _check_hubcap_status_first(self, app_id: str, game_data: dict, dialog: QDialog) -> None:
+        """Runs the Stage 1 pre-download Hubcap status check asynchronously."""
+        check_progress = QProgressDialog("Checking Hubcap status...", None, 0, 0, self)
+        check_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        check_progress.setCancelButton(None)
+        check_progress.show()
+
+        def _check_in_background():
+            from core import morrenus_api
+            try:
+                res = morrenus_api.get_manifest_status(app_id)
+            except Exception as e:
+                logger.error(f"Error checking Hubcap status in background: {e}")
+                res = {"error": str(e)}
+            self.hubcap_status_check_complete.emit(res, game_data, dialog, check_progress)
+
+        self.executor.submit(_check_in_background)
+
+    def _on_hubcap_status_check_complete(self, result: dict, game_data: dict, dialog: QDialog, check_progress: object) -> None:
+        """Handles completion of Stage 1 check on the main thread."""
+        if check_progress:
+            try:
+                check_progress.close()
+            except Exception:
+                pass
+
+        app_id = str(game_data.get("appid"))
+        name = game_data.get("game_name", "Unknown")
+
+        # Check if Hubcap says it needs an update or update is in progress
+        needs_update = result.get("needs_update", False) if isinstance(result, dict) else False
+        update_in_progress = result.get("update_in_progress", False) if isinstance(result, dict) else False
+        is_error = "error" in result if isinstance(result, dict) else True
+
+        if is_error:
+            logger.warning(f"Hubcap status check returned error or invalid result for {app_id}: {result}")
+            # Do not block download on status check failure (e.g. offline/network issues)
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            return
+
+        is_refined = False
+        is_timestamp_stale = False
+        timestamp_reason = ""
+        if not (needs_update or update_in_progress) and is_refined:
+            from utils.manifest_verifier import verify_hubcap_freshness
+            ver_status, reason, _ = verify_hubcap_freshness(app_id, result)
+            if ver_status == "stale":
+                is_timestamp_stale = True
+                timestamp_reason = reason
+
+        if needs_update or update_in_progress or is_timestamp_stale:
+            msg = (
+                f"Hubcap reports that its manifest for '{name}' is currently outdated/stale.\n\n"
+                "If you proceed, you might download the old version instead of the latest Steam update.\n\n"
+            )
+            if update_in_progress:
+                msg += "Hubcap is currently processing/fetching the update. Please try again in a few minutes.\n\n"
+            elif is_timestamp_stale:
+                msg += f"Refined Update Check: {timestamp_reason}\n\n"
+            else:
+                msg += "Hubcap is aware of the new Steam update, but has not ingested the new manifest yet.\n\n"
+
+            msg += "Do you want to continue anyway?"
+            
+            btn = QMessageBox.warning(
+                self, 
+                "Hubcap Manifest Not Ready", 
+                msg, 
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if btn != QMessageBox.StandardButton.Yes:
+                logger.info("User cancelled download due to stale Hubcap manifest")
+                if hasattr(self, "_active_fetches"):
+                    self._active_fetches.discard(app_id)
+                return
+
+        # Proceed with download
+        self._handle_download_manifest(app_id, name, game_data, dialog)
 
     def _submit_job(self, filepath: str, game_data: dict, dialog: QDialog) -> None:
-        """Submit the job to the main window queue."""
+        """Submit the job to the main window queue.
+
+        The zip is parsed in a background thread so the main thread stays
+        responsive. A loading dialog is shown while parsing runs.
+
+        IMPORTANT: parse_progress must never be touched from the background
+        thread — Qt widgets are not thread-safe. The reference is passed through
+        the signal so the main-thread slot (_on_zip_parse_complete) closes it.
+
+        Smart Update path: when game_data has _smart_update=True the game_data
+        dict is already fully assembled (keys, manifests, buildid, etc.) and the
+        saved zip is a lua-less generate bundle — skip ProcessZipTask re-parse.
+        """
+        # ── Smart Update fast-path ─────────────────────────────────────────
+        # game_data already has depots, manifests, buildid from SmartUpdateTask.
+        # The zip on disk has no .lua, so ProcessZipTask would crash.
+        if game_data.get("_smart_update"):
+            logger.info(f"[Smart Update] _submit_job: using pre-assembled game_data, skipping zip parse for AppID {game_data.get('appid')}")
+            # Emit directly with assembled data — Stage 2 will be skipped in _on_zip_parse_complete
+            parse_progress = QProgressDialog("Applying manifest...", None, 0, 0, self)
+            parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            parse_progress.setMinimumDuration(0)
+            parse_progress.setCancelButton(None)
+            parse_progress.show()
+            self.zip_parse_complete.emit(game_data, filepath, game_data, dialog, parse_progress)
+            return
+
+        # ── Classic path ───────────────────────────────────────────────────
+        # Show a transient loading indicator while parsing happens in background
+        parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
+        parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        parse_progress.setMinimumDuration(200)  # only show if parse takes > 200 ms
+        parse_progress.setCancelButton(None)
+        parse_progress.show()
+
+        def _parse_in_background():
+            try:
+                from core.tasks.process_zip_task import ProcessZipTask
+                zip_task = ProcessZipTask()
+                parsed = zip_task.run(filepath)
+            except Exception as e:
+                logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+                parsed = None
+            # Emit the signal — the main-thread slot will close parse_progress safely.
+            # Never call parse_progress.close() here; Qt widgets must only be
+            # touched from the main thread, and doing so from a background thread
+            # will deadlock or corrupt the UI.
+            self.zip_parse_complete.emit(parsed, filepath, game_data, dialog, parse_progress)
+
+        self.executor.submit(_parse_in_background)
+
+
+    def _on_zip_parse_complete(
+        self, parsed_data: object, filepath: str, game_data: dict, dialog: QDialog,
+        parse_progress: object = None
+    ) -> None:
+        """Slot called on the main thread when background zip parsing is done.
+
+        parse_progress is closed here (on the main thread) — it must never be
+        closed from the background thread that performed the parsing.
+        """
+        appid = str(game_data.get("appid"))
+        if hasattr(self, "_active_fetches"):
+            self._active_fetches.discard(appid)
+        if parse_progress is not None:
+            try:
+                parse_progress.close()
+            except Exception:
+                pass
+        is_verify = (game_data.get("update_status") != "update_available")
+        target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
         metadata = {
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
+            "game_name": game_data.get("game_name", "Unknown"),
+            "job_type": "verify" if is_verify else "download",
+            "branch": target_branch,
         }
+        # Propagate rollback flag so task_manager won't mark game as up_to_date
+        if game_data.get("_is_rollback"):
+            metadata["_is_rollback"] = True
+            metadata["job_type"] = "verify"
+
+        if parsed_data:
+            # Smart Update path: data was assembled by SmartUpdateTask using live PICS +
+            # /generate/appmanifest — it's already the latest version. Skip Stage 2 check.
+            is_smart = parsed_data.get("_smart_update") or game_data.get("_smart_update")
+            if is_smart:
+                logger.info(f"[Smart Update] Skipping Stage 2 manifest verification for AppID {game_data.get('appid')} (trust PICS)")
+            else:
+                # Stage 2 check:
+                # Check if the parsed manifest IDs match the latest steam manifest ID we expected,
+                # or if they are identical to the previously installed manifest IDs.
+                from utils.manifest_verifier import verify_extracted_zip_manifest
+                appid = str(game_data.get("appid"))
+                is_update = game_data.get("update_status") == "update_available"
+                is_valid_stage2, warning_reason = verify_extracted_zip_manifest(appid, parsed_data, is_update=is_update)
+
+                should_warn = False
+                if not game_data.get("_is_rollback") and not is_valid_stage2:
+                    should_warn = True
+
+                if should_warn:
+                    msg = (
+                        f"ASSella detected that the manifest is older than the latest Steam version.\n\n"
+                        f"Reason: {warning_reason}\n\n"
+                        "This usually means Hubcap has not yet ingested the latest Steam update.\n\n"
+                        "Do you want to continue with this version anyway?"
+                    )
+                    btn = QMessageBox.warning(
+                        self,
+                        "Manifest Outdated",
+                        msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                    if btn != QMessageBox.StandardButton.Yes:
+                        logger.info("User aborted task due to post-download manifest mismatch")
+                        if hasattr(self, "_active_fetches"):
+                            self._active_fetches.discard(appid)
+                        return
+
+        if parsed_data and parsed_data.get("depots"):
+            from ui.dialogs.depotselection import DepotSelectionDialog
+            from utils.settings import get_settings
+            import json
+            settings = get_settings()
+            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            depots = parsed_data.get("depots")
+            appid = str(parsed_data["appid"])
+
+            selected_depots = None
+
+            # Smart selection logic
+            smart_active = settings.value("smart_depot_selection", False, type=bool)
+            val = settings.value(f"depot_selection/{appid}", "", type=str)
+            should_prompt = True
+
+            if smart_active and val:
+                try:
+                    data = json.loads(val)
+                    cached_selected = data.get("selected", [])
+                    cached_all = data.get("all_available", [])
+                    current_depots = list(depots.keys())
+                    has_new_depot = any(d not in cached_all for d in current_depots)
+                    if not has_new_depot:
+                        selected_depots = [d for d in cached_selected if d in depots]
+                        should_prompt = False
+                        logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
+                except Exception as e:
+                    logger.warning(f"Error parsing cached depot selection: {e}")
+
+            if should_prompt:
+                if auto_skip and len(depots) == 1:
+                    selected_depots = list(depots.keys())
+                else:
+                    depot_dialog = DepotSelectionDialog(
+                        parsed_data["appid"],
+                        parsed_data.get("game_name", ""),
+                        depots,
+                        parsed_data.get("header_url"),
+                        self.main_window,
+                    )
+                    if depot_dialog.exec():
+                        selected_depots = depot_dialog.get_selected_depots()
+
+            if selected_depots:
+                metadata["selected_depots_list"] = selected_depots
+                # Cache the choice
+                try:
+                    settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                        })
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
+            else:
+                # User cancelled depot selection, don't submit job
+                logger.info("User cancelled depot selection.")
+                if hasattr(self, "_active_fetches"):
+                    self._active_fetches.discard(appid)
+                if dialog:
+                    try:
+                        dialog.accept()
+                    except RuntimeError:
+                        pass
+                try:
+                    self.accept()
+                except RuntimeError:
+                    pass
+                return
+
         self.main_window.job_queue.add_job(filepath, metadata)
-        dialog.accept()
-        self.accept()
+        if dialog:
+            try:
+                dialog.accept()
+            except RuntimeError:
+                pass
+        try:
+            self.accept()
+        except RuntimeError:
+            pass
+
+    def _show_games_list_context_menu(self, pos) -> None:
+        """Show context menu for a game item."""
+        item = self.games_list.itemAt(pos)
+        if not item:
+            return
+
+        game_data = item.data(Qt.ItemDataRole.UserRole)
+        if not game_data:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: #111111;
+                color: #FFFFFF;
+                border: 1px solid #333333;
+            }}
+            QMenu::item:selected {{
+                background-color: {self.accent_color};
+                color: #000000;
+            }}
+            """
+        )
+
+        verify_action = QAction("Verify Game Files", self)
+        verify_action.triggered.connect(lambda: self._fetch_game_manifest(game_data))
+        menu.addAction(verify_action)
+
+        open_folder_action = QAction("Open Install Folder", self)
+        install_path = game_data.get("install_path")
+        open_folder_action.triggered.connect(lambda: self._open_folder(install_path))
+        menu.addAction(open_folder_action)
+
+        reset_depots_action = QAction("Reset Depot Selection", self)
+        reset_depots_action.triggered.connect(lambda: self._reset_depot_selection(game_data))
+        menu.addAction(reset_depots_action)
+
+        uninstall_action = QAction("Uninstall Game", self)
+        uninstall_action.triggered.connect(lambda: self._uninstall_game(game_data, None, {}))
+        menu.addAction(uninstall_action)
+
+        menu.exec(self.games_list.mapToGlobal(pos))
 
     @staticmethod
     def _open_folder(path: str) -> None:
@@ -1122,31 +2768,51 @@ class GameLibraryDialog(QDialog):
         if not self.game_manager:
             return
 
+        parent = dialog if dialog else self
         msg = self.game_manager.get_uninstall_confirmation_message(game_data)
-        if not self._confirm_action("Confirm Uninstall", msg):
+        reply = QMessageBox.question(
+            parent,
+            "Confirm Uninstall",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
 
         # Extract boolean states from checkboxes
-        c_data = opts.get("compat").isChecked() if "compat" in opts else False
-        c_saves = opts.get("saves").isChecked() if "saves" in opts else False
+        c_data = opts.get("compat", False)
+        c_saves = opts.get("saves", False)
+        c_wipe_sls = opts.get("wipe_sls", False)
 
+        is_dlc_only = False
+        appid = str(game_data.get("appid", "0"))
+        if appid and appid not in ("0", "N/A", "unknown"):
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(appid)
+
+        progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
         self._uninstall_progress_dialog = QProgressDialog(
-            "Uninstalling game...", None, 0, 0, self
+            progress_title, None, 0, 0, parent
         )
         self._uninstall_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._uninstall_progress_dialog.show()
 
         # Start async uninstall
-        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves)
+        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves, c_wipe_sls)
 
     def _uninstall_game_async(
-        self, game_data: dict, c_data: bool, c_saves: bool
+        self, game_data: dict, c_data: bool, c_saves: bool, c_wipe_sls: bool = False
     ) -> None:
         """Background task to uninstall game."""
         try:
-            success, err = self.game_manager.uninstall_game(
-                game_data, remove_compatdata=c_data, remove_saves=c_saves
-            )
+            # Wipe SLS only: remove from config + .DepotDownloader, leave files intact
+            if c_wipe_sls and not c_data and not c_saves:
+                success, err = self._wipe_sls_only(game_data)
+            else:
+                success, err = self.game_manager.uninstall_game(
+                    game_data, remove_compatdata=c_data, remove_saves=c_saves,
+                    remove_sls=c_wipe_sls
+                )
             self.uninstall_complete.emit(success, str(err) if err else "")
         except Exception as e:
             self.uninstall_complete.emit(False, str(e))
@@ -1157,12 +2823,56 @@ class GameLibraryDialog(QDialog):
             self._uninstall_progress_dialog.close()
             self._uninstall_progress_dialog = None
 
+        parent = self._details_dialog if self._details_dialog else self
         if success:
-            QMessageBox.information(self, "Success", "Game uninstalled.")
+            QMessageBox.information(parent, "Success", "Operation completed.")
             if self._details_dialog:
-                self._details_dialog.accept()
+                try:
+                    self._details_dialog.accept()
+                except RuntimeError:
+                    pass
+            self._refresh_game_list()
         else:
-            QMessageBox.critical(self, "Error", f"Failed: {error}")
+            QMessageBox.critical(parent, "Error", f"Failed: {error}")
+
+    @staticmethod
+    def _wipe_sls_only(game_data: dict) -> tuple:
+        """Remove from SLS config and delete .DepotDownloader folder, leave everything else."""
+        import shutil
+        appid = str(game_data.get("appid", ""))
+        install_path = game_data.get("install_path", "")
+        errors = []
+
+        # 1. Remove from SLSsteam config
+        try:
+            from utils.yaml_config_manager import remove_additional_app
+            config_path = get_user_config_path()
+            if config_path.exists():
+                remove_additional_app(config_path, appid)
+                logger.info(f"Wipe SLS: removed AppID {appid} from SLS config")
+        except Exception as e:
+            errors.append(f"SLS config: {e}")
+
+        # 2. Remove .DepotDownloader folder
+        if install_path and os.path.isdir(install_path):
+            ddm = os.path.join(install_path, ".DepotDownloader")
+            if os.path.exists(ddm):
+                try:
+                    shutil.rmtree(ddm)
+                    logger.info(f"Wipe SLS: removed .DepotDownloader from {install_path}")
+                except Exception as e:
+                    errors.append(f".DepotDownloader: {e}")
+
+        # 3. Remove from game manager list (no file deletion!)
+        try:
+            from managers.game_manager import GameManager
+            # Access via parent window — we're a static method, skip for now
+        except Exception:
+            pass
+
+        if errors:
+            return False, "; ".join(errors)
+        return True, None
 
     def _fix_game_install(self, game_data: dict) -> None:
         path = game_data.get("library_path")
@@ -1213,6 +2923,125 @@ class GameLibraryDialog(QDialog):
         s = round(size_bytes / p, 2)
         return f"{s} {size_names[i]}"
 
+    def _update_depot_status_label(self, appid: str) -> None:
+        if not hasattr(self, "depot_status_lbl") or not self.depot_status_lbl:
+            return
+        val = self.settings.value(f"depot_selection/{appid}", "", type=str)
+        if val:
+            try:
+                import json
+                data = json.loads(val)
+                selected = data.get("selected", [])
+                descriptions = data.get("descriptions", {})
+                
+                depot_names = []
+                for d_id in selected:
+                    desc = descriptions.get(d_id, "")
+                    if not desc:
+                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                        if fpath.exists():
+                             try:
+                                 from core.tasks.process_zip_task import ProcessZipTask
+                                 zip_task = ProcessZipTask()
+                                 parsed_data = zip_task.run(str(fpath))
+                                 desc = parsed_data.get("depots", {}).get(d_id, {}).get("desc", "")
+                             except Exception:
+                                 pass
+                    
+                    if desc:
+                        import re
+                        desc_clean = re.sub(r"\s*-\s*Depot\s*" + re.escape(d_id), "", desc, flags=re.IGNORECASE).strip()
+                        depot_names.append(f"{d_id} ({desc_clean})")
+                    else:
+                        depot_names.append(d_id)
+                
+                names_str = ", ".join(depot_names)
+                self.depot_status_lbl.setText(f"Status: {len(selected)} depot(s) manually chosen:\n{names_str}")
+            except Exception:
+                self.depot_status_lbl.setText("Status: Error reading saved selection.")
+        else:
+            self.depot_status_lbl.setText("Status: Default (automatic download of all depots).")
+
+    def _reset_depot_selection(self, game_data: dict) -> None:
+        appid = str(game_data.get("appid", ""))
+        if not appid or appid in ("0", "N/A", "unknown"):
+            return
+        
+        self.settings.remove(f"depot_selection/{appid}")
+        self._update_depot_status_label(appid)
+        QMessageBox.information(self, "Reset Successful", "Depot selection has been reset to default.")
+
+    def _configure_depots(self, game_data: dict) -> None:
+        appid = str(game_data.get("appid", "0"))
+        if appid in ("0", "N/A", "unknown"):
+            QMessageBox.warning(self, "Error", "Invalid App ID.")
+            return
+
+        name = game_data.get("game_name", "Unknown")
+        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+        
+        if fpath.exists():
+            self._show_depot_selection_dialog(str(fpath), game_data)
+        else:
+            self._download_progress_dialog = QProgressDialog(
+                f"Downloading manifest for {name}...", "Cancel", 0, 0, self
+            )
+            self._download_progress_dialog.setWindowTitle("Downloading Manifest")
+            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self._download_progress_dialog.show()
+
+            self._configure_depots_after_download = game_data
+            self.executor.submit(self._download_manifest_async, appid, game_data)
+
+    def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
+        try:
+            from core.tasks.process_zip_task import ProcessZipTask
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(filepath)
+            
+            if parsed_data and parsed_data.get("depots"):
+                from ui.dialogs.depotselection import DepotSelectionDialog
+                depots = parsed_data.get("depots")
+                appid = str(parsed_data["appid"])
+                
+                saved_val = self.settings.value(f"depot_selection/{appid}", "", type=str)
+                selected_depots = None
+                if saved_val:
+                    try:
+                        import json
+                        data = json.loads(saved_val)
+                        selected_depots = data.get("selected", [])
+                    except Exception:
+                        pass
+
+                depot_dialog = DepotSelectionDialog(
+                    parsed_data["appid"],
+                    parsed_data.get("game_name", ""),
+                    depots,
+                    parsed_data.get("header_url"),
+                    self,
+                    selected_depots=selected_depots
+                )
+                if depot_dialog.exec():
+                    chosen = depot_dialog.get_selected_depots()
+                    if chosen:
+                        import json
+                        self.settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": chosen,
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
+                            })
+                        )
+                        self._update_depot_status_label(appid)
+                        QMessageBox.information(self, "Success", "Depot selection saved successfully.")
+                    else:
+                        QMessageBox.warning(self, "Warning", "No depots selected. Depot selection not saved.")
+        except Exception as e:
+            logger.error(f"Failed to show depot selection dialog: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to load depots: {e}")
+
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""
         self._closing = True
@@ -1221,3 +3050,11 @@ class GameLibraryDialog(QDialog):
         self._active_fetchers.clear()
         self.executor.shutdown(wait=False)
         super().closeEvent(event)
+
+    def _show_details_for_appid(self, appid: str) -> None:
+        if not self.game_manager:
+            return
+        game_data = self.game_manager.get_game(appid)
+        if game_data:
+            self._show_game_details_dialog(game_data)
+

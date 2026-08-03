@@ -8,14 +8,16 @@ import webbrowser
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QFont, QDesktopServices
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSlot
+from PyQt6.QtGui import QColor, QFont, QDesktopServices, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFontDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -31,7 +33,6 @@ from PyQt6.QtWidgets import (
 )
 
 from core import morrenus_api
-from ui.dialogs.custom_gifs import CustomGifsDialog
 from ui.dialogs.dialog_helpers import create_standard_buttons
 from utils.helpers import (
     create_checkbox_setting,
@@ -40,11 +41,13 @@ from utils.helpers import (
     get_base_path,
     get_slscheevo_path,
     get_slscheevo_save_path,
+    get_schema_grabber_path,
     get_venv_python,
 )
 from utils.paths import Paths
 from utils.settings import get_settings
 from utils.yaml_config_manager import is_slssteam_mode_enabled
+from ui.dialogs.settings_sls import create_sls_tab
 
 logger = logging.getLogger(__name__)
 
@@ -128,19 +131,29 @@ class MorrenusStatsWidget(QWidget):
         main_layout.addWidget(self.refresh_button)
 
     def refresh_stats(self) -> None:
-        """Fetch and display latest stats from the API."""
+        """Fetch and display latest stats from the API in a background thread."""
         self.refresh_button.setEnabled(False)
         self.refresh_button.setText("Loading...")
 
-        stats = morrenus_api.get_user_stats()
-
-        self.refresh_button.setEnabled(True)
-        self.refresh_button.setText("Refresh")
-
-        if stats.get("error"):
+        from utils.task_runner import TaskRunner
+        self._stats_runner = TaskRunner(self)
+        worker = self._stats_runner.run(morrenus_api.get_user_stats)
+        
+        def on_stats_finished(stats):
+            self.refresh_button.setEnabled(True)
+            self.refresh_button.setText("Refresh")
+            if not stats or stats.get("error"):
+                self._display_error_state()
+            else:
+                self._display_stats(stats)
+                
+        def on_stats_error(err_tuple):
+            self.refresh_button.setEnabled(True)
+            self.refresh_button.setText("Refresh")
             self._display_error_state()
-        else:
-            self._display_stats(stats)
+
+        worker.finished.connect(on_stats_finished)
+        worker.error.connect(on_stats_error)
 
     def _display_error_state(self) -> None:
         """Update UI to show error state."""
@@ -207,41 +220,67 @@ class SettingsDialog(QDialog):
         self.tab_widget = None
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
+        self.smart_depot_selection_checkbox = None
+        self.autofetch_manifests_checkbox = None
+        self.use_lancache_checkbox = None
+        self.smart_update_mode_checkbox = None
+        self.refined_update_check_checkbox = None
+        self.isp_bypass_hubcap_checkbox = None
+        self.fakeappid_db_integration_checkbox = None
+        self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
-        self.steamless_checkbox = None
+        self.steamless_remover_combo = None
+        self.filter_soundtracks_checkbox = None
+        self.filter_search_blacklist_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
-        self.application_shortcuts_checkbox = None
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
         self.prompt_steam_restart_checkbox = None
+        self.ignore_slssteam_updater_checkbox = None
         self.block_steam_updates_checkbox = None
         self.download_slssteam_button = None
         self.slssteam_status_label = None
         self.slssteam_hash_warning_label = None
-        self.play_etw_checkbox = None
-        self.play_lall_checkbox = None
-        self.play_50hz_hum_checkbox = None
-        self.test_etw_button = None
-        self.test_lall_button = None
         self.accent_color_button = None
         self.accent_reset_button = None
         self.bg_color_button = None
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
         self.sonic_mode_checkbox = None
-        self.gif_display_checkbox = None
-        self.ignore_color_warnings_checkbox = None
+        self.workshop_steam_checkbox = None
+        self.workshop_max_dl_spinbox = None
+        self.workshop_cell_id_input = None
         self.current_font = QFont()
-        self.sgdb_api_key_input = None
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
+
+        # Origins easter egg setup
+        self._origins_movie = None
+        self._fade_timer = None
+        self._flash_opacity = 0.18
+        self._original_remember_origins = self.settings.value("remember_origins", False, type=bool)
+        self._original_simplify_denuvo_status = self.settings.value("simplify_denuvo_status", False, type=bool)
+        if self._original_remember_origins:
+
+            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            if os.path.exists(gif_path):
+                self._origins_movie = QMovie(gif_path)
+                self._origins_movie.frameChanged.connect(self.update)
+                self._origins_movie.start()
 
         # Save original API keys for restore on cancel
         self._original_morrenus_key = self.settings.value(
             "morrenus_api_key", "", type=str
         )
-        self._original_sgdb_key = self.settings.value("sgdb_api_key", "", type=str)
+        self.settings.sync()
+        self._original_steam_username = self.settings.value(
+            "steam_username", "", type=str
+        )
+        from utils.helpers import decrypt_string
+        self._original_steam_password = decrypt_string(
+            self.settings.value("steam_password", "", type=str)
+        )
 
         self._user_accent_color = self.settings.value(
             "user_accent_color",
@@ -256,12 +295,13 @@ class SettingsDialog(QDialog):
         self._original_titlebar_position = self.settings.value(
             "titlebar_position", "bottom", type=str
         )
-        self._original_gif_display_enabled = self.settings.value(
-            "gif_display_enabled", True, type=bool
-        )
 
         logger.debug("Opening SettingsDialog.")
         self._setup_ui()
+
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
@@ -270,11 +310,6 @@ class SettingsDialog(QDialog):
         self._create_tab_widget()
         self._setup_tabs()
         self.main_layout.addWidget(self.tab_widget)
-
-        # Sync audio preview values
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.sync_preview_values_from_settings()
 
         self._create_dialog_buttons()
 
@@ -305,12 +340,17 @@ class SettingsDialog(QDialog):
 
     def _setup_tabs(self) -> None:
         """Initialize and add all settings tabs."""
+        self._create_assela_tab()
         self._create_downloads_tab()
+        self._create_advanced_tab()
         self._create_morrenus_tab()
-        self._create_steam_tab()
+        # self._create_webui_tab()
+        create_sls_tab(self)
         self._create_tools_tab()
-        self._create_audio_tab()
         self._create_style_tab()
+
+        # Initialize button state after all tabs have been populated
+        self._update_achievements_button_state()
 
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""
@@ -377,8 +417,168 @@ class SettingsDialog(QDialog):
             input_field.setEchoMode(QLineEdit.EchoMode.Password)
             toggle_btn.setText("Show")
 
+    def _create_assela_tab(self) -> None:
+        """Create the ASSella settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        group = QGroupBox("ASSella Core Settings")
+        group_layout = QVBoxLayout()
+
+        self.smart_depot_selection_checkbox = create_checkbox_setting(
+            "Smart Selection",
+            "smart_depot_selection",
+            False,
+            self,
+            "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
+        )
+        group_layout.addWidget(self.smart_depot_selection_checkbox)
+
+        self.autofetch_manifests_checkbox = create_checkbox_setting(
+            "Auto-fetch update manifests on boot",
+            "autofetch_manifests_on_boot",
+            False,
+            self,
+            "Pre-download manifest zip files in the background on startup for all games needing updates.",
+        )
+        group_layout.addWidget(self.autofetch_manifests_checkbox)
+
+        self.use_lancache_checkbox = create_checkbox_setting(
+            "Enable LanCache Detection",
+            "use_lancache",
+            False,
+            self,
+            "Direct DepotDownloader downloads through a local LanCache server if detected on the local network (speeds up LAN downloads).",
+        )
+        group_layout.addWidget(self.use_lancache_checkbox)
+
+        # Update Check Interval Slider in Material You style
+        slider_layout = QHBoxLayout()
+        slider_label = QLabel("Update Check Interval:")
+        slider_label.setToolTip("Set how often to check for game updates. Move to the leftmost position (0) to disable.")
+        
+        from PyQt6.QtWidgets import QSlider
+        self.update_interval_slider = QSlider(Qt.Orientation.Horizontal)
+        self.update_interval_slider.setRange(0, 20)
+        self.update_interval_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.update_interval_slider.setTickInterval(1)
+        
+        # Material You styling
+        self.update_interval_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {self.accent_color};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {self.accent_color};
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: white;
+            }}
+        """)
+        
+        self.update_interval_value_label = QLabel("Disabled")
+        self.update_interval_value_label.setFixedWidth(80)
+        
+        # Load saved value (default is 0)
+        current_minutes = self.settings.value("update_check_interval_minutes", 0, type=int)
+        slider_val = min(20, max(0, current_minutes // 5))
+        self.update_interval_slider.setValue(slider_val)
+        
+        def update_slider_label(val):
+            if val == 0:
+                self.update_interval_value_label.setText("Disabled")
+            else:
+                self.update_interval_value_label.setText(f"{val * 5} mins")
+                
+        update_slider_label(slider_val)
+        self.update_interval_slider.valueChanged.connect(update_slider_label)
+        
+        slider_layout.addWidget(slider_label)
+        slider_layout.addWidget(self.update_interval_slider, 1)
+        slider_layout.addWidget(self.update_interval_value_label)
+        group_layout.addLayout(slider_layout)
+
+        group.setLayout(group_layout)
+        layout.addWidget(group)
+        
+        # Rollback / Manifest Backups Group
+        rollback_group = QGroupBox("Manifest Rollback Settings")
+        rollback_layout = QVBoxLayout()
+        
+        self.save_old_manifests_checkbox = QCheckBox("Keep old manifests (Rollback)")
+        self.save_old_manifests_checkbox.setToolTip("Save older manifest versions to allow rolling back to previous builds.")
+        # Robustly parse bool from QSettings — type=bool can silently fail on
+        # Linux when the stored value is the string "true"/"false".
+        _som_raw = self.settings.value("save_old_manifests", True)
+        if isinstance(_som_raw, str):
+            _som_val = _som_raw.lower() in ("true", "1", "yes")
+        else:
+            _som_val = bool(_som_raw)
+        self.save_old_manifests_checkbox.setChecked(_som_val)
+        rollback_layout.addWidget(self.save_old_manifests_checkbox)
+        
+        limit_layout = QHBoxLayout()
+        rollback_limit_label = QLabel("Max to keep:")
+        rollback_limit_label.setToolTip("Maximum number of older manifests to keep per game.")
+        self.max_old_manifests_spinbox = QSpinBox()
+        self.max_old_manifests_spinbox.setRange(1, 100)
+        try:
+            current_rollback_max = int(self.settings.value("max_old_manifests", 3))
+        except (ValueError, TypeError):
+            current_rollback_max = 3
+        self.max_old_manifests_spinbox.setValue(current_rollback_max)
+        
+        limit_layout.addWidget(rollback_limit_label)
+        limit_layout.addWidget(self.max_old_manifests_spinbox)
+        limit_layout.addStretch()
+        rollback_layout.addLayout(limit_layout)
+        
+        rollback_group.setLayout(rollback_layout)
+        # layout.addWidget(rollback_group)
+
+        # Experimental Group
+        experimental_group = QGroupBox("Experimental")
+        experimental_layout = QVBoxLayout()
+
+        self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
+            "ISP Bypass (Hubcap API)",
+            "isp_bypass_hubcap",
+            False,
+            self,
+            "Bypasses ISP DNS blocking/censorship for Hubcap API requests using DoH (DNS-over-HTTPS) with automatic background Tor helper fallback.",
+        )
+        self.isp_bypass_hubcap_checkbox.stateChanged.connect(self._on_isp_bypass_toggled)
+        experimental_layout.addWidget(self.isp_bypass_hubcap_checkbox)
+        experimental_group.setLayout(experimental_layout)
+        layout.addWidget(experimental_group)
+
+        layout.addStretch()
+
+        # ── Uninstall (Linux only) ────────────────────────────────────────
+        if sys.platform != "win32":
+            uninstall_btn = QPushButton("Uninstall ASSella")
+            uninstall_btn.setToolTip("Remove ASSella and optionally restore the original ACCELA.")
+            uninstall_btn.setStyleSheet("color: #cc4444;")
+            uninstall_btn.clicked.connect(self.uninstall_assela)
+            layout.addWidget(uninstall_btn)
+
+        self.tab_widget.addTab(tab, "ASSella")
+
     def _create_downloads_tab(self) -> None:
-        """Create the Downloads settings tab."""
+        """Create the Downloads settings tab with primary settings."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -389,9 +589,7 @@ class SettingsDialog(QDialog):
 
         library_tooltip = "Detect Steam libraries and let you choose where to install games."
         if sys.platform == "linux":
-            library_tooltip += (
-                " On Linux, this also enables SLSsteam integration for those installs."
-            )
+            library_tooltip += " On Linux, this also enables SLSsteam integration for those installs."
 
         self.library_mode_checkbox = create_checkbox_setting(
             "Limit Downloads to Steam Libraries",
@@ -402,6 +600,172 @@ class SettingsDialog(QDialog):
         )
         dl_layout.addWidget(self.library_mode_checkbox)
 
+        self.check_updates_on_boot_checkbox = create_checkbox_setting(
+            "Check Updates on Boot",
+            "check_updates_on_boot",
+            True,
+            self,
+            "Automatically check for game updates in the background on startup."
+        )
+        dl_layout.addWidget(self.check_updates_on_boot_checkbox)
+
+        dl_layout.addSpacing(10)
+
+        # Inputs Grid for Download Settings (Download Location, Max Downloads, Update Check Interval)
+        dl_grid = QGridLayout()
+        dl_grid.setSpacing(10)
+        dl_grid.setColumnStretch(0, 0)
+        dl_grid.setColumnStretch(1, 1)
+
+        dl_dir_label = QLabel("Default Download Location:")
+        dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game.")
+        
+        self.dl_location_combo = QComboBox()
+        self.dl_location_combo.addItem("Ask Every Time", "")
+        
+        # Load detected Steam libraries
+        from core import steam_helpers
+        detected_libs = steam_helpers.get_steam_libraries()
+        for lib in detected_libs:
+            self.dl_location_combo.addItem(lib, lib)
+            
+        self.dl_location_combo.addItem("Custom Folder...", "custom")
+        
+        # Load saved value
+        current_val = self.settings.value("default_download_directory", "")
+        if not current_val:
+            self.dl_location_combo.setCurrentIndex(0)
+        elif current_val in detected_libs:
+            idx = self.dl_location_combo.findData(current_val)
+            if idx >= 0:
+                self.dl_location_combo.setCurrentIndex(idx)
+        else:
+            # Custom folder path
+            self.dl_location_combo.insertItem(1, current_val, current_val)
+            self.dl_location_combo.setCurrentIndex(1)
+            
+        def on_dl_location_changed(index):
+            data = self.dl_location_combo.itemData(index)
+            if data == "custom":
+                path = QFileDialog.getExistingDirectory(self, "Select Custom Download Location")
+                if path:
+                    existing_idx = self.dl_location_combo.findData(path)
+                    if existing_idx >= 0:
+                        self.dl_location_combo.setCurrentIndex(existing_idx)
+                    else:
+                        # Insert custom path before the "Custom Folder..." item
+                        insert_pos = self.dl_location_combo.count() - 1
+                        self.dl_location_combo.insertItem(insert_pos, path, path)
+                        self.dl_location_combo.setCurrentIndex(insert_pos)
+                else:
+                    # Cancelled, revert to first item
+                    self.dl_location_combo.setCurrentIndex(0)
+                    
+        self.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
+
+        dl_grid.addWidget(dl_dir_label, 0, 0)
+        dl_grid.addWidget(self.dl_location_combo, 0, 1)
+
+        max_dl_label = QLabel("Concurrent Downloads:")
+        max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network usage.")
+        
+        from PyQt6.QtWidgets import QSlider
+        self.max_downloads_slider = QSlider(Qt.Orientation.Horizontal)
+        self.max_downloads_slider.setRange(1, 30)
+        self.max_downloads_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.max_downloads_slider.setTickInterval(1)
+        self.max_downloads_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {self.accent_color};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {self.accent_color};
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: white;
+            }}
+        """)
+        
+        current_max = self.settings.value("max_downloads", 8, type=int)
+        if current_max < 1 or current_max > 30:
+            current_max = 8
+        self.max_downloads_slider.setValue(current_max)
+        
+        self.max_downloads_val_lbl = QLabel(str(current_max))
+        self.max_downloads_val_lbl.setFixedWidth(30)
+        self.max_downloads_slider.valueChanged.connect(lambda val: self.max_downloads_val_lbl.setText(str(val)))
+        
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(self.max_downloads_slider, 1)
+        slider_layout.addWidget(self.max_downloads_val_lbl)
+        
+        dl_grid.addWidget(max_dl_label, 1, 0)
+        dl_grid.addLayout(slider_layout, 1, 1)
+
+        dl_layout.addLayout(dl_grid)
+        dl_group.setLayout(dl_layout)
+        layout.addWidget(dl_group)
+
+        # Post-Processing Group (Primary)
+        pp_group = QGroupBox("Post-Processing")
+        pp_layout = QVBoxLayout()
+
+        pp_grid = QGridLayout()
+        pp_grid.setSpacing(10)
+        pp_grid.setColumnStretch(0, 0)
+        pp_grid.setColumnStretch(1, 1)
+
+        drm_label = QLabel("Steamless DRM Remover:")
+        drm_label.setToolTip("Select the method to automatically remove Steam DRM from game executables.")
+        
+        self.steamless_remover_combo = QComboBox()
+        self.steamless_remover_combo.addItem("Disabled", "disabled")
+        self.steamless_remover_combo.addItem("Steamless AIO (Built-in)", "aio")
+        self.steamless_remover_combo.addItem("Steamless CLI (WINE/Proton)", "cli")
+        
+        # Load saved DRM Remover mode
+        use_aio = self.settings.value("use_steamless_aio", True, type=bool)
+        use_cli = self.settings.value("use_steamless", False, type=bool)
+        
+        if use_aio:
+            self.steamless_remover_combo.setCurrentIndex(1)
+        elif use_cli:
+            self.steamless_remover_combo.setCurrentIndex(2)
+        else:
+            self.steamless_remover_combo.setCurrentIndex(0)
+            
+        pp_grid.addWidget(drm_label, 0, 0)
+        pp_grid.addWidget(self.steamless_remover_combo, 0, 1)
+        pp_layout.addLayout(pp_grid)
+
+        pp_group.setLayout(pp_layout)
+        layout.addWidget(pp_group)
+
+        layout.addStretch()
+        self.tab_widget.addTab(tab, "Downloads")
+
+    def _create_advanced_tab(self) -> None:
+        """Create the Advanced settings tab with niche/specialized settings."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Advanced Downloads Group
+        adv_group = QGroupBox("Advanced Download Settings")
+        adv_layout = QVBoxLayout()
+
         self.auto_skip_single_choice_checkbox = create_checkbox_setting(
             "Skip single-choice selection",
             "auto_skip_single_choice",
@@ -409,74 +773,135 @@ class SettingsDialog(QDialog):
             self,
             "Automatically skip selection when only one option exists.",
         )
-        dl_layout.addWidget(self.auto_skip_single_choice_checkbox)
+        adv_layout.addWidget(self.auto_skip_single_choice_checkbox)
 
-        # Max Downloads
-        max_dl_layout = QHBoxLayout()
-        max_dl_label = QLabel("Maximum concurrent downloads")
-        max_dl_label.setToolTip("Set maximum concurrent downloads (0-255)")
+        self.hide_macos_depots_checkbox = create_checkbox_setting(
+            "Hide macOS depots in depot selection",
+            "hide_macos_depots",
+            True,
+            self,
+            "Hide macOS platform depots to reduce clutter.",
+        )
+        adv_layout.addWidget(self.hide_macos_depots_checkbox)
 
-        self.max_downloads_spinbox = QSpinBox()
-        self.max_downloads_spinbox.setRange(0, 255)
-        current_max = self.settings.value("max_downloads", 255, type=int)
-        self.max_downloads_spinbox.setValue(current_max)
+        # Soundtrack filtering
+        self.filter_soundtracks_checkbox = create_checkbox_setting(
+            "Filter Soundtracks and OSTs from Depots",
+            "filter_soundtracks",
+            True,
+            self,
+            "Filter out soundtrack and OST depots when downloading game files.",
+        )
+        adv_layout.addWidget(self.filter_soundtracks_checkbox)
 
-        max_dl_layout.addWidget(max_dl_label)
-        max_dl_layout.addWidget(self.max_downloads_spinbox)
-        dl_layout.addLayout(max_dl_layout)
+        # Search blacklist filtering
+        self.filter_search_blacklist_checkbox = create_checkbox_setting(
+            "Filter Blacklisted Keywords in Search",
+            "filter_search_blacklist",
+            False,
+            self,
+            "Hide soundtracks, artbooks, tools, and demos from manifest search results.",
+        )
+        adv_layout.addWidget(self.filter_search_blacklist_checkbox)
 
-        dl_group.setLayout(dl_layout)
-        layout.addWidget(dl_group)
+        adv_group.setLayout(adv_layout)
+        layout.addWidget(adv_group)
 
-        # Post-Processing Group
-        pp_group = QGroupBox("Post-Processing")
+        # Workshop Downloader Settings Group
+        ws_group = QGroupBox("Advanced Workshop Settings")
+        ws_layout = QVBoxLayout()
+
+        self.workshop_steam_checkbox = create_checkbox_setting(
+            "Enable Steam Integration for Workshop Downloads",
+            "workshop_steam_enabled",
+            True,
+            self,
+            "Directs workshop downloads to your detected Steam library directories.",
+        )
+        ws_layout.addWidget(self.workshop_steam_checkbox)
+
+        # Workshop grid layout for clean alignment
+        ws_grid = QGridLayout()
+        ws_grid.setSpacing(10)
+        ws_grid.setColumnStretch(0, 0)
+        ws_grid.setColumnStretch(1, 1)
+
+        ws_max_dl_label = QLabel("Max Concurrent Workshop Downloads:")
+        
+        from PyQt6.QtWidgets import QSlider
+        self.workshop_max_dl_slider = QSlider(Qt.Orientation.Horizontal)
+        self.workshop_max_dl_slider.setRange(1, 30)
+        self.workshop_max_dl_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.workshop_max_dl_slider.setTickInterval(1)
+        self.workshop_max_dl_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: none;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {self.accent_color};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {self.accent_color};
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: white;
+            }}
+        """)
+        
+        current_ws_max = self.settings.value("workshop_max_downloads", 8, type=int)
+        if current_ws_max < 1 or current_ws_max > 30:
+            current_ws_max = 8
+        self.workshop_max_dl_slider.setValue(current_ws_max)
+        
+        self.workshop_max_dl_val_lbl = QLabel(str(current_ws_max))
+        self.workshop_max_dl_val_lbl.setFixedWidth(30)
+        self.workshop_max_dl_slider.valueChanged.connect(lambda val: self.workshop_max_dl_val_lbl.setText(str(val)))
+        
+        ws_slider_layout = QHBoxLayout()
+        ws_slider_layout.addWidget(self.workshop_max_dl_slider, 1)
+        ws_slider_layout.addWidget(self.workshop_max_dl_val_lbl)
+        
+        ws_grid.addWidget(ws_max_dl_label, 0, 0)
+        ws_grid.addLayout(ws_slider_layout, 0, 1)
+
+        ws_cell_id_label = QLabel("Cell ID:")
+        self.workshop_cell_id_input = QLineEdit()
+        self.workshop_cell_id_input.setPlaceholderText("Optional")
+        self.workshop_cell_id_input.setText(self.settings.value("workshop_cell_id", "", type=str))
+
+        ws_grid.addWidget(ws_cell_id_label, 1, 0)
+        ws_grid.addWidget(self.workshop_cell_id_input, 1, 1)
+
+        ws_layout.addLayout(ws_grid)
+        ws_group.setLayout(ws_layout)
+        layout.addWidget(ws_group)
+
+        # Achievements Group
+        pp_group = QGroupBox("Advanced Post-Processing")
         pp_layout = QVBoxLayout()
-
         self.achievements_checkbox = create_checkbox_setting(
-            "Generate Steam Achievements",
+            "Generate Achievements (Recommended Off)",
             "generate_achievements",
             False,
             self,
-            "Generate achievement files for your games after downloads.",
+            "After 07/11/2026 update of SLSsteam, achievements are generated by SLS by default.",
         )
+        self.achievements_checkbox.stateChanged.connect(self._update_achievements_button_state)
         pp_layout.addWidget(self.achievements_checkbox)
-
-        self.steamless_checkbox = create_checkbox_setting(
-            "Remove Steam DRM with Steamless",
-            "use_steamless",
-            False,
-            self,
-            "Remove DRM from game executables after downloading.",
-        )
-        pp_layout.addWidget(self.steamless_checkbox)
-
-        self.steamless_aio_checkbox = create_checkbox_setting(
-            "Remove Steam DRM with Steamless-AIO",
-            "use_steamless_aio",
-            False,
-            self,
-            "Remove DRM from game executables after downloading (AIO Alternative).",
-        )
-        pp_layout.addWidget(self.steamless_aio_checkbox)
-
-
-        if sys.platform == "linux":
-            self.application_shortcuts_checkbox = create_checkbox_setting(
-                "Create Application Shortcuts",
-                "create_application_shortcuts",
-                False,
-                self,
-                "Create desktop shortcuts and install icons from SteamGridDB.",
-            )
-            pp_layout.addWidget(self.application_shortcuts_checkbox)
-        else:
-            self.application_shortcuts_checkbox = None
-
         pp_group.setLayout(pp_layout)
         layout.addWidget(pp_group)
 
         layout.addStretch()
-        self.tab_widget.addTab(tab, "Downloads")
+        self.tab_widget.addTab(tab, "Advanced")
 
     def goldberg_checked_warning(self) -> None:
         """Warn when Goldberg is enabled alongside Steam integration."""
@@ -505,7 +930,7 @@ class SettingsDialog(QDialog):
         try:
             if not self.auto_apply_goldberg_checkbox.isChecked():
                 return
-        except:
+        except AttributeError:
             if not self.settings.value("auto_apply_goldberg", False):
                 return
 
@@ -566,19 +991,46 @@ class SettingsDialog(QDialog):
         )
         key_layout.addLayout(morrenus_layout)
 
-        if sys.platform == "linux":
-            sgdb_layout, self.sgdb_api_key_input = self._create_api_key_setting(
-                "SteamGridDB API Key:",
-                "Paste your SteamGridDB API key",
-                "sgdb_api_key",
-                help_url="https://www.steamgriddb.com/profile/account",
-            )
-            key_layout.addLayout(sgdb_layout)
-        else:
-            self.sgdb_api_key_input = None
-
         key_group.setLayout(key_layout)
         layout.addWidget(key_group)
+
+        # Proxy Settings Group
+        proxy_group = QGroupBox("Wirecutter Proxy (ISP Bypass)")
+        proxy_layout = QVBoxLayout()
+        proxy_layout.setSpacing(10)
+
+        self.use_wirecutter_checkbox = create_checkbox_setting(
+            "Use Wirecutter Proxy",
+            "use_wirecutter",
+            False,
+            self,
+            "Bypass ISP blocks by proxying Hubcap API requests through a Cloudflare Worker."
+        )
+        proxy_layout.addWidget(self.use_wirecutter_checkbox)
+
+        # Proxy URL input
+        url_layout = QHBoxLayout()
+        url_layout.setSpacing(5)
+        url_layout.addWidget(QLabel("Proxy URL:"))
+        self.wirecutter_url_input = QLineEdit()
+        self.wirecutter_url_input.setPlaceholderText("https://your-worker.workers.dev")
+        self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
+        current_url = self.settings.value("wirecutter_url", "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev", type=str)
+        self.wirecutter_url_input.setText(current_url)
+        url_layout.addWidget(self.wirecutter_url_input)
+
+        self.show_url_btn = QPushButton("Show")
+        self.show_url_btn.clicked.connect(self._toggle_proxy_url_visibility)
+        url_layout.addWidget(self.show_url_btn)
+
+        proxy_layout.addLayout(url_layout)
+
+        # Connect checkbox to toggle URL editability
+        self.wirecutter_url_input.setEnabled(self.use_wirecutter_checkbox.isChecked())
+        self.use_wirecutter_checkbox.checkbox.toggled.connect(self.wirecutter_url_input.setEnabled)
+
+        proxy_group.setLayout(proxy_layout)
+        # layout.addWidget(proxy_group)
 
         # Stats Group
         stats_group = QGroupBox("Hubcap Stats")
@@ -599,6 +1051,23 @@ class SettingsDialog(QDialog):
 
         self.tab_widget.addTab(tab, "Integrations")
 
+    def _toggle_proxy_url_visibility(self) -> None:
+        """Toggles the visibility of the Wirecutter proxy URL, prompting with confirmation on show."""
+        if self.wirecutter_url_input.echoMode() == QLineEdit.EchoMode.Password:
+            reply = QMessageBox.question(
+                self,
+                "Show Proxy URL",
+                "Warning: Exposing your proxy URL could lead to third-party abuse and exhaust your daily request limits.\n\nAre you sure you want to show it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Normal)
+                self.show_url_btn.setText("Hide")
+        else:
+            self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.show_url_btn.setText("Show")
+
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
         if (
@@ -608,70 +1077,7 @@ class SettingsDialog(QDialog):
             self.morrenus_tab_initialized = True
             QTimer.singleShot(100, self.morrenus_stats_widget.refresh_stats)
 
-    def _create_steam_tab(self) -> None:
-        """Create the Steam settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
 
-        # Integration Group
-        int_group = QGroupBox("Steam Integration")
-        int_layout = QVBoxLayout()
-
-        if sys.platform == "linux":
-            wrapper_name = "SLSsteam"
-            self.sls_mode_checkbox = None
-            linux_hint = QLabel(
-                "SLSsteam is enabled automatically for Steam library installs on Linux."
-            )
-            linux_hint.setWordWrap(True)
-            int_layout.addWidget(linux_hint)
-        else:
-            wrapper_name = "GreenLuma"
-            wrapper_full = "GreenLuma Wrapper Mode"
-            tooltip = (
-                "Integrate games with Steam using GreenLuma.\n"
-                "Games appear in your Steam library automatically."
-            )
-            self.sls_mode_checkbox = create_checkbox_setting(
-                wrapper_full, "slssteam_mode", False, self, tooltip
-            )
-            self.sls_mode_checkbox.stateChanged.connect(
-                lambda: self.goldberg_checked_warning_from_mode(wrapper_name)
-            )
-            int_layout.addWidget(self.sls_mode_checkbox)
-
-        self.sls_config_management_checkbox = create_checkbox_setting(
-            f"{wrapper_name} Config Management",
-            "sls_config_management",
-            True,
-            self,
-            f"Allow ACCELA to manage {wrapper_name} configuration files.",
-        )
-        int_layout.addWidget(self.sls_config_management_checkbox)
-
-        int_group.setLayout(int_layout)
-        layout.addWidget(int_group)
-
-        # Settings Group
-        settings_group = QGroupBox("Steam Settings ")
-        settings_layout = QVBoxLayout()
-
-        self.prompt_steam_restart_checkbox = create_checkbox_setting(
-            "Prompt Steam Restart",
-            "prompt_steam_restart",
-            True,
-            self,
-            "Show prompt to restart Steam after Steam-integrated downloads.",
-        )
-        settings_layout.addWidget(self.prompt_steam_restart_checkbox)
-
-
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-
-        layout.addStretch()
-        self.tab_widget.addTab(tab, "Steam")
 
     def _create_tools_tab(self) -> None:
         """Create the Tools settings tab."""
@@ -683,25 +1089,25 @@ class SettingsDialog(QDialog):
         tools_group = QGroupBox("Tools")
         tools_layout = QVBoxLayout()
 
-        SettingsDialog._add_tool_button(
+        self.configure_achievements_btn = SettingsDialog._add_tool_button(
             tools_layout,
             "Configure Achievements",
-            "Launch SLScheevo to setup achievement credentials.",
-            self.run_slscheevo,
+            "Perform one-time setup and authenticate Steam for achievements.",
+            self.run_schema_grabber_manually,
         )
 
         SettingsDialog._add_tool_button(
             tools_layout,
-            "Remove DRM",
-            "Run Steamless manually on a game .exe.",
-            self.run_steamless_manually,
-        )
-
-        SettingsDialog._add_tool_button(
-            tools_layout,
-            "Remove DRM (AIO)",
+            "Remove DRM (python steamless)",
             "Run Steamless-AIO manually on a game .exe.",
             self.run_steamless_aio_manually,
+        )
+
+        SettingsDialog._add_tool_button(
+            tools_layout,
+            "Remove DRM (legacy steamless)",
+            "Run Steamless manually on a game .exe.",
+            self.run_steamless_manually,
         )
 
         self.download_slssteam_button = QPushButton("Open SLSsteam installer")
@@ -712,6 +1118,8 @@ class SettingsDialog(QDialog):
 
         tools_group.setLayout(tools_layout)
         layout.addWidget(tools_group)
+
+
 
         # Windows Registry Group
         if sys.platform == "win32":
@@ -736,16 +1144,161 @@ class SettingsDialog(QDialog):
             layout.addWidget(reg_group)
 
         layout.addStretch()
+
+        # ── Logging Configuration ─────────────────────────────────────────
+        log_group = QGroupBox("Logging Configuration")
+        log_layout = QVBoxLayout()
+
+        level_row = QHBoxLayout()
+        level_label = QLabel("Log Level:")
+        level_label.setToolTip(
+            "Minimum severity of messages to log.\n"
+            "Select NONE to disable all logging (improves performance)."
+        )
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "NONE"])
+        _current_level = self.settings.value("log_filter_level", "DEBUG") or "DEBUG"
+        idx = self.log_level_combo.findText(_current_level)
+        self.log_level_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        level_row.addWidget(level_label)
+        level_row.addWidget(self.log_level_combo)
+        level_row.addStretch()
+        log_layout.addLayout(level_row)
+
+        cat_row = QHBoxLayout()
+        cat_label = QLabel("Log Filter:")
+        cat_label.setToolTip("Restrict logs to a specific module group.")
+        self.log_category_combo = QComboBox()
+        self.log_category_combo.addItems([
+            "All Modules",
+            "Only Steam Client & API",
+            "Only Downloads & Manifests",
+            "Only Database & Library",
+        ])
+        _current_cat = self.settings.value("log_filter_category", "All Modules") or "All Modules"
+        cat_idx = self.log_category_combo.findText(_current_cat)
+        self.log_category_combo.setCurrentIndex(cat_idx if cat_idx >= 0 else 0)
+        cat_row.addWidget(cat_label)
+        cat_row.addWidget(self.log_category_combo)
+        cat_row.addStretch()
+        log_layout.addLayout(cat_row)
+
+        _log_note = QLabel(
+            "Changes take effect immediately when you click OK."
+        )
+        _log_note.setStyleSheet("color: #888888; font-size: 11px;")
+        _log_note.setWordWrap(True)
+        log_layout.addWidget(_log_note)
+
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
+
+        layout.addStretch()
         self.tab_widget.addTab(tab, "Tools")
 
+
+
+    # ── ASSella Manager helpers ───────────────────────────────────────────
+
+    def uninstall_assela(self) -> None:
+        """Remove ASSella and optionally restore the original ACCELA backup."""
+        install_dir = os.path.expanduser("~/.local/share/ACCELA")
+        assela_path = os.path.join(install_dir, "ASSella.AppImage")
+        symlink_path = os.path.join(install_dir, "ACCELA.AppImage")
+        backup_path = os.path.join(install_dir, "ACCELA.AppImage.bak")
+        desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
+        has_backup = os.path.isfile(backup_path)
+
+        # Step 1 — Confirm uninstall
+        reply = QMessageBox.question(
+            self,
+            "Uninstall ASSella",
+            "This will remove ASSella and revert the desktop shortcut to ACCELA.\n\nAre you sure?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Step 2 — Offer to restore ACCELA backup (if one exists)
+        restore = False
+        if has_backup:
+            restore_reply = QMessageBox.question(
+                self,
+                "Restore Original ACCELA?",
+                "A backup of the original ACCELA (ACCELA.AppImage.bak) was found.\n\n"
+                "Would you like to restore it after uninstalling ASSella?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            restore = restore_reply == QMessageBox.StandardButton.Yes
+
+        errors = []
+
+        # Remove symlink
+        if os.path.islink(symlink_path):
+            try:
+                os.remove(symlink_path)
+            except OSError as e:
+                errors.append(f"Could not remove symlink: {e}")
+
+        # Remove ASSella AppImage
+        if os.path.isfile(assela_path):
+            try:
+                os.remove(assela_path)
+            except OSError as e:
+                errors.append(f"Could not remove ASSella.AppImage: {e}")
+
+        # Remove image cache if it exists
+        cache_dir = os.path.join(install_dir, "image_cache")
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+            except OSError as e:
+                errors.append(f"Could not remove image cache directory: {e}")
+
+        # Restore backup if requested
+        if restore:
+            try:
+                shutil.copy2(backup_path, symlink_path)
+                os.chmod(symlink_path, 0o755)
+            except OSError as e:
+                errors.append(f"Could not restore ACCELA backup: {e}")
+
+        # Revert desktop entry name
+        if os.path.isfile(desktop_entry):
+            try:
+                with open(desktop_entry, "r") as f:
+                    content = f.read()
+                content = content.replace("Name=ASSella", "Name=ACCELA")
+                with open(desktop_entry, "w") as f:
+                    f.write(content)
+                try:
+                    subprocess.run(
+                        ["update-desktop-database", os.path.dirname(desktop_entry)],
+                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            except OSError as e:
+                errors.append(f"Could not update desktop entry: {e}")
+
+        if errors:
+            QMessageBox.warning(self, "Uninstall — Partial", "\n".join(errors))
+        else:
+            msg = "ASSella has been uninstalled."
+            if restore:
+                msg += "\nOriginal ACCELA has been restored."
+            QMessageBox.information(self, "Done", msg)
+
+
     @staticmethod
-    def _add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> None:
+    def _add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPushButton:
         """Helper to add a tool button with explanation text."""
         btn = QPushButton(text)
         btn.setToolTip(tooltip)
         btn.clicked.connect(slot)
         layout.addWidget(btn)
         SettingsDialog._add_tool_explanation(layout, tooltip)
+        return btn
 
     @staticmethod
     def _add_tool_explanation(layout: QVBoxLayout, text: str) -> None:
@@ -755,119 +1308,343 @@ class SettingsDialog(QDialog):
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
 
-    def _create_audio_tab(self) -> None:
-        """Create the Audio settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+
 
     def _create_style_tab(self) -> None:
-        """Create the Style settings tab."""
+        """Create the Theme settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
 
-        # Color Group
-        color_group = QGroupBox("Color Settings")
-        color_layout = QVBoxLayout()
+        desc_lbl = QLabel("Customize the visual appearance, accent colors, and font settings of ASSella.")
+        desc_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px; margin-bottom: 5px;")
+        layout.addWidget(desc_lbl)
 
-        # Accent
-        acc_layout = QHBoxLayout()
+        # Colors & Font combined in a neat group
+        theme_group = QGroupBox("Theme")
+        theme_layout = QGridLayout()
+        theme_layout.setContentsMargins(15, 15, 15, 15)
+        theme_layout.setSpacing(10)
+
+        # Accent color swatch row
+        theme_layout.addWidget(QLabel("Accent Color:"), 0, 0)
         self.accent_color_button = QPushButton()
+        self.accent_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.accent_color_button.setFixedSize(60, 24)
         self.accent_color_button.setStyleSheet(
-            f"background-color: {self._user_accent_color};"
+            f"background-color: {self._user_accent_color}; border: 1px solid #444; border-radius: 4px;"
         )
         self.accent_reset_button = QPushButton("Reset")
-        acc_layout.addWidget(QLabel("Accent Color:"))
-        acc_layout.addWidget(self.accent_color_button)
-        acc_layout.addWidget(self.accent_reset_button)
-        acc_layout.addStretch()
-        self.accent_color_button.clicked.connect(self.choose_accent_color)
-        self.accent_reset_button.clicked.connect(self.reset_accent_color)
-        color_layout.addLayout(acc_layout)
+        self.accent_reset_button.setFixedWidth(70)
+        theme_layout.addWidget(self.accent_color_button, 0, 1)
+        theme_layout.addWidget(self.accent_reset_button, 0, 2)
 
-        # Background
-        bg_layout = QHBoxLayout()
+        # Background color swatch row
+        theme_layout.addWidget(QLabel("Background Color:"), 1, 0)
         self.bg_color_button = QPushButton()
+        self.bg_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bg_color_button.setFixedSize(60, 24)
         self.bg_color_button.setStyleSheet(
-            f"background-color: {self._user_background_color};"
+            f"background-color: {self._user_background_color}; border: 1px solid #444; border-radius: 4px;"
         )
         self.bg_reset_button = QPushButton("Reset")
-        bg_layout.addWidget(QLabel("Background Color:"))
-        bg_layout.addWidget(self.bg_color_button)
-        bg_layout.addWidget(self.bg_reset_button)
-        bg_layout.addStretch()
-        self.bg_color_button.clicked.connect(self.choose_bg_color)
-        self.bg_reset_button.clicked.connect(self.reset_bg_color)
-        color_layout.addLayout(bg_layout)
+        self.bg_reset_button.setFixedWidth(70)
+        theme_layout.addWidget(self.bg_color_button, 1, 1)
+        theme_layout.addWidget(self.bg_reset_button, 1, 2)
 
-        color_group.setLayout(color_layout)
-        layout.addWidget(color_group)
-
-        # Font Group
-        font_group = QGroupBox("Font Settings")
-        font_layout = QVBoxLayout()
-        font_children, self.font_button, self.font_reset_button = create_font_setting(
-            self
-        )
+        # Font row
+        font_children, self.font_button, self.font_reset_button = create_font_setting(self)
         self.font_button.clicked.connect(self.choose_font)
         self.font_reset_button.clicked.connect(self.reset_font)
-        font_layout.addLayout(font_children)
-        font_group.setLayout(font_layout)
-        layout.addWidget(font_group)
 
-        # Display Group
-        disp_group = QGroupBox("Display Settings")
+        self.font_button.setMinimumWidth(150)
+        self.font_reset_button.setFixedWidth(70)
+
+        theme_layout.addWidget(QLabel("System Font:"), 2, 0)
+        theme_layout.addWidget(self.font_button, 2, 1)
+        theme_layout.addWidget(self.font_reset_button, 2, 2)
+
+        # Material presets row
+        theme_layout.addWidget(QLabel("Material Presets:"), 3, 0)
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Custom (Select Color)", "custom")
+        self.preset_combo.addItem("Ocean Breeze (Monet Blue)", "ocean")
+        self.preset_combo.addItem("Forest Sage (Mint Green)", "forest")
+        self.preset_combo.addItem("Lavender Mist (Orchid Purple)", "lavender")
+        self.preset_combo.setMinimumWidth(150)
+
+        saved_preset = self.settings.value("material_preset", "ocean", type=str)
+        idx = self.preset_combo.findData(saved_preset)
+        if idx != -1:
+            self.preset_combo.setCurrentIndex(idx)
+
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+        theme_layout.addWidget(self.preset_combo, 3, 1, 1, 2)
+
+        self.accent_color_button.clicked.connect(self.choose_accent_color)
+        self.accent_reset_button.clicked.connect(self.reset_accent_color)
+        self.bg_color_button.clicked.connect(self.choose_bg_color)
+        self.bg_reset_button.clicked.connect(self.reset_bg_color)
+
+        theme_group.setLayout(theme_layout)
+        layout.addWidget(theme_group)
+
+        # Interface Options Group
+        disp_group = QGroupBox("Interface Options")
         disp_layout = QVBoxLayout()
+        disp_layout.setContentsMargins(15, 15, 15, 15)
+        disp_layout.setSpacing(10)
 
-        self.titlebar_position_checkbox = QCheckBox("Move Titlebar to Top")
+        self.titlebar_position_checkbox = QCheckBox("Move Titlebar to Window Top")
         is_top = self.settings.value("titlebar_position", "bottom", type=str) == "top"
         self.titlebar_position_checkbox.setChecked(is_top)
-        self.titlebar_position_checkbox.setToolTip("Move the titlebar to the top.")
-        self.titlebar_position_checkbox.stateChanged.connect(
-            self.on_titlebar_position_changed
-        )
+        self.titlebar_position_checkbox.setToolTip("Places the navigation bar / titlebar at the top of the window instead of the bottom.")
+        self.titlebar_position_checkbox.stateChanged.connect(self.on_titlebar_position_changed)
         disp_layout.addWidget(self.titlebar_position_checkbox)
-        SettingsDialog._add_checkbox_explanation(
-            disp_layout, "Move the titlebar to the top of the window."
-        )
 
-        self.gif_display_checkbox = create_checkbox_setting(
-            "Show GIF Display",
-            "gif_display_enabled",
-            True,
-            self,
-            "Show animated GIF in the main window.",
-        )
-        self.gif_display_checkbox.stateChanged.connect(self.on_gif_display_changed)
-        disp_layout.addWidget(self.gif_display_checkbox)
 
-        self.ignore_color_warnings_checkbox = create_checkbox_setting(
-            "Ignore color warnings",
-            "ignore_color_warnings",
-            False,
-            self,
-            "Allow any color combination.",
-        )
-        disp_layout.addWidget(self.ignore_color_warnings_checkbox)
+
+        self.remember_origins_checkbox = QCheckBox("Remember your origins")
+        is_origins = self.settings.value("remember_origins", False, type=bool)
+        self.remember_origins_checkbox.setChecked(is_origins)
+        self.remember_origins_checkbox.setToolTip("Subtly displays the Wired layout background.")
+        self.remember_origins_checkbox.stateChanged.connect(self._on_origins_toggled)
+        disp_layout.addWidget(self.remember_origins_checkbox)
+
+        self.simplify_denuvo_status_checkbox = QCheckBox("Show hypervisor and uncracked as Not Cracked")
+        is_simplify = self.settings.value("simplify_denuvo_status", False, type=bool)
+        self.simplify_denuvo_status_checkbox.setChecked(is_simplify)
+        self.simplify_denuvo_status_checkbox.setToolTip("Displays both Denuvo Hypervisor and Denuvo Uncracked games as simply Denuvo Uncracked.")
+        disp_layout.addWidget(self.simplify_denuvo_status_checkbox)
+
 
         disp_group.setLayout(disp_layout)
         layout.addWidget(disp_group)
 
-        # Custom GIFs
-        gif_layout = QHBoxLayout()
-        custom_gifs_btn = QPushButton("Custom Gifs")
-        custom_gifs_btn.clicked.connect(self.open_custom_gifs_dialog)
-        gif_layout.addWidget(custom_gifs_btn)
+        layout.addStretch(1)
 
-        clear_cache_btn = QPushButton("Clear GIF Cache")
-        clear_cache_btn.clicked.connect(self.clear_gif_cache)
-        clear_cache_btn.setToolTip("Regenerate all GIFs.")
-        gif_layout.addWidget(clear_cache_btn)
-        layout.addLayout(gif_layout)
+        self.tab_widget.addTab(tab, "Theme")
+
+    def _create_webui_tab(self) -> None:
+        """Create the WebUI settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Web Server Group
+        server_group = QGroupBox("Web Server Configuration")
+        server_layout = QVBoxLayout()
+
+        self.remote_web_ui_checkbox = create_checkbox_setting(
+            "Enable Remote Web UI",
+            "enable_remote_web_ui",
+            False,
+            self,
+            "Access and queue updates for your game library from a mobile browser on your local network.",
+        )
+        server_layout.addWidget(self.remote_web_ui_checkbox)
+
+        # Port Layout
+        port_layout = QHBoxLayout()
+        port_label = QLabel("Web UI Port:")
+        self.web_ui_port_spinbox = QSpinBox()
+        self.web_ui_port_spinbox.setRange(1024, 65535)
+        self.web_ui_port_spinbox.setValue(self.settings.value("web_ui_port", 8765, type=int))
+        self.web_ui_port_spinbox.setFixedWidth(100)
+
+        check_port_btn = QPushButton("Check Availability")
+        check_port_btn.clicked.connect(self._check_port_availability)
+
+        port_layout.addWidget(port_label)
+        port_layout.addWidget(self.web_ui_port_spinbox)
+        port_layout.addWidget(check_port_btn)
+        port_layout.addStretch()
+        server_layout.addLayout(port_layout)
+
+        server_group.setLayout(server_layout)
+        layout.addWidget(server_group)
+
+        # Background Service Group (Linux only)
+        if sys.platform != "win32":
+            service_group = QGroupBox("Background Service (systemd)")
+            service_layout = QVBoxLayout()
+
+            self.service_status_label = QLabel("Background Service: Checking...")
+            self.service_boot_label = QLabel("Start on Boot: Checking...")
+            service_layout.addWidget(self.service_status_label)
+            service_layout.addWidget(self.service_boot_label)
+
+            # Control buttons
+            control_layout = QHBoxLayout()
+            self.start_service_btn = QPushButton("Start Service")
+            self.start_service_btn.clicked.connect(self._start_service)
+            self.stop_service_btn = QPushButton("Stop Service")
+            self.stop_service_btn.clicked.connect(self._stop_service)
+            control_layout.addWidget(self.start_service_btn)
+            control_layout.addWidget(self.stop_service_btn)
+            service_layout.addLayout(control_layout)
+
+            # Boot buttons
+            boot_layout = QHBoxLayout()
+            self.enable_boot_btn = QPushButton("Enable on Boot")
+            self.enable_boot_btn.clicked.connect(self._enable_boot)
+            self.disable_boot_btn = QPushButton("Disable on Boot")
+            self.disable_boot_btn.clicked.connect(self._disable_boot)
+            boot_layout.addWidget(self.enable_boot_btn)
+            boot_layout.addWidget(self.disable_boot_btn)
+            service_layout.addLayout(boot_layout)
+
+            service_group.setLayout(service_layout)
+            layout.addWidget(service_group)
+
+            self.service_poll_timer = QTimer(self)
+            self.service_poll_timer.timeout.connect(self._update_service_status)
+            self.service_poll_timer.start(2000)
+            self._update_service_status()
 
         layout.addStretch()
-        self.tab_widget.addTab(tab, "Style")
+        self.tab_widget.addTab(tab, "WebUI")
+
+    def _check_port_availability(self) -> None:
+        """Check if the configured port is open/available for use."""
+        port = self.web_ui_port_spinbox.value()
+        
+        is_our_running_port = False
+        if self.main_window and hasattr(self.main_window, "web_server_manager"):
+            if self.main_window.web_server_manager.is_running():
+                if self.main_window.web_server_manager.server.port == port:
+                    is_our_running_port = True
+
+        if is_our_running_port:
+            QMessageBox.information(
+                self,
+                "Port Check",
+                f"Port {port} is currently in use by this instance of ASSella (Active)."
+            )
+            return
+
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            s.close()
+            QMessageBox.information(
+                self,
+                "Port Check",
+                f"Port {port} is free and available!"
+            )
+        except OSError:
+            QMessageBox.warning(
+                self,
+                "Port Check",
+                f"Port {port} is already in use by another application or the background service."
+            )
+
+    def _get_service_status(self) -> str:
+        """Return 'running', 'stopped', 'not_installed', or 'unknown'."""
+        try:
+            service_path = os.path.expanduser("~/.config/systemd/user/assella-testing.service")
+            if not os.path.exists(service_path):
+                return "not_installed"
+
+            res = subprocess.run(
+                ["systemctl", "--user", "is-active", "assella-testing.service"],
+                capture_output=True,
+                text=True,
+            )
+            status = res.stdout.strip()
+            if status == "active":
+                return "running"
+            else:
+                return "stopped"
+        except Exception as e:
+            logger.error(f"Error checking service status: {e}")
+            return "unknown"
+
+    def _is_service_enabled(self) -> bool:
+        """Return True if enabled to start on boot."""
+        try:
+            res = subprocess.run(
+                ["systemctl", "--user", "is-enabled", "assella-testing.service"],
+                capture_output=True,
+                text=True,
+            )
+            return res.stdout.strip() == "enabled"
+        except Exception:
+            return False
+
+    def _update_service_status(self) -> None:
+        """Update systemd status label and enable/disable control buttons."""
+        if sys.platform == "win32":
+            return
+
+        status = self._get_service_status()
+        enabled = self._is_service_enabled()
+
+        if status == "running":
+            self.service_status_label.setText("Background Service: <font color='#44cc44'>Active (Running)</font>")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(True)
+        elif status == "stopped":
+            self.service_status_label.setText("Background Service: <font color='#cc4444'>Inactive (Stopped)</font>")
+            self.start_service_btn.setEnabled(True)
+            self.stop_service_btn.setEnabled(False)
+        elif status == "not_installed":
+            self.service_status_label.setText("Background Service: <font color='#888888'>Not Configured / Installed</font>")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(False)
+        else:
+            self.service_status_label.setText("Background Service: Unknown Status")
+            self.start_service_btn.setEnabled(False)
+            self.stop_service_btn.setEnabled(False)
+
+        if status != "not_installed":
+            self.enable_boot_btn.setEnabled(not enabled)
+            self.disable_boot_btn.setEnabled(enabled)
+            boot_text = "Enabled" if enabled else "Disabled"
+            self.service_boot_label.setText(f"Start on Boot: <b>{boot_text}</b>")
+        else:
+            self.enable_boot_btn.setEnabled(False)
+            self.disable_boot_btn.setEnabled(False)
+            self.service_boot_label.setText("Start on Boot: N/A")
+
+        if self.main_window and hasattr(self.main_window, "_update_web_ui_status_label"):
+            self.main_window._update_web_ui_status_label()
+
+
+    def _start_service(self) -> None:
+        """Start the systemd user service."""
+        try:
+            subprocess.run(["systemctl", "--user", "start", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to start service: {e}")
+
+    def _stop_service(self) -> None:
+        """Stop the systemd user service."""
+        try:
+            subprocess.run(["systemctl", "--user", "stop", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to stop service: {e}")
+
+    def _enable_boot(self) -> None:
+        """Enable service on boot."""
+        try:
+            subprocess.run(["systemctl", "--user", "enable", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to enable service on boot: {e}")
+
+    def _disable_boot(self) -> None:
+        """Disable service on boot."""
+        try:
+            subprocess.run(["systemctl", "--user", "disable", "assella-testing.service"])
+            self._update_service_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Service Error", f"Failed to disable service on boot: {e}")
 
     @staticmethod
     def _add_checkbox_explanation(layout: QVBoxLayout, text: str) -> None:
@@ -886,19 +1663,24 @@ class SettingsDialog(QDialog):
         color = QColorDialog.getColor()
         if not color.isValid():
             return
-        if (
-            not self.ignore_color_warnings_checkbox.isChecked()
-            and SettingsDialog._is_too_dark(color)
-        ):
+        if SettingsDialog._is_too_dark(color):
             SettingsDialog._show_color_warning()
             return
         hex_c = color.name()
         self.accent_color_button.setStyleSheet(f"background-color: {hex_c};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def reset_accent_color(self) -> None:
         default = "#C06C84"
         self.settings.setValue("accent_color", default)
         self.accent_color_button.setStyleSheet(f"background-color: {default};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def choose_bg_color(self) -> None:
         color = QColorDialog.getColor()
@@ -906,11 +1688,48 @@ class SettingsDialog(QDialog):
             return
         hex_c = color.name()
         self.bg_color_button.setStyleSheet(f"background-color: {hex_c};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def reset_bg_color(self) -> None:
         default = "#000000"
         self.settings.setValue("background_color", default)
         self.bg_color_button.setStyleSheet(f"background-color: {default};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
+
+    def on_preset_changed(self, index: int) -> None:
+        preset_type = self.preset_combo.itemData(index)
+        if preset_type == "custom":
+            return
+
+        presets = {
+            "ocean": ("#a1c9fd", "#111318"),
+            "forest": ("#b1ecbe", "#0f1511"),
+            "lavender": ("#e7bdfb", "#141217")
+        }
+
+        if preset_type in presets:
+            accent_hex, bg_hex = presets[preset_type]
+            self.settings.setValue("material_preset", preset_type)
+
+            self.accent_color_button.setStyleSheet(f"background-color: {accent_hex};")
+            self.bg_color_button.setStyleSheet(f"background-color: {bg_hex};")
+
+            self.settings.setValue("user_accent_color", accent_hex)
+            self.settings.setValue("user_background_color", bg_hex)
+            self.settings.setValue("accent_color", accent_hex)
+            self.settings.setValue("background_color", bg_hex)
+
+            from PyQt6.QtWidgets import QApplication
+            from ui.theme import update_appearance
+            app = QApplication.instance()
+            if app:
+                update_appearance(app, accent_hex, bg_hex)
 
     @staticmethod
     def _is_too_dark(color: QColor) -> bool:
@@ -966,28 +1785,47 @@ class SettingsDialog(QDialog):
             # noinspection PyUnresolvedReferences
             self.main_window.reposition_titlebar(pos)
 
-    def on_gif_display_changed(self, state: int) -> None:
-        enabled = state == 2
-        self.settings.setValue("gif_display_enabled", enabled)
-        if self.main_window and hasattr(self.main_window, "update_gif_display"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.update_gif_display(enabled)
+
 
     def accept(self) -> None:
         """Save all settings and close."""
-        self._save_general_settings()
-        self._save_download_settings()
-        if not self._save_style_settings():
-            return  # Style validation failed
-        logger.info("All settings saved.")
-        super().accept()
+        try:
+            if hasattr(self, "service_poll_timer") and self.service_poll_timer:
+                self.service_poll_timer.stop()
+            self._save_general_settings()
+            self._save_download_settings()
+            if not self._save_style_settings():
+                return  # Style validation failed
+            self.settings.sync()  # Flush to disk immediately
+            logger.info("All settings saved.")
+            super().accept()
+        except Exception as e:
+            import traceback
+            from PyQt6.QtWidgets import QMessageBox
+            logger.error(f"Error saving settings: {e}\n{traceback.format_exc()}")
+            QMessageBox.critical(
+                self,
+                "Error Saving Settings",
+                f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
+            )
 
     def _save_general_settings(self) -> None:
         api_key = self.api_key_input.text().strip()
         self.settings.setValue("morrenus_api_key", api_key)
-        if self.sgdb_api_key_input:
-            sgdb_key = self.sgdb_api_key_input.text().strip()
-            self.settings.setValue("sgdb_api_key", sgdb_key)
+        try:
+            self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
+        except RuntimeError:
+            pass
+        try:
+            self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
+        except RuntimeError:
+            pass
+        if hasattr(self, "steam_username_input") and self.steam_username_input:
+            self.settings.setValue("steam_username", self.steam_username_input.text().strip())
+        if hasattr(self, "steam_password_input") and self.steam_password_input:
+            from utils.helpers import encrypt_string
+            encrypted_pass = encrypt_string(self.steam_password_input.text())
+            self.settings.setValue("steam_password", encrypted_pass)
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -996,46 +1834,183 @@ class SettingsDialog(QDialog):
             "sls_config_management",
             self.sls_config_management_checkbox.isChecked(),
         )
+        self.settings.setValue(
+            "default_download_directory", self.dl_location_combo.currentData() or ""
+        )
         self.settings.setValue("library_mode", self.library_mode_checkbox.isChecked())
         self.settings.setValue(
             "auto_skip_single_choice",
             self.auto_skip_single_choice_checkbox.isChecked(),
         )
         self.settings.setValue(
+            "smart_depot_selection",
+            self.smart_depot_selection_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "autofetch_manifests_on_boot",
+            self.autofetch_manifests_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "use_lancache",
+            self.use_lancache_checkbox.isChecked(),
+        )
+        self.settings.setValue(
             "prompt_steam_restart",
             self.prompt_steam_restart_checkbox.isChecked(),
         )
+        if self.ignore_slssteam_updater_checkbox is not None:
+            self.settings.setValue(
+                "ignore_slssteam_updater",
+                self.ignore_slssteam_updater_checkbox.isChecked(),
+            )
         self.settings.setValue(
             "generate_achievements", self.achievements_checkbox.isChecked()
         )
-        self.settings.setValue(
-            "use_steamless", self.steamless_checkbox.isChecked()
-        )
 
-        if self.application_shortcuts_checkbox:
+        if self.workshop_steam_checkbox is not None:
             self.settings.setValue(
-                "create_application_shortcuts",
-                self.application_shortcuts_checkbox.isChecked(),
+                "workshop_steam_enabled",
+                self.workshop_steam_checkbox.isChecked(),
+            )
+        if hasattr(self, "workshop_max_dl_slider") and self.workshop_max_dl_slider is not None:
+            self.settings.setValue(
+                "workshop_max_downloads",
+                self.workshop_max_dl_slider.value(),
+            )
+        if self.workshop_cell_id_input is not None:
+            self.settings.setValue(
+                "workshop_cell_id",
+                self.workshop_cell_id_input.text().strip(),
+            )
+        
+        # Save Consolidated Steamless DRM Remover settings
+        drm_mode = self.steamless_remover_combo.currentData()
+        if drm_mode == "aio":
+            self.settings.setValue("use_steamless_aio", True)
+            self.settings.setValue("use_steamless", False)
+        elif drm_mode == "cli":
+            self.settings.setValue("use_steamless_aio", False)
+            self.settings.setValue("use_steamless", True)
+        else:
+            self.settings.setValue("use_steamless_aio", False)
+            self.settings.setValue("use_steamless", False)
+
+        if hasattr(self, "enable_denuvo_sync_checkbox") and self.enable_denuvo_sync_checkbox is not None:
+            self.settings.setValue("enable_denuvo_sync", self.enable_denuvo_sync_checkbox.isChecked())
+
+
+        # Save Soundtrack and Search Blacklist filtering toggles
+        self.settings.setValue("filter_soundtracks", self.filter_soundtracks_checkbox.isChecked())
+        self.settings.setValue("filter_search_blacklist", self.filter_search_blacklist_checkbox.isChecked())
+
+        # Check if the toggle changed
+        old_val = self.settings.value("fakeappid_db_integration", False, type=bool)
+        new_val = self.fakeappid_db_integration_checkbox.isChecked() if self.fakeappid_db_integration_checkbox is not None else False
+        self.settings.setValue("fakeappid_db_integration", new_val)
+
+        if old_val != new_val:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+            if config_path.exists():
+                try:
+                    from utils.yaml_config_manager import check_and_merge_fakeappid_db, clean_fakeappid_db
+                    if new_val:
+                        check_and_merge_fakeappid_db(config_path)
+                    else:
+                        clean_fakeappid_db(config_path)
+                except Exception as ex:
+                    logger.error(f"Failed to apply Fake AppID database integration changes: {ex}")
+
+        # Check if Remote Web UI toggle changed
+        old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
+        new_web_ui = self.remote_web_ui_checkbox.isChecked() if self.remote_web_ui_checkbox is not None else False
+        
+        old_port = self.settings.value("web_ui_port", 8765, type=int)
+        new_port = self.web_ui_port_spinbox.value() if hasattr(self, "web_ui_port_spinbox") and self.web_ui_port_spinbox is not None else old_port
+        
+        self.settings.setValue("enable_remote_web_ui", new_web_ui)
+        self.settings.setValue("web_ui_port", new_port)
+
+        if self.main_window and hasattr(self.main_window, "toggle_web_server"):
+            if old_web_ui != new_web_ui:
+                if new_web_ui:
+                    self.main_window.toggle_web_server(True, port=new_port)
+                else:
+                    self.main_window.toggle_web_server(False)
+            elif new_web_ui and old_port != new_port:
+                # Port changed while running -> restart web server on the new port
+                self.main_window.toggle_web_server(False)
+                self.main_window.toggle_web_server(True, port=new_port)
+        
+        if hasattr(self, "update_interval_slider") and self.update_interval_slider:
+            self.settings.setValue(
+                "update_check_interval_minutes", self.update_interval_slider.value() * 5
+            )
+            if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
+                self.main_window.apply_update_timer_settings()
+
+        if hasattr(self, "check_updates_on_boot_checkbox"):
+            self.settings.setValue(
+                "check_updates_on_boot",
+                self.check_updates_on_boot_checkbox.isChecked()
             )
 
-        val = 255
-        if hasattr(self, "max_downloads_spinbox"):
+        val = 8
+        if hasattr(self, "max_downloads_slider") and self.max_downloads_slider:
             try:
-                val = max(0, min(255, int(self.max_downloads_spinbox.value())))
+                val = max(1, min(30, int(self.max_downloads_slider.value())))
             except (ValueError, TypeError):
                 pass
         self.settings.setValue("max_downloads", val)
 
-    def _save_audio_settings(self) -> None:
-        self.settings.setValue("play_etw", self.play_etw_checkbox.isChecked())
-        self.settings.setValue("play_lall", self.play_lall_checkbox.isChecked())
-        self.settings.setValue("play_50hz_hum", self.play_50hz_hum_checkbox.isChecked())
-        self.settings.setValue("master_volume", self.master_volume_slider.value())
-        self.settings.setValue("effects_volume", self.effects_volume_slider.value())
-        self.settings.setValue("hum_volume", self.hum_volume_slider.value())
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.apply_audio_settings()
+        if hasattr(self, "save_old_manifests_checkbox"):
+            try:
+                self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
+            except RuntimeError:
+                pass
+        if hasattr(self, "max_old_manifests_spinbox"):
+            try:
+                self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
+            except RuntimeError:
+                pass
+        if hasattr(self, "hide_macos_depots_checkbox"):
+            try:
+                self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
+            except RuntimeError:
+                pass
+        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
+            new_val = self.isp_bypass_hubcap_checkbox.isChecked()
+            self.settings.setValue("isp_bypass_hubcap", new_val)
+            if not new_val:
+                try:
+                    from utils.isp_bypass import TorManager
+                    TorManager.stop_tor()
+                except Exception:
+                    pass
+
+    def _on_isp_bypass_toggled(self, state) -> None:
+        """Stops background Tor process if user unchecks ISP Bypass."""
+        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
+            if not self.isp_bypass_hubcap_checkbox.isChecked():
+                try:
+                    from utils.isp_bypass import TorManager
+                    TorManager.stop_tor()
+                except Exception as e:
+                    logger.warning(f"Error stopping Tor on toggle untick: {e}")
+
+        if hasattr(self, "log_level_combo"):
+            self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
+        if hasattr(self, "log_category_combo"):
+            self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
+
+        # Apply logging changes immediately
+        try:
+            from utils.logger import update_log_filters
+            update_log_filters()
+        except Exception:
+            pass
+
+
 
     def _save_style_settings(self) -> bool:
         acc_s = self.accent_color_button.styleSheet()
@@ -1045,14 +2020,20 @@ class SettingsDialog(QDialog):
 
         self.settings.setValue("user_accent_color", u_accent)
         self.settings.setValue("user_background_color", u_bg)
+        if hasattr(self, "preset_combo"):
+            preset_type = self.preset_combo.itemData(self.preset_combo.currentIndex())
+            self.settings.setValue("material_preset", preset_type)
 
         prev_mode = self.settings.value("ui_mode", "default")
         applied_accent = u_accent
         applied_bg = u_bg
         self.settings.setValue("font-file", "")
 
-        ignore = self.ignore_color_warnings_checkbox.isChecked()
-        self.settings.setValue("ignore_color_warnings", ignore)
+
+
+        self.settings.setValue("nerd_mode", False)
+        if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
+            self.main_window.update_nerd_mode(False)
         if SettingsDialog._is_too_close(QColor(u_accent), QColor(u_bg)):
                 QMessageBox.warning(
                     self,
@@ -1076,17 +2057,102 @@ class SettingsDialog(QDialog):
             style = "Bold Italic"
         self.settings.setValue("font-style", style)
 
+        origins = self.remember_origins_checkbox.isChecked()
+        self.settings.setValue("remember_origins", origins)
+
+        if hasattr(self, "simplify_denuvo_status_checkbox") and self.simplify_denuvo_status_checkbox is not None:
+            simplify = self.simplify_denuvo_status_checkbox.isChecked()
+            self.settings.setValue("simplify_denuvo_status", simplify)
+
+            from PyQt6.QtWidgets import QApplication
+            from ui.dialogs.gamelibrary import GameItemWidget
+            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+            from ui.dialogs.fetchmanifest import SearchItemWidget
+            for w in QApplication.instance().allWidgets():
+                if isinstance(w, GameItemWidget):
+                    w.update_denuvo_badge()
+                    w.update_proton_badge()
+                elif isinstance(w, GameDetailsDialogV2):
+                    w.update_title()
+                elif isinstance(w, SearchItemWidget):
+                    w.update_ratings()
+
+
+
         if self.main_window and hasattr(self.main_window, "ui_state"):
+
             # noinspection PyUnresolvedReferences
             self.main_window.ui_state.apply_style_settings()
 
         return True
 
+    def _on_origins_toggled(self, state: int) -> None:
+        checked = bool(state)
+        self.settings.setValue("remember_origins", checked)
+
+        # Stop existing movie/fade
+        if self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+
+        if self._fade_timer:
+            self._fade_timer.stop()
+            self._fade_timer = None
+
+        if checked:
+            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            if os.path.exists(gif_path):
+                self._origins_movie = QMovie(gif_path)
+                self._origins_movie.frameChanged.connect(self.update)
+                self._origins_movie.start()
+
+                # Start flash animation (fade from high opacity down to watermark level)
+                self._flash_opacity = 0.85
+                self._fade_timer = QTimer(self)
+                self._fade_timer.timeout.connect(self._fade_origins_opacity)
+                self._fade_timer.start(50)
+            else:
+                self._origins_movie = None
+        else:
+            self._origins_movie = None
+
+        self.update()
+
+    def _fade_origins_opacity(self) -> None:
+        self._flash_opacity = max(0.18, self._flash_opacity - 0.04)
+        self.update()
+        if self._flash_opacity <= 0.18:
+            if self._fade_timer:
+                self._fade_timer.stop()
+                self._fade_timer = None
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if hasattr(self, "_origins_movie") and self._origins_movie and self._origins_movie.state() == QMovie.MovieState.Running:
+            painter = QPainter(self)
+            current_pixmap = self._origins_movie.currentPixmap()
+            if not current_pixmap.isNull():
+                painter.setOpacity(self._flash_opacity)
+
+                # Scale keeping aspect ratio to fit the dialog size
+                scaled_pixmap = current_pixmap.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+
+                # Center the scaled image in the dialog area
+                x = (self.width() - scaled_pixmap.width()) // 2
+                y = (self.height() - scaled_pixmap.height()) // 2
+                
+                # Fill borders with background color matching the GIF edges (dark blue/black)
+                # Background of lain.gif is approximately #001020 or #011b33. We can just fill the rest of the canvas
+                # with the default background color of the dialog or a matching dark color
+                painter.drawPixmap(x, y, scaled_pixmap)
+
     def reject(self) -> None:
         """Revert settings on cancel."""
         self.settings.setValue("morrenus_api_key", self._original_morrenus_key)
-        if self.sgdb_api_key_input:
-            self.settings.setValue("sgdb_api_key", self._original_sgdb_key)
 
         # Revert live-previewed settings that were saved immediately
         self.settings.setValue("titlebar_position", self._original_titlebar_position)
@@ -1094,16 +2160,20 @@ class SettingsDialog(QDialog):
             # noinspection PyUnresolvedReferences
             self.main_window.reposition_titlebar(self._original_titlebar_position)
 
-        self.settings.setValue(
-            "gif_display_enabled", self._original_gif_display_enabled
-        )
-        if self.main_window and hasattr(self.main_window, "update_gif_display"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.update_gif_display(self._original_gif_display_enabled)
+        # Revert origins settings and stop movie if running
+        if hasattr(self, "_original_remember_origins"):
+            self.settings.setValue("remember_origins", self._original_remember_origins)
+        if hasattr(self, "_original_simplify_denuvo_status"):
+            self.settings.setValue("simplify_denuvo_status", self._original_simplify_denuvo_status)
 
-        if self.main_window and hasattr(self.main_window, "audio_manager"):
-            # noinspection PyUnresolvedReferences
-            self.main_window.audio_manager.apply_audio_settings()
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+
+
+        
+        if hasattr(self, "service_poll_timer") and self.service_poll_timer:
+            self.service_poll_timer.stop()
         super().reject()
 
     @staticmethod
@@ -1257,25 +2327,194 @@ class SettingsDialog(QDialog):
                 f"Failed to open external installer page. Please visit:\n{url}",
             )
 
-    def run_slscheevo(self) -> None:
-        """Launch SLScheevo."""
-        path = get_slscheevo_path()
-        if not os.path.exists(path):
-            QMessageBox.critical(self, "Error", f"SLScheevo missing: {path}")
+    def _update_achievements_button_state(self) -> None:
+        """Enables/disables the Configure Achievements button based on toggle state."""
+        if hasattr(self, "configure_achievements_btn") and self.configure_achievements_btn:
+            is_enabled = self.achievements_checkbox.isChecked()
+            self.configure_achievements_btn.setEnabled(is_enabled)
+
+    def _update_asshead_status_ui(self) -> None:
+        """Updates the status display for ASShead."""
+        import utils.assfixer
+        status = utils.assfixer.boot_status
+        issues = utils.assfixer.boot_issues
+
+        if status == "optimal":
+            self.asshead_status_label.setText("Status: Config Optimal. All settings are clean and matches upstream.")
+            self.asshead_status_label.setStyleSheet("color: #44bb44;")
+        elif status == "needs_fix":
+            issues_summary = "\n".join(f"• {issue}" for issue in issues[:3])
+            if len(issues) > 3:
+                issues_summary += f"\n• ...and {len(issues) - 3} more issues."
+            self.asshead_status_label.setText(f"Status: Updates/Repairs needed.\n{issues_summary}")
+            self.asshead_status_label.setStyleSheet("color: #ffaa00;")
+        elif status == "no_config":
+            self.asshead_status_label.setText("Status: No config found. SLSsteam config.yaml does not exist.")
+            self.asshead_status_label.setStyleSheet("color: #cc4444;")
+        elif status == "checking":
+            self.asshead_status_label.setText("Status: Checking configuration status...")
+            self.asshead_status_label.setStyleSheet("color: #888888;")
+        elif status == "failed":
+            self.asshead_status_label.setText(f"Status: Failed to check upstream template.\nError: {issues[0] if issues else 'Unknown'}")
+            self.asshead_status_label.setStyleSheet("color: #cc4444;")
+        else:
+            self.asshead_status_label.setText("Status: Not checked.")
+            self.asshead_status_label.setStyleSheet("color: #888888;")
+
+        # Enable/disable restore backup button based on backup existence
+        from utils.assfixer import get_latest_backup_path, DEFAULT_CONFIG_PATH
+        if hasattr(self, "restore_backup_btn") and self.restore_backup_btn:
+            has_bak = get_latest_backup_path(DEFAULT_CONFIG_PATH) is not None
+            self.restore_backup_btn.setEnabled(has_bak)
+
+    def open_sls_config(self) -> None:
+        """Open the SLSsteam config.yaml file."""
+        from utils.assfixer import DEFAULT_CONFIG_PATH
+        if not DEFAULT_CONFIG_PATH.exists():
+            QMessageBox.warning(self, "Open Config", "SLSsteam config.yaml does not exist.")
             return
 
-        save = get_slscheevo_save_path()
-        cmd = []
-        if str(path).endswith(".py"):
-            py = get_venv_python()
-            cmd.append(
-                py if py else ("python" if sys.platform == "win32" else "python3")
-            )
-        cmd.extend(
-            [str(path), "--save-dir", str(save), "--noclear", "--max-tries", "101"]
-        )
+        # Attempt to open using the default system handler
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        try:
+            opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(DEFAULT_CONFIG_PATH)))
+            if not opened:
+                import webbrowser
+                webbrowser.open(DEFAULT_CONFIG_PATH.as_uri())
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open config.yaml:\n{e}")
 
-        SettingsDialog._launch_terminal_command(cmd, os.path.dirname(path))
+    def restore_sls_backup(self) -> None:
+        """Restores the last backup copy of config.yaml."""
+        from utils.assfixer import restore_latest_backup, DEFAULT_CONFIG_PATH
+
+        reply = QMessageBox.question(
+            self, "Restore Backup",
+            "Are you sure you want to restore the latest backup? This will overwrite your current config.yaml.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        success, msg, bak_path = restore_latest_backup(DEFAULT_CONFIG_PATH)
+        if success:
+            import utils.assfixer
+            utils.assfixer.boot_status = "checking"
+
+            import threading
+            def run_check():
+                utils.assfixer.run_boot_config_check()
+                # Safely update status label
+                from PyQt6.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(self, "_update_asshead_status_ui", Qt.ConnectionType.QueuedConnection)
+                if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                    self.main_window.refresh_system_status()
+
+            threading.Thread(target=run_check, daemon=True).start()
+            QMessageBox.information(self, "Restore Backup", msg)
+        else:
+            QMessageBox.critical(self, "Restore Backup Error", msg)
+
+    def run_asshead_fixer(self) -> None:
+        """Runs the ASShead config fixer and shows outcomes."""
+        from utils.assfixer import run_asshead_migration, DEFAULT_CONFIG_PATH
+
+        self.run_asshead_btn.setEnabled(False)
+        self.asshead_status_label.setText("Status: Running fixer...")
+        self.asshead_status_label.setStyleSheet("color: #888888;")
+
+        success, msg, bak_path = run_asshead_migration(DEFAULT_CONFIG_PATH)
+
+        self.run_asshead_btn.setEnabled(True)
+
+        if success:
+            import utils.assfixer
+            utils.assfixer.boot_status = "optimal"
+            utils.assfixer.boot_issues = []
+
+            self._update_asshead_status_ui()
+
+            # Refresh system status on the main window dashboard to update the status color
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+
+            detail_msg = msg
+            if bak_path:
+                detail_msg += f"\n\nA backup of your previous config has been saved to:\n{bak_path}"
+
+            QMessageBox.information(self, "ASShead Config Fixer", detail_msg)
+        else:
+            self._update_asshead_status_ui()
+
+            # Refresh system status on the main window dashboard in case check failed
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+
+            QMessageBox.critical(self, "ASShead Config Fixer Error", f"Failed to fix configuration:\n{msg}")
+
+    def run_denuvo_sync(self) -> None:
+        """Runs the Denuvo games sync in a background thread."""
+        if not hasattr(self, "run_denuvo_sync_btn") or not self.run_denuvo_sync_btn:
+            return
+        self.run_denuvo_sync_btn.setEnabled(False)
+        self.asshead_status_label.setText("Status: Syncing Denuvo games...")
+        self.asshead_status_label.setStyleSheet("color: #ffaa00;")
+
+        import threading
+        from core.ratings import sync_denuvo_cache_and_config
+
+
+        def do_sync():
+            res = sync_denuvo_cache_and_config(main_window=self.main_window, force=True)
+            self._last_denuvo_sync_result = res
+            from PyQt6.QtCore import QMetaObject, Qt
+            QMetaObject.invokeMethod(self, "_on_denuvo_sync_finished", Qt.ConnectionType.QueuedConnection)
+
+        threading.Thread(target=do_sync, daemon=True).start()
+
+    @pyqtSlot()
+    def _on_denuvo_sync_finished(self) -> None:
+        res = getattr(self, "_last_denuvo_sync_result", {"success": False, "error": "Unknown error"})
+        if hasattr(self, "run_denuvo_sync_btn") and self.run_denuvo_sync_btn:
+            self.run_denuvo_sync_btn.setEnabled(True)
+        self._update_asshead_status_ui()
+
+        if res.get("success"):
+            count = res.get("count", 0)
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+            QMessageBox.information(
+                self,
+                "Denuvo Sync",
+                f"Successfully synced Denuvo games to your SLSsteam configuration.\nBlocked games count: {count}"
+            )
+        else:
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+            QMessageBox.critical(
+                self,
+                "Denuvo Sync Error",
+                f"Denuvo Sync failed:\n{res.get('error')}"
+            )
+
+
+    def run_schema_grabber_manually(self) -> None:
+        """Launch schema-grabber manually in a terminal."""
+        helper_path = Paths.deps("schema-grabber/login_helper.py")
+        if not helper_path.exists():
+            QMessageBox.critical(self, "Error", f"Achievements helper missing at: {helper_path}")
+            return
+
+        cmd = []
+        py = get_venv_python()
+        cmd.append(
+            py if py else ("python" if sys.platform == "win32" else "python3")
+        )
+        cmd.append(str(helper_path))
+
+        SettingsDialog._launch_terminal_command(cmd, str(helper_path.parent))
 
     @staticmethod
     def _launch_terminal_command(
@@ -1345,27 +2584,21 @@ class SettingsDialog(QDialog):
             # noinspection PyUnresolvedReferences
             self.main_window.task_manager.run_steamless_aio_manually(path)
 
-    def open_custom_gifs_dialog(self) -> None:
-        try:
-            CustomGifsDialog(self.main_window).exec()
-        except Exception as e:
-            logger.error(f"Error opening GIF dialog: {e}")
+    def _browse_aio_script(self) -> None:
+        """Browse for the Steamless AIO shell script."""
+        current = self.steamless_aio_path_edit.text() or os.path.expanduser("~/Downloads")
+        start_dir = os.path.dirname(current) if os.path.isfile(current) else current
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Steamless AIO Script",
+            start_dir,
+            "Shell Scripts (*.sh);;All Files (*)",
+        )
+        if path:
+            self.steamless_aio_path_edit.setText(path)
+            get_settings().setValue("steamless_aio_path", path)
 
-    def clear_gif_cache(self) -> None:
-        if (
-            QMessageBox.question(
-                self,
-                "Clear Cache",
-                "Regenerate all GIFs?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            if self.main_window:
-                # noinspection PyUnresolvedReferences
-                self.main_window.gif_manager.regenerate_anyway = True
-                # noinspection PyUnresolvedReferences
-                self.main_window.ui_state.update_gifs()
+
 
     @staticmethod
     def register_registry_entries() -> None:
