@@ -100,6 +100,24 @@ def _build_depots_content(
     return depots_content
 
 
+def _get_active_steam_id() -> str:
+    """Retrieve active SteamID64 from Steam's loginusers.vdf if available."""
+    try:
+        from core.steam_helpers import find_steam_install
+        steam_path = find_steam_install()
+        if steam_path:
+            loginusers_path = os.path.join(steam_path, "config", "loginusers.vdf")
+            if os.path.exists(loginusers_path):
+                with open(loginusers_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                m = re.search(r'"(7656119\d+)"', content)
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return "76561199083839651"
+
+
 def build_acf_content(
     game_data: Dict[str, Any],
     size_on_disk: int,
@@ -107,11 +125,13 @@ def build_acf_content(
     include_depots: bool,
     log_proton: bool = False,
     logger=None,
+    existing_fields: Optional[Dict[str, str]] = None,
 ) -> str:
     buildid = game_data.get("buildid", "0")
     selected_depots = game_data.get("selected_depots_list", [])
     all_manifests = game_data.get("manifests", {})
     all_depots = game_data.get("depots", {})
+    steam_id = _get_active_steam_id()
 
     platform_config = _build_platform_config(
         selected_depots, all_depots, log_proton, logger
@@ -124,18 +144,47 @@ def build_acf_content(
         else '\t"InstalledDepots"\n\t{\n\t}'
     )
 
+    preserve_content = ""
+    if existing_fields:
+        ignored_keys = {
+            "appid", "Universe", "name", "StateFlags", "installdir",
+            "SizeOnDisk", "buildid", "InstalledDepots", "UserConfig",
+            "MountedConfig", "LastOwner", "TargetBuildID", "DownloadType",
+            "UpdateResult", "AutoUpdateBehavior"
+        }
+        for k, v in existing_fields.items():
+            if k not in ignored_keys:
+                preserve_content += f'\t"{k}"\t\t"{v}"\n'
+
     acf_content = (
         f'"AppState"\n'
         f"{{\n"
-        f'\t"appid"\t\t"{game_data["appid"]}"\n'
+        f'\t"appid"\t\t"{game_data.get("appid", "")}"\n'
         f'\t"Universe"\t\t"1"\n'
-        f'\t"name"\t\t"{game_data["game_name"]}"\n'
+        f'\t"name"\t\t"{game_data.get("game_name", "")}"\n'
         f'\t"StateFlags"\t\t"4"\n'
         f'\t"installdir"\t\t"{install_folder_name}"\n'
+        f'\t"LastUpdated"\t\t"0"\n'
+        f'\t"LastPlayed"\t\t"0"\n'
         f'\t"SizeOnDisk"\t\t"{size_on_disk}"\n'
+        f'\t"StagingSize"\t\t"0"\n'
         f'\t"buildid"\t\t"{buildid}"\n'
-        f"{installed_depots_str}"
+        f'\t"LastOwner"\t\t"{steam_id}"\n'
+        f'\t"DownloadType"\t\t"1"\n'
+        f'\t"UpdateResult"\t\t"0"\n'
+        f'\t"BytesToDownload"\t\t"0"\n'
+        f'\t"BytesDownloaded"\t\t"0"\n'
+        f'\t"BytesToStage"\t\t"0"\n'
+        f'\t"BytesStaged"\t\t"0"\n'
+        f'\t"TargetBuildID"\t\t"{buildid}"\n'
+        f'\t"AutoUpdateBehavior"\t\t"0"\n'
+        f'\t"AllowOtherDownloadsWhileRunning"\t\t"0"\n'
+        f'\t"ScheduledAutoUpdate"\t\t"0"\n'
     )
+    if preserve_content:
+        acf_content += preserve_content
+
+    acf_content += f"{installed_depots_str}"
 
     if platform_config:
         acf_content += f"\n{platform_config}"
@@ -161,6 +210,20 @@ def write_acf_file(
     )
     os.makedirs(os.path.dirname(acf_path), exist_ok=True)
 
+    existing_fields = {}
+    if os.path.exists(acf_path):
+        try:
+            with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            for line in content.splitlines():
+                match = re.match(r'^\s*"([^"]+)"\s*"([^"]*)"\s*$', line)
+                if match:
+                    k, v = match.groups()
+                    existing_fields[k] = v
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to read existing ACF file: {e}")
+
     acf_content = build_acf_content(
         game_data,
         size_on_disk,
@@ -168,6 +231,7 @@ def write_acf_file(
         include_depots=include_depots,
         log_proton=log_proton,
         logger=logger,
+        existing_fields=existing_fields,
     )
 
     with open(acf_path, "w", encoding="utf-8") as f:

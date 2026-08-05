@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from utils.settings import get_settings
 
@@ -111,22 +111,15 @@ def backup_config_on_startup(config_path: Path) -> bool:
 
 
 def _atomic_write(config_path: Path, content: str) -> bool:
-    """Atomically write content to config file using a temporary file."""
-    temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher."""
     try:
-        # Write to temp file in same directory
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             f.write(content)
-        # Atomic replace
-        os.replace(temp_path, config_path)
+            f.flush()
+            os.fsync(f.fileno())
         return True
     except OSError as e:
-        logger.error(f"Failed to atomically write {config_path}: {e}", exc_info=True)
-        if temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
+        logger.error(f"Failed to write {config_path}: {e}", exc_info=True)
         return False
 
 
@@ -245,8 +238,8 @@ def _remove_matching_entry(
     config_path: Path, pattern: re.Pattern, success_message: str, error_message: str
 ) -> bool:
     try:
-        content = _get_config_content_if_enabled(config_path)
-        if content is _CONFIG_DISABLED or content is None:
+        content = _read_config_content(config_path)
+        if content is None:
             return False
 
         match = pattern.search(content)
@@ -417,9 +410,8 @@ def _append_to_additional_apps(
 def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
     try:
-        content = _get_config_content_if_enabled(config_path)
-        if content is _CONFIG_DISABLED:
-            return False
+        ensure_disable_updates_off(config_path)
+        content = _read_config_content(config_path)
         if content is None:
             return _init_config_with_app(config_path, app_id, comment)
 
@@ -595,50 +587,47 @@ def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
         fixed_content, _ = _fix_app_tokens_indentation(content)
         content = fixed_content
 
-        app_tokens_section = _get_app_tokens_section(content)
-        existing_pattern = re.compile(
-            rf"^ {2}{re.escape(app_id)}\s*:\s*(.+)$", re.MULTILINE
+        # Search for any existing entries for this app_id (with or without quotes)
+        dup_pattern = re.compile(
+            rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*.*(?:\r?\n)?", re.MULTILINE
         )
-        existing_match = existing_pattern.search(app_tokens_section)
-
-        if existing_match:
-            existing_token = existing_match.group(1).strip()
-            if existing_token == token:
+        
+        matches = list(dup_pattern.finditer(content))
+        
+        if len(matches) == 1:
+            match_val_pat = re.compile(
+                rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*(.+)$", re.MULTILINE
+            )
+            m = match_val_pat.search(matches[0].group(0))
+            if m and m.group(1).strip() == token:
+                # Token matches exactly. No update needed.
                 return False
 
-            # Update existing token
-            tokens_start = content.find("AppTokens:")
-            line_start = tokens_start + len("AppTokens:\n") + existing_match.start()
-            line_end = line_start + len(existing_match.group(0))
-            new_line = f"  {app_id}: {token}"
-            new_content = content[:line_start] + new_line + content[line_end:]
+        # Remove all existing occurrences of this app_id
+        new_content = content
+        for m in reversed(matches):
+            new_content = new_content[:m.start()] + new_content[m.end():]
+
+        # Insert the single correct entry under AppTokens
+        tokens_start = new_content.find("AppTokens:")
+        if tokens_start != -1:
+            insert_pos = tokens_start + len("AppTokens:")
+            if insert_pos < len(new_content) and new_content[insert_pos] == "\n":
+                insert_pos += 1
+            elif insert_pos < len(new_content) and new_content[insert_pos] == "\r":
+                insert_pos += 2
+                
+            new_token_line = f"  {app_id}: {token}\n"
+            new_content = new_content[:insert_pos] + new_token_line + new_content[insert_pos:]
+            
             if _atomic_write(config_path, new_content):
-                logger.info(f"Updated AppToken for '{app_id}'")
+                if len(matches) > 1:
+                    logger.info(f"Updated AppToken for '{app_id}' and removed duplicates")
+                elif len(matches) == 1:
+                    logger.info(f"Updated AppToken for '{app_id}'")
+                else:
+                    logger.info(f"Added AppToken for '{app_id}'")
                 return True
-            return False
-
-        # Add new token
-        new_token_line = f"  {app_id}: {token}"
-        token_line_pattern = re.compile(
-            r"(^AppTokens:\n)( {2}\S+:[^\n]*)", re.MULTILINE
-        )
-        token_match = token_line_pattern.search(content)
-
-        if token_match:
-            new_content = (
-                content[: token_match.end()]
-                + "\n"
-                + new_token_line
-                + content[token_match.end() :]
-            )
-        else:
-            new_content = content.replace(
-                "AppTokens:", "AppTokens:\n" + new_token_line, 1
-            )
-
-        if _atomic_write(config_path, new_content):
-            logger.info(f"Added AppToken for '{app_id}'")
-            return True
         return False
 
     except OSError as e:
@@ -861,3 +850,290 @@ def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> 
         f"Removed AppID '{app_id}' from FakeAppIds in {config_path}",
         f"Failed to remove FakeAppId '{app_id}': {{e}}",
     )
+
+
+def check_and_merge_fakeappid_db(config_path: Path) -> bool:
+    """Check if fakeappid database integration is enabled and merge it if so.
+
+    Returns:
+        True if changes were written, False otherwise.
+    """
+    settings = get_settings()
+    if not settings.value("fakeappid_db_integration", False, type=bool):
+        return False
+
+    if not is_slssteam_mode_enabled():
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        return False
+
+    # Get database file path
+    from utils.paths import Paths
+    db_path = Paths.resource("fakeapps_accela.yaml")
+    if not db_path.exists():
+        logger.warning(f"Fake AppID database not found at {db_path}")
+        return False
+
+    # Parse database FakeAppIds
+    db_fakeapps = {}
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line == "FakeAppIds:":
+                    continue
+                # Split at comment if any
+                comment = ""
+                if "#" in line:
+                    line, comment = line.split("#", 1)
+                    comment = comment.strip()
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    k, v = k.strip(), v.strip()
+                    if k.isdigit() and v.isdigit():
+                        db_fakeapps[k] = (v, comment)
+    except Exception as e:
+        logger.error(f"Failed to parse Fake AppID database: {e}")
+        return False
+
+    if not db_fakeapps:
+        return False
+
+    # Load current content
+    try:
+        content = _read_config_content(config_path)
+        if content is None:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            content = ""
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    # Find FakeAppIds section
+    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
+    match = fake_appids_pattern.search(content)
+
+    # Let's collect existing FakeAppIds
+    existing_fake_apps = {}
+    if match:
+        section_start = match.end()
+        after_section = content[section_start:]
+        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+        next_match = next_key_pattern.search(after_section)
+        section_end = section_start + next_match.start() if next_match else len(content)
+        section_content = content[section_start:section_end]
+        
+        entry_pattern = re.compile(r"^\s*(\d+)\s*:\s*(\d+)", re.MULTILINE)
+        for m in entry_pattern.finditer(section_content):
+            existing_fake_apps[m.group(1).strip()] = m.group(2).strip()
+
+    # Determine which entries are missing
+    missing_entries = {}
+    for appid, (fake_appid, comment) in db_fakeapps.items():
+        if appid not in existing_fake_apps:
+            missing_entries[appid] = (fake_appid, comment)
+
+    if not missing_entries:
+        logger.debug("No missing FakeAppIds to merge.")
+        return False
+
+    logger.info(f"Merging {len(missing_entries)} entries from database into SLSsteam FakeAppIds...")
+    
+    # Create the text block to insert
+    insert_text = ""
+    for appid, (fake_appid, comment) in missing_entries.items():
+        comment_suffix = f"  # {comment}" if comment else ""
+        insert_text += f"  {appid}: {fake_appid}{comment_suffix}\n"
+
+    new_content = ""
+    if match:
+        # Find where to insert. We insert right after "FakeAppIds:\n"
+        insert_pos = match.end()
+        if insert_pos < len(content) and content[insert_pos] == "\n":
+            insert_pos += 1
+        new_content = content[:insert_pos] + insert_text + content[insert_pos:]
+    else:
+        # Section doesn't exist, append it
+        new_content = content.rstrip() + "\n\nFakeAppIds:\n" + insert_text
+
+    # Write atomically
+    _create_backup(config_path)
+    if _atomic_write(config_path, new_content):
+        logger.info(f"Successfully merged Fake AppID database into {config_path}")
+        return True
+    return False
+
+
+def clean_fakeappid_db(config_path: Path) -> bool:
+    """Remove all FakeAppIds that belong to the database from SLSsteam config.yaml.
+
+    Returns:
+        True if changes were written, False otherwise.
+    """
+    if not config_path.exists():
+        return False
+
+    from utils.paths import Paths
+    db_path = Paths.resource("fakeapps_accela.yaml")
+    if not db_path.exists():
+        return False
+
+    # Parse database AppIDs
+    db_appids = set()
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line == "FakeAppIds:":
+                    continue
+                if "#" in line:
+                    line, _ = line.split("#", 1)
+                if ":" in line:
+                    k, _ = line.split(":", 1)
+                    k = k.strip()
+                    if k.isdigit():
+                        db_appids.add(k)
+    except Exception as e:
+        logger.error(f"Failed to parse Fake AppID database: {e}")
+        return False
+
+    if not db_appids:
+        return False
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    # Find FakeAppIds section
+    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
+    match = fake_appids_pattern.search(content)
+    if not match:
+        return False
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+    section_content = content[section_start:section_end]
+
+    # Rebuild section content, omitting any lines that match db_appids
+    new_section_lines = []
+    removed_count = 0
+    entry_pattern = re.compile(r"^\s*(\d+)\s*:")
+    for line in section_content.split("\n"):
+        m = entry_pattern.match(line)
+        if m:
+            appid = m.group(1).strip()
+            if appid in db_appids:
+                removed_count += 1
+                continue  # skip/remove this line
+        new_section_lines.append(line)
+
+    if removed_count == 0:
+        return False
+
+    new_section_content = "\n".join(new_section_lines)
+    new_content = content[:section_start] + new_section_content + content[section_end:]
+
+    _create_backup(config_path)
+    if _atomic_write(config_path, new_content):
+        logger.info(f"Successfully cleaned {removed_count} database FakeAppIds from {config_path}")
+        return True
+    return False
+
+
+def get_denuvo_games(config_path: Path) -> Dict[str, List[str]]:
+    """Get all DenuvoGames mappings from SLSsteam config.yaml.
+
+    Returns:
+        Dict mapping SteamID to list of AppIDs.
+    """
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return {}
+
+    # Find DenuvoGames section
+    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
+    match = denuvo_games_pattern.search(content)
+    if not match:
+        return {}
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+    section_content = content[section_start:section_end]
+
+    res = {}
+    current_steam_id = None
+
+    for line in section_content.split("\n"):
+        line_strip = line.strip()
+        if not line_strip or line_strip.startswith("#"):
+            continue
+
+        steam_id_match = re.match(r"^\s*['\"]?(\d+)['\"]?:\s*$", line)
+        if steam_id_match:
+            current_steam_id = steam_id_match.group(1)
+            res[current_steam_id] = []
+            continue
+
+        appid_match = re.match(r"^\s*-\s*['\"]?(\d+)['\"]?\s*(?:#.*)?$", line)
+        if appid_match and current_steam_id is not None:
+            res[current_steam_id].append(appid_match.group(1))
+
+    return res
+
+
+def save_denuvo_games(config_path: Path, steam_id: str, appids: List[str]) -> bool:
+    """Deprecated: Denuvo status should never be written to SLS config. Calls clean_denuvo_games_section instead."""
+    return clean_denuvo_games_section(config_path)
+
+
+def clean_denuvo_games_section(config_path: Path) -> bool:
+    """
+    Remove all entries under DenuvoGames in SLSsteam config.yaml, returning it to an empty block.
+    This reverses the unintentional Denuvo blocklist write introduced in v2.5.4.
+    """
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
+    match = denuvo_games_pattern.search(content)
+    if not match:
+        return False
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+
+    section_content = content[section_start:section_end]
+    # If there is content (indented keys or appids) under DenuvoGames, strip it
+    if section_content.strip():
+        new_content = content[:section_start] + "\n" + content[section_end:]
+        _create_backup(config_path)
+        if _atomic_write(config_path, new_content):
+            logger.info(f"Successfully cleaned DenuvoGames block in {config_path}")
+            return True
+    return False
+
+

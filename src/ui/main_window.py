@@ -483,7 +483,12 @@ class SimplifiedTerminalWidget(QWidget):
             for entry in history:
                 t = entry.get("timestamp", 0)
                 from datetime import datetime
-                time_str = datetime.fromtimestamp(t).strftime('%H:%M')
+                entry_dt = datetime.fromtimestamp(t)
+                now_dt = datetime.now()
+                if entry_dt.date() == now_dt.date():
+                    time_str = entry_dt.strftime('%H:%M')
+                else:
+                    time_str = entry_dt.strftime('%b %d, %H:%M')
 
                 # Use format_game_display_name for proper branch/DLC badges
                 from ui.dialogs.gamelibrary import format_game_display_name
@@ -922,6 +927,7 @@ class MainWindow(QMainWindow):
         # Deferred refresh: run after the event loop processes the UI construction
         # so update_stats and refresh_system_status always see fully built widgets
         QTimer.singleShot(0, self._deferred_post_init_refresh)
+        QTimer.singleShot(1000, self._prompt_experimental_features_once_if_needed)
         self._setup_resize_handles()
         if self.ui_state:
             self.ui_state.apply_style_settings()
@@ -981,6 +987,102 @@ class MainWindow(QMainWindow):
             self.refresh_system_status_signal.emit()
 
         threading.Thread(target=run_boot_checks, daemon=True).start()
+
+    def _prompt_experimental_features_once_if_needed(self):
+        """Prompt user once on startup to try experimental features if not already enabled."""
+        has_prompted = self.settings.value("has_prompted_experimental", False, type=bool)
+        isp_bypass = self.settings.value("isp_bypass_hubcap", False, type=bool)
+        sls_acf = self.settings.value("experimental_acf_independent", False, type=bool)
+
+        if not has_prompted and (not isp_bypass or not sls_acf):
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QPushButton, QHBoxLayout
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Experimental Features — Try & Feedback")
+            dlg.setFixedWidth(540)
+            dlg.setStyleSheet("""
+                QDialog {
+                    background-color: #1a1b26;
+                    color: #a9b1d6;
+                    border: 1px solid #3b4261;
+                    border-radius: 8px;
+                }
+                QLabel { color: #c0caf5; }
+                QCheckBox { color: #7aa2f7; font-size: 13px; font-weight: bold; }
+                QCheckBox::indicator { width: 16px; height: 16px; }
+                QPushButton {
+                    background-color: #3b4261;
+                    color: #c0caf5;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #7aa2f7; color: #15161e; }
+            """)
+
+            layout = QVBoxLayout(dlg)
+            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(10)
+
+            title_lbl = QLabel("🚀 Try ASSella Experimental Features!", dlg)
+            title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #7aa2f7;")
+            layout.addWidget(title_lbl)
+
+            desc_lbl = QLabel(
+                "Enhance your download stability and Steam integration by testing our experimental features. "
+                "You can change these anytime in Settings -> Experimental.",
+                dlg
+            )
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setStyleSheet("color: #a9b1d6; font-size: 12px; margin-bottom: 6px;")
+            layout.addWidget(desc_lbl)
+
+            chk_isp = QCheckBox("Enable ISP Bypass (Hubcap API)", dlg)
+            chk_isp.setChecked(True)
+            layout.addWidget(chk_isp)
+
+            isp_sub = QLabel(
+                "Bypasses ISP DNS censorship on Hubcap API requests using Google/Cloudflare DNS (1.1.1.1/8.8.8.8) "
+                "with background Tor fallback. (Only affects API calls, not game file downloads).",
+                dlg
+            )
+            isp_sub.setWordWrap(True)
+            isp_sub.setStyleSheet("color: #565f89; font-size: 11px; margin-left: 22px; margin-bottom: 8px;")
+            layout.addWidget(isp_sub)
+
+            chk_acf = QCheckBox("Enable 'Let SLS handle ACF' (Native ACF Mode)", dlg)
+            chk_acf.setChecked(True)
+            layout.addWidget(chk_acf)
+
+            acf_sub = QLabel(
+                "Delegates .acf file creation and updates directly to Steam via SLSsteam API instead of writing them manually. "
+                "Fixes 'Content Encrypted' errors, play instantly without Steam restarts, and clean native uninstallation.",
+                dlg
+            )
+            acf_sub.setWordWrap(True)
+            acf_sub.setStyleSheet("color: #565f89; font-size: 11px; margin-left: 22px; margin-bottom: 12px;")
+            layout.addWidget(acf_sub)
+
+            btn_box = QHBoxLayout()
+            btn_box.addStretch()
+
+            skip_btn = QPushButton("Skip for Now", dlg)
+            skip_btn.setStyleSheet("background-color: transparent; color: #565f89;")
+            skip_btn.clicked.connect(dlg.reject)
+
+            save_btn = QPushButton("Enable Selected & Continue", dlg)
+            save_btn.clicked.connect(dlg.accept)
+
+            btn_box.addWidget(skip_btn)
+            btn_box.addWidget(save_btn)
+            layout.addLayout(btn_box)
+
+            res = dlg.exec()
+            self.settings.setValue("has_prompted_experimental", True)
+            if res == QDialog.DialogCode.Accepted:
+                self.settings.setValue("isp_bypass_hubcap", chk_isp.isChecked())
+                self.settings.setValue("experimental_acf_independent", chk_acf.isChecked())
 
 
     def _setup_window_properties(self) -> None:
@@ -1929,11 +2031,21 @@ class MainWindow(QMainWindow):
     def check_steam_updates_blocked(self) -> bool:
         """Check if steam updates are blocked via steam.cfg."""
         from pathlib import Path
-        path = Path("/home/deck/.steam/steam/steam.cfg")
-        if not path.exists():
+        possible_paths = [
+            Path.home() / ".steam/steam/steam.cfg",
+            Path.home() / ".steam/root/steam.cfg",
+            Path.home() / ".local/share/Steam/steam.cfg",
+            Path.home() / ".steam/steam.cfg",
+        ]
+        target_path = None
+        for p in possible_paths:
+            if p.exists():
+                target_path = p
+                break
+        if not target_path:
             return False
         try:
-            lines = path.read_text().splitlines()
+            lines = target_path.read_text().splitlines()
             inhibit = False
             force_disable = False
             for line in lines:
@@ -1947,7 +2059,7 @@ class MainWindow(QMainWindow):
                         inhibit = True
                     if k == "bootstrapperforceselfupdate" and v in ("disable", "disabled", "false", "0"):
                         force_disable = True
-            return inhibit and force_disable
+            return inhibit or force_disable
         except Exception as e:
             logger.error(f"Error reading steam.cfg: {e}")
             return False
@@ -1996,9 +2108,9 @@ class MainWindow(QMainWindow):
 
 
 
-        # CloudR (Check DisableCloud in /home/deck/.config/SLSsteam/config.yaml)
+        # CloudR (Check DisableCloud in ~/.config/SLSsteam/config.yaml)
         if hasattr(self, "cloudr_value") and self.cloudr_value:
-            cloudr_config_path = "/home/deck/.config/SLSsteam/config.yaml"
+            cloudr_config_path = os.path.expanduser("~/.config/SLSsteam/config.yaml")
             cloudr_present = False
             cloudr_status_str = "Missing"
             
@@ -2578,7 +2690,7 @@ class MainWindow(QMainWindow):
 
         # Determine where the installed AppImage lives
         appimage_path = os.environ.get("APPIMAGE", "")
-        default_appimage = "/home/deck/.local/share/ACCELA/ASSella.AppImage"
+        default_appimage = os.path.expanduser("~/.local/share/ACCELA/ASSella.AppImage")
         if not appimage_path or not os.path.exists(appimage_path):
             appimage_path = default_appimage
         if not os.path.exists(appimage_path):
@@ -2635,8 +2747,22 @@ class MainWindow(QMainWindow):
                     api_url,
                     headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
                 )
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    release_data = json.loads(resp.read().decode("utf-8"))
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        release_data = json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError as err:
+                    if err.code == 404 and tag != "latest":
+                        alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
+                        alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
+                        logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
+                        req_alt = urllib.request.Request(
+                            alt_api_url,
+                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                        )
+                        with urllib.request.urlopen(req_alt, timeout=15) as resp:
+                            release_data = json.loads(resp.read().decode("utf-8"))
+                    else:
+                        raise
 
                 download_url = None
                 for asset in release_data.get("assets", []):

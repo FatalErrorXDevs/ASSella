@@ -2783,6 +2783,7 @@ class GameLibraryDialog(QDialog):
         c_data = opts.get("compat", False)
         c_saves = opts.get("saves", False)
         c_wipe_sls = opts.get("wipe_sls", False)
+        c_wipe_sls_only = opts.get("wipe_sls_only", False)
 
         is_dlc_only = False
         appid = str(game_data.get("appid", "0"))
@@ -2798,15 +2799,15 @@ class GameLibraryDialog(QDialog):
         self._uninstall_progress_dialog.show()
 
         # Start async uninstall
-        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves, c_wipe_sls)
+        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves, c_wipe_sls, c_wipe_sls_only)
 
     def _uninstall_game_async(
-        self, game_data: dict, c_data: bool, c_saves: bool, c_wipe_sls: bool = False
+        self, game_data: dict, c_data: bool, c_saves: bool, c_wipe_sls: bool = False, c_wipe_sls_only: bool = False
     ) -> None:
         """Background task to uninstall game."""
         try:
             # Wipe SLS only: remove from config + .DepotDownloader, leave files intact
-            if c_wipe_sls and not c_data and not c_saves:
+            if c_wipe_sls_only:
                 success, err = self._wipe_sls_only(game_data)
             else:
                 success, err = self.game_manager.uninstall_game(
@@ -2843,13 +2844,21 @@ class GameLibraryDialog(QDialog):
         install_path = game_data.get("install_path", "")
         errors = []
 
-        # 1. Remove from SLSsteam config
+        # 1. Remove from SLSsteam config and notify SLSsteam
         try:
             from utils.yaml_config_manager import remove_additional_app
             config_path = get_user_config_path()
             if config_path.exists():
                 remove_additional_app(config_path, appid)
                 logger.info(f"Wipe SLS: removed AppID {appid} from SLS config")
+            
+            import platform
+            if platform.system() == "Linux":
+                try:
+                    from core.steam_helpers import slssteam_api_send
+                    slssteam_api_send(f"uninstall|{appid}")
+                except Exception as api_err:
+                    logger.warning(f"Failed to send SLSsteam uninstall API trigger: {api_err}")
         except Exception as e:
             errors.append(f"SLS config: {e}")
 
@@ -2894,7 +2903,11 @@ class GameLibraryDialog(QDialog):
         os.remove(acf)
         QMessageBox.information(self, "Done", "Manifest removed.")
         if sys.platform == "linux":
-            slssteam_api_send(f"install|{appid}|0")
+            try:
+                from utils.slssteam_integration import patch_acf_via_sls
+                patch_acf_via_sls(appid, library_path=path)
+            except Exception:
+                pass
 
     @staticmethod
     def _is_goldberg_applied(game_dir: str) -> bool:

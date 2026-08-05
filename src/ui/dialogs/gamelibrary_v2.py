@@ -1626,7 +1626,7 @@ class GameDetailsDialogV2(QDialog):
             if platform.system() == "Linux":
                 for key, text in [("compat", "Remove Proton/Wine prefix"),
                                    ("saves", "Remove local cloud saves"),
-                                   ("wipe_sls", "Wipe SLS (you own the game) — removes from config + .DepotDownloader")]:
+                                   ("wipe_sls_only", "Wipe SLS (you own the game) — removes from config + .DepotDownloader")]:
                     cb = QCheckBox(text)
                     cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
                     self._uninstall_opts[key] = cb
@@ -1655,7 +1655,7 @@ class GameDetailsDialogV2(QDialog):
             self.parent_window._uninstall_game(gd, self, {})
         else:
             self.parent_window._uninstall_game(
-                self.game_data, self, {"compat": False, "saves": False, "wipe_sls": True}
+                self.game_data, self, {"compat": False, "saves": False, "wipe_sls": True, "wipe_sls_only": False}
             )
 
     def _toggle_uninstall_panel(self):
@@ -1853,27 +1853,112 @@ class GameDetailsDialogV2(QDialog):
 
         row_idx = 0
 
-        # Section 1: DRM Removal
+        # Section 1: DRM & Emulation — 4-button layout (no row labels)
         grid.addWidget(self._section_title("DRM & Emulation"), row_idx, 0, 1, 2)
         row_idx += 1
 
-        b_aio = _btn("Run")
+        # Row 1: Steamless (Python) | Steamless (Legacy)
+        b_aio = QPushButton("Steamless (Python)")
+        b_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        b_aio.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_aio.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.06);
+                border: 1.5px solid rgba(255,255,255,0.12);
+                border-radius: 10px;
+                color: {ac};
+                font-size: 10pt;
+                font-weight: 600;
+                padding: 8px 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.12);
+                border-color: {ac};
+            }}
+            QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+        """)
         b_aio.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
-        grid.addWidget(_row_label("Remove DRM (python steamless)"), row_idx, 0)
-        grid.addWidget(b_aio, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-        row_idx += 1
 
-        b_steamless = _btn("Run")
+        b_steamless = QPushButton("Steamless (Legacy)")
+        b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+        b_steamless.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_steamless.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.06);
+                border: 1.5px solid rgba(255,255,255,0.12);
+                border-radius: 10px;
+                color: {ac};
+                font-size: 10pt;
+                font-weight: 600;
+                padding: 8px 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.12);
+                border-color: {ac};
+            }}
+            QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+        """)
         b_steamless.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
-        grid.addWidget(_row_label("Remove DRM (legacy steamless)"), row_idx, 0)
-        grid.addWidget(b_steamless, row_idx, 1, Qt.AlignmentFlag.AlignRight)
+
+        sl_row_widget = QWidget()
+        sl_row_widget.setStyleSheet("background: transparent;")
+        sl_row = QHBoxLayout(sl_row_widget)
+        sl_row.setContentsMargins(0, 0, 0, 0)
+        sl_row.setSpacing(8)
+        sl_row.addWidget(b_aio)
+        sl_row.addWidget(b_steamless)
+
+        grid.addWidget(sl_row_widget, row_idx, 0, 1, 2)
         row_idx += 1
 
-        # Goldberg buttons side by side in the second column
-        self.gb_apply_btn = _btn("Apply Goldberg", width=120)
-        self.gb_remove_btn = _btn("Remove Goldberg", width=120)
+        # Row 2: Apply Goldberg | Remove Goldberg
+        self.gb_apply_btn = QPushButton("Apply Goldberg")
+        self.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
+        self.gb_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gb_apply_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.06);
+                border: 1.5px solid rgba(255,255,255,0.12);
+                border-radius: 10px;
+                color: {ac};
+                font-size: 10pt;
+                font-weight: 600;
+                padding: 8px 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.12);
+                border-color: {ac};
+            }}
+            QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+        """)
+
+        self.gb_remove_btn = QPushButton("Remove Goldberg")
+        self.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
+        self.gb_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gb_remove_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.04);
+                border: 1.5px solid rgba(255,255,255,0.07);
+                border-radius: 10px;
+                color: rgba(255,255,255,0.3);
+                font-size: 10pt;
+                font-weight: 600;
+                padding: 8px 0;
+            }
+            QPushButton:enabled {
+                background: rgba(160,30,20,0.15);
+                border-color: rgba(255,100,80,0.4);
+                color: #ff8a7a;
+            }
+            QPushButton:enabled:hover {
+                background: rgba(160,30,20,0.25);
+                border-color: #ff8a7a;
+            }
+        """)
+        self.gb_remove_btn.setEnabled(False)
+
         self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.finished.connect(
             lambda: self.parent_window.goldberg_check_complete.disconnect(
@@ -1896,17 +1981,15 @@ class GameDetailsDialogV2(QDialog):
         self.gb_apply_btn.clicked.connect(_apply_gb)
         self.gb_remove_btn.clicked.connect(_remove_gb)
 
-        gb_container = QWidget()
-        gb_container.setFixedWidth(246)
-        gb_container.setStyleSheet("background: transparent;")
-        gb_row = QHBoxLayout(gb_container)
+        gb_row_widget = QWidget()
+        gb_row_widget.setStyleSheet("background: transparent;")
+        gb_row = QHBoxLayout(gb_row_widget)
         gb_row.setContentsMargins(0, 0, 0, 0)
-        gb_row.setSpacing(6)
+        gb_row.setSpacing(8)
         gb_row.addWidget(self.gb_apply_btn)
         gb_row.addWidget(self.gb_remove_btn)
 
-        grid.addWidget(_row_label("Goldberg Steam Emulator"), row_idx, 0)
-        grid.addWidget(gb_container, row_idx, 1, Qt.AlignmentFlag.AlignRight)
+        grid.addWidget(gb_row_widget, row_idx, 0, 1, 2)
         row_idx += 1
 
         # Divider
@@ -2007,13 +2090,9 @@ class GameDetailsDialogV2(QDialog):
             if is_applied:
                 self.gb_apply_btn.setEnabled(False)
                 self.gb_remove_btn.setEnabled(True)
-                self.gb_remove_btn.setStyleSheet(f"background: rgba(160,30,20,30); color: #ff8a7a;")
-                self.gb_apply_btn.setStyleSheet("")
             else:
                 self.gb_apply_btn.setEnabled(True)
                 self.gb_remove_btn.setEnabled(False)
-                self.gb_apply_btn.setStyleSheet(f"background: rgba(255, 255, 255, 0.12); color: {self.accent_color};")
-                self.gb_remove_btn.setStyleSheet("")
 
     def _update_depot_label(self):
         if self.settings:

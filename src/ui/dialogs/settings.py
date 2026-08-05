@@ -226,6 +226,7 @@ class SettingsDialog(QDialog):
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
         self.isp_bypass_hubcap_checkbox = None
+        self.experimental_acf_independent_checkbox = None
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
@@ -263,7 +264,7 @@ class SettingsDialog(QDialog):
         self._original_simplify_denuvo_status = self.settings.value("simplify_denuvo_status", False, type=bool)
         if self._original_remember_origins:
 
-            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            gif_path = os.path.expanduser("~/.local/share/ACCELA/jumpscare/lain.gif")
             if os.path.exists(gif_path):
                 self._origins_movie = QMovie(gif_path)
                 self._origins_movie.frameChanged.connect(self.update)
@@ -352,6 +353,19 @@ class SettingsDialog(QDialog):
         # Initialize button state after all tabs have been populated
         self._update_achievements_button_state()
 
+        # Apply initial state: if Let SLS handle ACF is already enabled, disable Prompt Steam Restart
+        try:
+            if (self.experimental_acf_independent_checkbox is not None
+                    and self.experimental_acf_independent_checkbox.isChecked()
+                    and self.prompt_steam_restart_checkbox is not None):
+                self.prompt_steam_restart_checkbox.setChecked(False)
+                self.prompt_steam_restart_checkbox.setEnabled(False)
+                self.prompt_steam_restart_checkbox.setToolTip(
+                    "Steam restart is not needed when 'Let SLS handle ACF' is active."
+                )
+        except Exception:
+            pass
+
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""
         buttons = create_standard_buttons(self.accept, self.reject)
@@ -436,13 +450,17 @@ class SettingsDialog(QDialog):
         group_layout.addWidget(self.smart_depot_selection_checkbox)
 
         self.autofetch_manifests_checkbox = create_checkbox_setting(
-            "Auto-fetch update manifests on boot",
+            "Auto-fetch update manifests on boot (EOL - Soon Removed)",
             "autofetch_manifests_on_boot",
             False,
             self,
-            "Pre-download manifest zip files in the background on startup for all games needing updates.",
+            "[End of Life - Soon Removed] Pre-download manifest zip files in the background on startup for all games needing updates.",
         )
         group_layout.addWidget(self.autofetch_manifests_checkbox)
+        _eol_desc = QLabel("⚠ End of Life — Will be removed in a future update. Pre-downloads manifest files on startup.")
+        _eol_desc.setWordWrap(True)
+        _eol_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 4px;")
+        group_layout.addWidget(_eol_desc)
 
         self.use_lancache_checkbox = create_checkbox_setting(
             "Enable LanCache Detection",
@@ -558,10 +576,29 @@ class SettingsDialog(QDialog):
             "isp_bypass_hubcap",
             False,
             self,
-            "Bypasses ISP DNS blocking/censorship for Hubcap API requests using DoH (DNS-over-HTTPS) with automatic background Tor helper fallback.",
+            "If Hubcap API is blocked by your ISP, uses Cloudflare/Google DNS (1.1.1.1/8.8.8.8) to bypass. If DNS bypass fails, falls back to Tor (slower connection). Note: This only affects Hubcap API requests, not game file downloads.",
         )
         self.isp_bypass_hubcap_checkbox.stateChanged.connect(self._on_isp_bypass_toggled)
         experimental_layout.addWidget(self.isp_bypass_hubcap_checkbox)
+        _isp_desc = QLabel("Routes Hubcap API through Cloudflare/Google DNS (1.1.1.1 / 8.8.8.8). Falls back to Tor if blocked. Does not affect game file downloads.")
+        _isp_desc.setWordWrap(True)
+        _isp_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 6px;")
+        experimental_layout.addWidget(_isp_desc)
+
+        self.experimental_acf_independent_checkbox = create_checkbox_setting(
+            "Let SLS handle ACF (Experimental)",
+            "experimental_acf_independent",
+            False,
+            self,
+            "Delegates .acf file creation and updates directly to Steam via SLSsteam API instead of writing them manually. Fixes 'Content Encrypted' errors, play instantly without Steam restarts, and clean native uninstallation.",
+        )
+        self.experimental_acf_independent_checkbox.stateChanged.connect(self._on_experimental_acf_toggled)
+        experimental_layout.addWidget(self.experimental_acf_independent_checkbox)
+        _acf_desc = QLabel("Native SLS .acf generation via SLSsteam API. Fixes 'Content Encrypted' errors, removes need for Steam restart, and enables clean native uninstall.")
+        _acf_desc.setWordWrap(True)
+        _acf_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 6px;")
+        experimental_layout.addWidget(_acf_desc)
+
         experimental_group.setLayout(experimental_layout)
         layout.addWidget(experimental_group)
 
@@ -1098,14 +1135,14 @@ class SettingsDialog(QDialog):
 
         SettingsDialog._add_tool_button(
             tools_layout,
-            "Remove DRM (python steamless)",
+            "Python Steamless",
             "Run Steamless-AIO manually on a game .exe.",
             self.run_steamless_aio_manually,
         )
 
         SettingsDialog._add_tool_button(
             tools_layout,
-            "Remove DRM (legacy steamless)",
+            "Legacy Steamless",
             "Run Steamless manually on a game .exe.",
             self.run_steamless_manually,
         )
@@ -1988,6 +2025,9 @@ class SettingsDialog(QDialog):
                 except Exception:
                     pass
 
+        if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox is not None:
+            self.settings.setValue("experimental_acf_independent", self.experimental_acf_independent_checkbox.isChecked())
+
     def _on_isp_bypass_toggled(self, state) -> None:
         """Stops background Tor process if user unchecks ISP Bypass."""
         if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
@@ -2009,6 +2049,20 @@ class SettingsDialog(QDialog):
             update_log_filters()
         except Exception:
             pass
+
+    def _on_experimental_acf_toggled(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value or state == True or state == 2)
+        if hasattr(self, "prompt_steam_restart_checkbox") and self.prompt_steam_restart_checkbox is not None:
+            if is_checked:
+                if not hasattr(self, "_saved_prompt_restart_pref"):
+                    self._saved_prompt_restart_pref = self.prompt_steam_restart_checkbox.isChecked()
+                self.prompt_steam_restart_checkbox.setChecked(False)
+                self.prompt_steam_restart_checkbox.setEnabled(False)
+                self.prompt_steam_restart_checkbox.setToolTip("Steam restart is not needed when 'Let SLS handle ACF' is active.")
+            else:
+                self.prompt_steam_restart_checkbox.setEnabled(True)
+                if hasattr(self, "_saved_prompt_restart_pref"):
+                    self.prompt_steam_restart_checkbox.setChecked(self._saved_prompt_restart_pref)
 
 
 
@@ -2100,7 +2154,7 @@ class SettingsDialog(QDialog):
             self._fade_timer = None
 
         if checked:
-            gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
+            gif_path = os.path.expanduser("~/.local/share/ACCELA/jumpscare/lain.gif")
             if os.path.exists(gif_path):
                 self._origins_movie = QMovie(gif_path)
                 self._origins_movie.frameChanged.connect(self.update)

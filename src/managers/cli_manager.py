@@ -207,13 +207,11 @@ def run_cli_mode(
             game_data_holder[0] = result
             loop.quit()
 
-        # TaskRunner.run() returns the worker
-        zip_task_runner = TaskRunner()
-        zip_task_runner.run(zip_task.run, zip_path).finished.connect(on_zip_processed)
-
         # Create a local event loop to wait for ZIP processing
         loop = QEventLoop()
+        zip_task_runner = TaskRunner()
         zip_task_runner.cleanup_complete.connect(loop.quit)
+        zip_task_runner.run(zip_task.run, zip_path).finished.connect(on_zip_processed)
         loop.exec()
 
         game_data = game_data_holder[0]
@@ -364,14 +362,15 @@ class CLITaskManager:
             size_on_disk = self.download_task.total_download_size_for_this_job
             self.logger.info(f"Retrieved SizeOnDisk from download task: {size_on_disk}")
 
-        # Create ACF file
-        self._create_acf_file(size_on_disk)
+        # Move manifests to depotcache FIRST — depotcache must be populated before
+        # the SLS install|appid|index command fires so Steam can verify local files.
+        self._move_manifests_to_depotcache()
 
         # Write app token to file for non-integrated installs
         self._write_app_token(dest_path)
 
-        # Move manifests to depotcache
-        self._move_manifests_to_depotcache()
+        # Create ACF / trigger SLS install (after depotcache is ready)
+        self._create_acf_file(size_on_disk)
 
         # Save main depot info
         self._save_main_depot_info()
@@ -383,9 +382,6 @@ class CLITaskManager:
         if sys.platform == "linux":
             self._set_linux_binary_permissions()
 
-        # Add AppIDs to SLSsteam config on Linux
-        if sys.platform == "linux" and self.slssteam_mode_was_active:
-            self._add_appids_to_slssteam_config()
 
         # Auto-apply Goldberg after download completion
         auto_apply_goldberg = self.settings.value(
@@ -404,21 +400,15 @@ class CLITaskManager:
 
         # Steamless processing
         steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-        if steamless_enabled:
+        appid = self.game_data.get("appid") if self.game_data else None
+        is_dlc_only = False
+        if appid:
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
+
+        if steamless_enabled and not is_dlc_only:
             self.logger.info("Steamless is enabled, starting DRM removal...")
             self._run_steamless()
-
-        # Application shortcuts (Linux + Steam integration)
-        shortcuts_enabled = self.settings.value(
-            "create_application_shortcuts", False, type=bool
-        )
-        if (
-            shortcuts_enabled
-            and self.slssteam_mode_was_active
-            and sys.platform == "linux"
-        ):
-            self.logger.info("Application shortcuts creation is enabled...")
-            self._run_application_shortcuts()
 
         # Achievement generation
         achievements_enabled = self.settings.value(
@@ -446,6 +436,38 @@ class CLITaskManager:
         """Create Steam ACF manifest file"""
         if not self.game_data or not self.current_dest_path:
             return
+
+        appid = self.game_data.get("appid")
+
+        # 1. Always write/update our local metadata.json fallback
+        try:
+            from utils.assella_metadata import write_accela_metadata
+            write_accela_metadata(self.current_dest_path, self.game_data, size_on_disk)
+        except Exception as e:
+            self.logger.error(f"Failed to write metadata JSON file: {e}")
+
+        # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively
+        try:
+            from utils.slssteam_integration import install_via_sls, _experimental_mode_enabled
+            if _experimental_mode_enabled():
+                self.logger.info("ACF-Independent Mode is active. Delegating manifest creation to Steam natively.")
+                if appid and appid not in ("0", "N/A", "unknown"):
+                    install_via_sls(
+                        appid=str(appid),
+                        game_name=self.game_data.get("game_name", ""),
+                        library_path=self.current_dest_path or "",
+                    )
+                return
+        except Exception as e:
+            self.logger.error(f"Error in SLSsteam install flow for {appid}: {e}")
+
+        # 3. Fallback: Write standard Steam .acf manifest file when experimental mode is disabled
+        if appid:
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
+            if is_dlc_only:
+                self.logger.info("DLC Only mode active. Skipping base game .acf manifest generation.")
+                return
 
         self.logger.info("Generating Steam .acf manifest file...")
 
@@ -538,20 +560,32 @@ class CLITaskManager:
         if not selected_depots or not all_manifests:
             return
 
-        main_depot_id = str(selected_depots[0])
-        manifest_id = all_manifests.get(main_depot_id)
-        if not manifest_id:
-            return
-
         try:
             depots_dir = Path(get_base_path()) / "depots"
             depots_dir.mkdir(parents=True, exist_ok=True)
-
             depot_file = depots_dir / f"{appid}.depot"
-            with open(depot_file, "w") as f:
-                f.write(f"{main_depot_id}: {manifest_id}\n")
 
-            self.logger.info(f"Saved main depot info: {appid}:{manifest_id}")
+            existing_entries = {}
+            if depot_file.exists():
+                try:
+                    for line in depot_file.read_text().splitlines():
+                        parts = [p.strip() for p in line.split(":")]
+                        if len(parts) >= 2:
+                            existing_entries[parts[0]] = line
+                except Exception:
+                    pass
+
+            for depot_id_raw in selected_depots:
+                depot_id = str(depot_id_raw)
+                manifest_id = all_manifests.get(depot_id)
+                if manifest_id:
+                    existing_entries[depot_id] = f"{depot_id}: {manifest_id}"
+
+            with open(depot_file, "w") as f:
+                for entry_line in existing_entries.values():
+                    f.write(entry_line + "\n")
+
+            self.logger.info(f"Saved depot info for app {appid}: {len(existing_entries)} depot(s)")
         except OSError as e:
             self.logger.error(f"Failed to save depot info: {e}")
 
@@ -898,8 +932,8 @@ class CLITaskManager:
             main_appid = self.game_data.get("appid")
             game_name = self.game_data.get("game_name", "")
             if main_appid:
-                add_additional_app(config_path, str(main_appid), game_name)
-                self.logger.info(f"Added AppID '{main_appid}' to SLSsteam config")
+                from utils.dlc_helpers import sync_dlc_only_sls_config
+                sync_dlc_only_sls_config(config_path, str(main_appid), game_name)
 
             selected_dlcs: list = self.game_data.get("selected_dlcs", [])
             dlcs: dict = self.game_data.get("dlcs", {})
@@ -940,50 +974,6 @@ class CLITaskManager:
 
         self.logger.info("Steamless processing completed")
 
-    def _run_application_shortcuts(self):
-        """Create application shortcuts"""
-        if not self.game_data:
-            return
-
-        # Only available on Linux with Steam library integration enabled
-        if sys.platform != "linux":
-            self.logger.info("Application shortcuts are only supported on Linux")
-            return
-
-        if not is_slssteam_mode_enabled():
-            self.logger.info(
-                "Steam library integration is disabled, skipping shortcuts creation"
-            )
-            return
-
-        app_id = self.game_data.get("appid")
-        game_name = self.game_data.get("game_name")
-        if not app_id:
-            return
-
-        sgdb_api_key = self.settings.value("sgdb_api_key", "", type=str)
-        if not sgdb_api_key:
-            return
-
-        try:
-            from core.tasks.application_shortcuts import ApplicationShortcutsTask
-        except ImportError:
-            self.logger.error("ApplicationShortcutsTask module not found")
-            return
-
-        self.logger.info("Creating application shortcuts...")
-
-        shortcuts_task = ApplicationShortcutsTask()
-        shortcuts_task.set_api_key(sgdb_api_key)
-        shortcuts_task.progress.connect(self.logger.info)
-
-        loop = QEventLoop()
-        shortcuts_task.completed.connect(loop.quit)
-        TaskRunner().run(shortcuts_task.run, app_id, game_name)
-        loop.exec()
-
-        self.logger.info("Application shortcuts created")
-
     def _run_achievement_generation(self):
         """Generate achievements using SLScheevo"""
         if not self.game_data:
@@ -1011,9 +1001,9 @@ class CLITaskManager:
                 self.logger.info(
                     f"Achievement generation failed: {result.get('message') if result else 'Unknown error'}"
                 )
-            loop.quit()
 
         achievement_runner = TaskRunner()
+        achievement_runner.cleanup_complete.connect(loop.quit)
         achievement_runner.run(achievement_task.run, app_id).finished.connect(
             lambda r: on_achievement_complete(r)
         )

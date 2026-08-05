@@ -88,9 +88,10 @@ class GameManager(QObject):
 
     def remove_game(self, game_id):
         """Remove a game from the library"""
-        # TODO: Implement game removal logic
         logger.info(f"Removing game from library: {game_id}")
-        self.games = [g for g in self.games if g.get("appid") != game_id]
+        self.games = [g for g in self.games if str(g.get("appid")) != str(game_id)]
+        if str(game_id) in self._games_by_appid:
+            del self._games_by_appid[str(game_id)]
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()

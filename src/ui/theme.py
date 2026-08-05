@@ -303,7 +303,7 @@ def apply_font(
     If font is provided (with a family name), checks if it's a system font.
     Otherwise, falls back to the default TrixieCyrG font.
     """
-    default_font_file = "TrixieCyrG-Plain Regular.otf"
+    google_sans_path = Path.home() / ".local/share/ACCELA/fonts/Google_Sans/static/GoogleSans-Regular.ttf"
 
     # Case 1: Specific font file provided
     if font_file:
