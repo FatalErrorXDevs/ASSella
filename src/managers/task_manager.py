@@ -581,18 +581,19 @@ class TaskManager(QObject):
 
     def start_workshop_download(self, workshop_data):
         self.is_processing = True
-        self.current_job = "Workshop Items"
-        self.current_job_metadata = {"game_name": "Workshop Items"}
-        self.game_data = {"game_name": "Workshop Items", "appid": "Workshop"}
+        display_name = workshop_data.get("display_name", "Workshop Items")
+        self.current_job = display_name
+        self.current_job_metadata = {"game_name": display_name}
+        self.game_data = {"game_name": display_name, "appid": "Workshop"}
         self._job_steps_completed.clear()
 
         self._init_simplified_stages()
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             st = self.main_window.simplified_terminal
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
-                st.dl_text_2_0.setText("Downloading Workshop Files")
+                st.dl_text_2_0.setText(f"Downloading {display_name}")
             st.set_stage_status("download", "in_progress")
-            st.show_active_job("Workshop Items")
+            st.show_active_job(display_name)
 
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(0)
@@ -1805,8 +1806,10 @@ class TaskManager(QObject):
         logger.error(f"Steamless processing failed: {error_str}")
 
         is_linux_no_drm = "no suitable game executables found" in error_str.lower()
-        if is_linux_no_drm:
-            self._steamless_progress_log.append("no suitable game executables found")
+        is_no_steam_drm = "no steam drm detected" in error_str.lower()
+
+        if is_linux_no_drm or is_no_steam_drm:
+            self._steamless_progress_log.append(error_str)
             self._steamless_error = False
             self._last_steamless_success = False
             if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
@@ -2704,13 +2707,17 @@ class TaskManager(QObject):
     def _get_steamless_status_text(self):
         log_text = "\n".join(self._steamless_progress_log).lower()
         if "no suitable game executables found" in log_text:
-            return "No DRM (Linux)"
+            return "None (Linux Native)"
+        if "no steam drm detected" in log_text:
+            return "None"
         if self._last_steamless_success is None:
             return "Ready"
         elif self._last_steamless_success:
             return "Success"
         else:
-            return "Completed (no DRM found)"
+            if "no steam drm detected" in log_text:
+                return "None"
+            return "Error"
 
     def parse_steamless_result(self) -> str:
         """Parse the steamless logs to determine what it did."""
@@ -2719,12 +2726,13 @@ class TaskManager(QObject):
 
         log_text = "\n".join(self._steamless_progress_log).lower()
         if "no suitable game executables found" in log_text:
-            return "No DRM (Linux)"
+            return "Skipped (Linux Native)"
+
+        if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text:
+            return "None (No DRM)"
 
         # Check if there was an error
         if self._steamless_error or not self._last_steamless_success:
-            if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text:
-                return "No SteamStub DRM found"
             return "Failed / Error"
 
         # If successful, find the variant/version

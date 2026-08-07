@@ -1,6 +1,8 @@
+import datetime
 import logging
 import os
 import ssl
+import threading
 from pathlib import Path
 from typing import Optional, Dict, List, Union, Tuple, Any
 
@@ -47,11 +49,19 @@ class SSLAdapter(HTTPAdapter):
         return super().init_poolmanager(*args, **kwargs)
 
 
-# Initialize Session
-_session = requests.Session()
-_session.verify = False
-_session.mount("https://", SSLAdapter())
+_thread_local = threading.local()
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def get_session() -> requests.Session:
+    """Gets or creates a thread-local requests.Session object."""
+    if not hasattr(_thread_local, "session"):
+        session = requests.Session()
+        session.verify = False
+        session.mount("https://", SSLAdapter())
+        _thread_local.session = session
+    return _thread_local.session
 
 
 def _get_headers() -> Optional[Dict[str, str]]:
@@ -96,7 +106,7 @@ def _make_json_request(
     method: str, endpoint: str, params: dict = None
 ) -> Union[Dict, List]:
     """
-    Helper to perform JSON requests (GET/POST) with unified error handling.
+    Helper to perform JSON requests (GET/POST) through the ISP bypass pipeline.
     Returns the JSON data (dict or list) on success.
     Returns a dict with {"error": msg} on failure.
     """
@@ -107,8 +117,9 @@ def _make_json_request(
     url = f"{BASE_URL}{endpoint}"
 
     try:
-        response = _session.request(
-            method, url, headers=headers, params=params, timeout=10
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(
+            get_session(), method, url, headers=headers, params=params, timeout=10
         )
         response.raise_for_status()
         return response.json()
@@ -177,26 +188,31 @@ def search_games(
 
 
 def get_user_stats() -> Dict:
-    """
-    Retrieves user statistics.
-    """
+    """Retrieves user statistics with cached fallback on network timeout."""
     logger.info("Fetching user stats")
-    # API key is passed in headers by _make_json_request, but some endpoints
-    # might require it in query params (legacy). Adding both to be safe based on original code.
     settings = get_settings()
     api_key = settings.value("morrenus_api_key", "", type=str)
-
-    return _make_json_request("GET", "/user/stats", params={"api_key": api_key})
+    res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
+    if isinstance(res, dict) and "error" not in res and res:
+        settings.setValue("last_cached_user_stats", res)
+        return res
+    cached = settings.value("last_cached_user_stats", None)
+    if isinstance(cached, dict) and cached:
+        logger.info("Using cached user stats due to network request error")
+        return cached
+    return res
 
 
 def check_health() -> Dict:
     """
-    Checks if the Hubcab API is healthy.
-    Note: Health check often doesn't need Auth, but we use the shared session.
+    Checks if the Hubcab API is healthy using the ISP bypass pipeline,
+    so users with ISP bypass enabled still get accurate health status.
+    Does not require an API key.
     """
     url = f"{BASE_URL}/health"
     try:
-        response = _session.get(url, timeout=5)
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(get_session(), "GET", url, timeout=5)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -204,9 +220,9 @@ def check_health() -> Dict:
         return {"status": "unhealthy", "error": error_msg}
 
 
-def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
+def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Optional[str]]:
     """
-    Downloads a manifest zip.
+    Downloads a manifest zip through the ISP bypass pipeline.
     Returns (filepath, None) on success, or (None, error_message) on failure.
     """
     headers = _get_headers()
@@ -214,19 +230,59 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
         return None, "API Key is not set. Please set it in Settings."
 
     url = f"{BASE_URL}/manifest/{app_id}"
+    if branch and branch != "public":
+        url += f"?branch={branch}"
+
     manifests_dir = Path(get_base_path()) / "hubcap_manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
-    save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
+    if branch and branch != "public":
+        save_path = manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
+    else:
+        save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
 
     logger.info(f"Downloading manifest {app_id} to {save_path}")
 
+    # Backup previous manifest if setting is enabled and old buildid differs
     try:
-        with _session.get(url, headers=headers, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(save_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        settings = get_settings()
+        # Force save_old_manifests to False to disable backup behavior
+        save_old_manifests = False
+        if save_path.exists() and settings and save_old_manifests:
+            old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
+            if old_buildid:
+                backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
+                try:
+                    if backup_path.exists():
+                        backup_path.unlink()
+                    os.rename(save_path, backup_path)
+                    logger.info(f"Backed up previous manifest (build {old_buildid}) to {backup_path.name}")
+                except OSError as e:
+                    logger.warning(f"Failed to backup old manifest: {e}")
 
+                # Cleanup older backups to respect the limit
+                limit = settings.value("max_old_manifests", 3, type=int)
+                backups = list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
+                if len(backups) > limit:
+                    backups.sort(key=lambda p: p.stat().st_mtime)
+                    to_delete = len(backups) - limit
+                    for b in backups[:to_delete]:
+                        try:
+                            os.remove(b)
+                            logger.info(f"Deleted old manifest backup {b.name}")
+                        except OSError as e:
+                            logger.warning(f"Failed to delete old manifest backup {b.name}: {e}")
+    except Exception as e:
+        logger.warning(f"Error during manifest backup routine: {e}")
+
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+        r = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        r.raise_for_status()
+        with open(save_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
         return str(save_path), None
 
     except Exception as e:
@@ -236,6 +292,14 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
                 os.remove(save_path)
             except OSError:
                 pass
-
         error_msg = _handle_request_exception(e, f"Download {app_id}")
         return None, error_msg
+
+
+def get_manifest_status(app_id: str) -> Dict:
+    """
+    Calls /api/v1/status/{app_id} to check Hubcap's manifest freshness.
+    Returns dict with keys: status, needs_update, update_in_progress, file_modified, error
+    """
+    logger.info(f"Fetching manifest status for app {app_id}")
+    return _make_json_request("GET", f"/status/{app_id}")

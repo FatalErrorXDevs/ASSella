@@ -196,7 +196,7 @@ class GameDetailsDialogV2(QDialog):
         super().__init__(parent)
         self.parent_window = parent
         self.game_data = game_data
-        self.appid = str(game_data.get("appid", "0"))
+        self.appid = str(game_data.get("appid") or game_data.get("app_id") or "0")
         self.settings = get_settings()
         self._active_fetchers = {}
         self.branches_loaded.connect(self._on_branches_loaded)
@@ -367,7 +367,7 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setSpacing(0)
 
         self._tab_buttons = []
-        self._pages_info = [("Info", 0), ("Tools", 1), ("Workshop", 2)]
+        self._pages_info = [("Info", 0), ("Tools", 1), ("Workshop", 2), ("Tickets", 3)]
         for label, idx in self._pages_info:
             btn = QPushButton(label)
             btn.setFlat(True)
@@ -402,6 +402,7 @@ class GameDetailsDialogV2(QDialog):
         self._init_info_tab()
         self._init_tools_tab()
         self._init_workshop_tab()
+        self._init_tickets_tab()
         root.addWidget(self.stacked, 1)
 
         self._switch_tab(0)
@@ -974,11 +975,41 @@ class GameDetailsDialogV2(QDialog):
         sls_row.addWidget(self.sls_input)
         sls_row.addStretch()
         lay.addLayout(sls_row)
-        self._init_slsonline_logic()
-
         lay.addSpacing(12)
         lay.addWidget(self._thin_line())
         lay.addSpacing(10)
+
+        # ── Installed Workshop Content ──────────────────────────────
+        try:
+            ws_mods = []
+            if self.appid and self.appid not in ("0", "N/A", "unknown"):
+                from core.steam_helpers import get_steam_libraries
+                for lib in get_steam_libraries():
+                    ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
+                    if ws_dir.exists():
+                        for item_dir in ws_dir.iterdir():
+                            if item_dir.is_dir() and item_dir.name.isdigit():
+                                size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
+                                ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
+
+            if ws_mods:
+                lay.addWidget(self._section_title(f"🧩 Installed Workshop Content ({len(ws_mods)})"))
+                ws_box = QFrame()
+                ws_box.setStyleSheet("background: rgba(255, 255, 255, 0.04); border-radius: 6px; padding: 6px;")
+                ws_lay = QVBoxLayout(ws_box)
+                ws_lay.setContentsMargins(8, 6, 8, 6)
+                ws_lay.setSpacing(4)
+                for mod in ws_mods[:10]:
+                    mb_size = mod['size'] / (1024 * 1024)
+                    mod_lbl = QLabel(f"• Workshop Item #{mod['wid']}  ({mb_size:.1f} MB)")
+                    mod_lbl.setStyleSheet("color: #7aa2f7; font-size: 9pt; font-weight: bold;")
+                    ws_lay.addWidget(mod_lbl)
+                lay.addWidget(ws_box)
+                lay.addSpacing(12)
+                lay.addWidget(self._thin_line())
+                lay.addSpacing(10)
+        except Exception as e:
+            logger.debug(f"Could not load workshop mods section: {e}")
 
         # Create container for Info tab to support floating footer
         info_tab_container = QWidget()
@@ -2071,18 +2102,268 @@ class GameDetailsDialogV2(QDialog):
         self.stacked.addWidget(scroll)
 
     def _init_workshop_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
         ws_widget = QWidget()
         ws_layout = QVBoxLayout(ws_widget)
-        ws_layout.setContentsMargins(20, 20, 20, 20)
-        ws_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ws_layout.setContentsMargins(16, 14, 16, 14)
+        ws_layout.setSpacing(10)
 
-        msg = QLabel("Placeholder: Workshop items management will be integrated here in a future release.")
-        msg.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 10pt; font-style: italic;")
-        msg.setWordWrap(True)
-        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Header Title
+        title_lbl = QLabel(f"Installed Workshop Mods ({self.game_data.get('game_name', 'Game')})")
+        title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color};")
+        ws_layout.addWidget(title_lbl)
 
-        ws_layout.addWidget(msg)
-        self.stacked.addWidget(ws_widget)
+        ws_mods = []
+        if self.appid and self.appid not in ("0", "N/A", "unknown"):
+            try:
+                from core.steam_helpers import get_steam_libraries
+                for lib in get_steam_libraries():
+                    ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
+                    if ws_dir.exists():
+                        for item_dir in ws_dir.iterdir():
+                            if item_dir.is_dir() and item_dir.name.isdigit():
+                                size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
+                                ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
+            except Exception as e:
+                logger.error(f"Error scanning workshop mods: {e}")
+
+        if not ws_mods:
+            empty_box = QFrame()
+            empty_box.setStyleSheet("background: rgba(255, 255, 255, 0.03); border-radius: 8px; padding: 20px;")
+            empty_lay = QVBoxLayout(empty_box)
+            empty_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_lbl = QLabel("No Workshop mods installed for this game yet.\nUse 'Fetch Manifest' -> 'Workshop Downloader' to install mods.")
+            empty_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 9.5pt; line-height: 1.4;")
+            empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_lay.addWidget(empty_lbl)
+            ws_layout.addWidget(empty_box)
+        else:
+            for mod in ws_mods:
+                mod_card = QFrame()
+                mod_card.setStyleSheet("""
+                    QFrame {
+                        background: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        border-radius: 8px;
+                    }
+                """)
+                card_lay = QHBoxLayout(mod_card)
+                card_lay.setContentsMargins(12, 10, 12, 10)
+
+                mb_size = mod['size'] / (1024 * 1024)
+                mod_info = QLabel(f"<b>Workshop Item #{mod['wid']}</b><br><span style='color: rgba(255,255,255,0.6); font-size: 8.5pt;'>Size: {mb_size:.2f} MB</span>")
+                mod_info.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
+                card_lay.addWidget(mod_info, 1)
+
+                btn_open = QPushButton("Open Folder")
+                btn_open.setFixedHeight(26)
+                btn_open.setStyleSheet(f"background: rgba(255,255,255,0.1); color: #FFFFFF; border-radius: 4px; padding: 0 10px; font-weight: bold;")
+                mod_path = mod['path']
+                btn_open.clicked.connect(lambda _c, p=mod_path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
+                card_lay.addWidget(btn_open)
+
+                ws_layout.addWidget(mod_card)
+
+        ws_layout.addStretch()
+        scroll.setWidget(ws_widget)
+        self.stacked.addWidget(scroll)
+
+    def _init_tickets_tab(self):
+        """Initialize the Tickets Management tab with drag & drop import, export, and status."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        tick_widget = QWidget()
+        tick_widget.setAcceptDrops(True)
+
+        def _drag_enter(event):
+            if event.mimeData().hasUrls() or event.mimeData().hasText():
+                event.acceptProposedAction()
+
+        def _drop_event(event):
+            urls = event.mimeData().urls()
+            if urls:
+                file_path = urls[0].toLocalFile()
+                self._handle_ticket_file_import(file_path)
+            elif event.mimeData().hasText():
+                text = event.mimeData().text()
+                self._handle_ticket_text_import(text)
+
+        tick_widget.dragEnterEvent = _drag_enter
+        tick_widget.dropEvent = _drop_event
+
+        layout = QVBoxLayout(tick_widget)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        # Header Title
+        title_lbl = QLabel(f"SLSsteam Ownership Tickets ({self.appid})")
+        title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color};")
+        layout.addWidget(title_lbl)
+
+        # Drag & Drop Zone Frame
+        drop_zone = QFrame()
+        drop_zone.setObjectName("dropZone")
+        drop_zone.setStyleSheet(f"""
+            QFrame#dropZone {{
+                background: rgba(255, 255, 255, 0.03);
+                border: 2px dashed rgba(255, 255, 255, 0.15);
+                border-radius: 10px;
+                padding: 16px;
+            }}
+            QFrame#dropZone:hover {{
+                border-color: {self.accent_color};
+                background: rgba(255, 255, 255, 0.05);
+            }}
+        """)
+        drop_lay = QVBoxLayout(drop_zone)
+        drop_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_lay.setSpacing(6)
+
+        drop_icon = QLabel("Drag & Drop Ticket File (.yaml) Here")
+        drop_icon.setStyleSheet(f"color: {self.accent_color}; font-size: 10.5pt; font-weight: bold;")
+        drop_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_lay.addWidget(drop_icon)
+
+        drop_sub = QLabel("Or click Browse File / Paste raw base64 payload below")
+        drop_sub.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt;")
+        drop_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_lay.addWidget(drop_sub)
+
+        layout.addWidget(drop_zone)
+
+        # Status & Inspection Box
+        from utils.ticket_manager import get_ticket_status, verify_ticket_activation
+        t_status = get_ticket_status(self.appid)
+        v_status = verify_ticket_activation(self.appid)
+
+        status_box = QFrame()
+        status_box.setStyleSheet("background: rgba(255, 255, 255, 0.04); border-radius: 8px; padding: 12px;")
+        status_lay = QVBoxLayout(status_box)
+        status_lay.setSpacing(6)
+
+        if t_status["exists"]:
+            if v_status.get("sls_active"):
+                st_color = "#4CAF50"
+                st_badge = "Active & Verified Working in SLSsteam"
+            elif v_status.get("base64_valid"):
+                st_color = "#FFC107"
+                st_badge = "Ticket File Installed (Base64 Valid — Pending SLS Launch)"
+            else:
+                st_color = "#FF9800"
+                st_badge = "Ticket File Installed (Invalid Base64)"
+
+            st_text = f"<b>Status:</b> <span style='color: {st_color}; font-weight: bold;'>{st_badge}</span>"
+            if t_status.get("steam_id"):
+                st_text += f"<br><b>Ticket SteamID:</b> {t_status['steam_id']}"
+            if t_status.get("updated_at"):
+                st_text += f"<br><b>Last Updated:</b> {t_status['updated_at']}"
+        else:
+            st_text = f"<b>Status:</b> <span style='color: #ff8a7a;'>No Ticket file registered for AppID {self.appid}</span>"
+
+        status_lbl = QLabel(st_text)
+        status_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; line-height: 1.4;")
+        status_lay.addWidget(status_lbl)
+
+        layout.addWidget(status_box)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        btn_verify = QPushButton("Verify Ticket Status")
+        btn_verify.setFixedHeight(30)
+        btn_verify.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.1); color: #FFFFFF; border-radius: 5px;")
+        btn_verify.clicked.connect(self._verify_ticket_status_dialog)
+        btn_row.addWidget(btn_verify)
+
+        if t_status["exists"]:
+            btn_delete = QPushButton("Delete Ticket")
+            btn_delete.setFixedHeight(30)
+            btn_delete.setStyleSheet("background: rgba(220, 50, 40, 0.2); color: #ff8a7a; border: 1px solid rgba(220, 50, 40, 0.4); border-radius: 5px;")
+            btn_delete.clicked.connect(self._delete_installed_ticket)
+            btn_row.addWidget(btn_delete)
+
+        layout.addLayout(btn_row)
+        layout.addStretch()
+
+        scroll.setWidget(tick_widget)
+        self.stacked.addWidget(scroll)
+
+    def _handle_ticket_file_import(self, file_path: str):
+        from utils.ticket_manager import import_ticket, validate_ticket_file
+        val = validate_ticket_file(file_path, self.appid)
+        if not val.get("valid"):
+            QMessageBox.warning(self, "Invalid Ticket File", f"Sanitation check failed:\n{val.get('error')}")
+            return
+
+        ok, msg = import_ticket(file_path, self.appid)
+        if ok:
+            QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
+            self._switch_tab(3)
+        else:
+            QMessageBox.critical(self, "Import Failed", msg)
+
+    def _handle_ticket_text_import(self, raw_text: str):
+        from utils.ticket_manager import import_ticket, validate_ticket_content
+        val = validate_ticket_content(raw_text, self.appid)
+        if not val.get("valid"):
+            QMessageBox.warning(self, "Invalid Ticket Payload", f"Sanitation check failed:\n{val.get('error')}")
+            return
+
+        ok, msg = import_ticket(raw_text, self.appid)
+        if ok:
+            QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
+            self._switch_tab(3)
+        else:
+            QMessageBox.critical(self, "Import Failed", msg)
+
+    def _verify_ticket_status_dialog(self):
+        from utils.ticket_manager import verify_ticket_activation
+        res = verify_ticket_activation(self.appid)
+        msg = f"Ticket Verification for AppID {self.appid}:\n\n"
+        msg += f"• File Installed: {'Yes' if res['installed'] else 'No'}\n"
+        msg += f"• Base64 Payload Valid: {'Yes' if res['base64_valid'] else 'No'}\n"
+        msg += f"• Active in SLSsteam Log: {'Yes' if res['sls_active'] else 'No'}\n\n"
+        msg += f"Status: {res['message']}"
+
+        if res["working"]:
+            QMessageBox.information(self, "Ticket Verified Working", msg)
+        elif res["installed"] and res["base64_valid"]:
+            QMessageBox.warning(self, "Ticket Installed (Pending Launch)", msg)
+        else:
+            QMessageBox.critical(self, "Ticket Issue Detected", msg)
+
+    def _paste_and_import_ticket(self):
+        clipboard_text = QApplication.clipboard().text()
+        if not clipboard_text:
+            QMessageBox.warning(self, "Clipboard Empty", "No text found on clipboard to import.")
+            return
+        self._handle_ticket_text_import(clipboard_text)
+
+    def _export_installed_ticket(self):
+        from utils.ticket_manager import export_ticket
+        save_path, _ = QFileDialog.getSaveFileName(self, "Export Ticket File", f"ticket_{self.appid}.yaml", "YAML Files (*.yaml)")
+        if save_path:
+            ok, msg = export_ticket(self.appid, save_path)
+            if ok:
+                QMessageBox.information(self, "Export Success", f"✓ {msg}")
+            else:
+                QMessageBox.critical(self, "Export Failed", msg)
+
+    def _delete_installed_ticket(self):
+        from utils.ticket_manager import remove_ticket
+        ans = QMessageBox.question(self, "Delete Ticket", f"Are you sure you want to remove ticket files for AppID {self.appid}?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            ok, msg = remove_ticket(self.appid)
+            if ok:
+                QMessageBox.information(self, "Ticket Removed", f"✓ {msg}")
+                self._switch_tab(3)
+            else:
+                QMessageBox.critical(self, "Removal Failed", msg)
 
     # ──────────────────────────────────────────
     def _on_goldberg_check_complete(self, is_applied):

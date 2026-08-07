@@ -9,6 +9,7 @@ from PyQt6.QtCore import QMutex, QObject, QThread, pyqtSignal
 
 from utils.helpers import ensure_dotnet_availability, get_dotnet_path
 from utils.paths import Paths
+from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,38 @@ class SteamlessIntegration(QObject):
             logger.error(f"Critical error in find_game_executables: {e}", exc_info=True)
             return []
 
+    def _ensure_aio_deps(self, python_exe: str) -> None:
+        """
+        Install pycryptodome and capstone into the tool's venv if missing.
+        Silent on success; logs warnings on failure (AIO will still attempt to run).
+        """
+        deps = [
+            ("Crypto", "pycryptodome"),
+            ("capstone", "capstone"),
+        ]
+        for import_name, pip_name in deps:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", f"import {import_name}"],
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    self.progress.emit(f"Installing {pip_name} for Steamless AIO (one-time setup)...")
+                    install = subprocess.run(
+                        [python_exe, "-m", "pip", "install", "--quiet", pip_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    if install.returncode == 0:
+                        self.progress.emit(f"Installed {pip_name} OK")
+                    else:
+                        logger.warning(
+                            f"pip install {pip_name} failed: {install.stderr.strip()}"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to ensure AIO dep {pip_name}: {e}")
+
     @staticmethod
     def _should_skip_exe(filename: str, file_path: Optional[str] = None) -> bool:
         """Check if an executable should be skipped based on name patterns."""
@@ -282,20 +315,21 @@ class SteamlessIntegration(QObject):
         Returns True if successful, False otherwise.
         """
         try:
-            if not self.dotnet_available:
-                self.error.emit(
-                    ".NET 9 runtime is not available. Please install .NET 9 runtime."
-                )
-                return False
+            if not getattr(self, "use_aio", False):
+                if not self.dotnet_available:
+                    self.error.emit(
+                        ".NET 9 runtime is not available. Please install .NET 9 runtime."
+                    )
+                    return False
 
-            if not os.path.exists(self.steamless_path):
-                self.error.emit(f"Steamless directory not found: {self.steamless_path}")
-                return False
+                if not os.path.exists(self.steamless_path):
+                    self.error.emit(f"Steamless directory not found: {self.steamless_path}")
+                    return False
 
-            steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
-            if not os.path.exists(steamless_dll):
-                self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
-                return False
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                if not os.path.exists(steamless_dll):
+                    self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
+                    return False
 
             # Validate game_directory is actually a directory
             if not os.path.isdir(game_directory):
@@ -330,6 +364,8 @@ class SteamlessIntegration(QObject):
 
             # Track results for all executables
             success_count = 0
+            no_drm_count = 0
+            error_count = 0
 
             # Process all executables without stopping on first success
             for i, exe_info in enumerate(exe_files):
@@ -341,18 +377,28 @@ class SteamlessIntegration(QObject):
                     f"Processing executable {i + 1}/{len(exe_files)}: {exe_name} (priority: {priority})"
                 )
 
+                self._last_exe_status = None
                 if self._run_steamless_on_exe(target_exe):
                     self.progress.emit(f"Successfully processed: {exe_name}")
                     success_count += 1
+                else:
+                    if getattr(self, "_last_exe_status", None) == "no_drm":
+                        no_drm_count += 1
+                    else:
+                        error_count += 1
 
             # Final summary
             if success_count > 0:
                 self.progress.emit(
                     f"Steamless completed: {success_count}/{len(exe_files)} executables processed successfully"
                 )
+                self.finished.emit(True)  # emit once for the whole game, not per-exe
                 return True
+            elif error_count > 0:
+                self.error.emit("Steamless failed: Some executables failed to process due to errors")
+                return False
             else:
-                self.error.emit("Steamless failed: No executables could be processed")
+                self.error.emit("No Steam DRM detected in any game executables")
                 return False
 
         except Exception as e:
@@ -368,9 +414,34 @@ class SteamlessIntegration(QObject):
             target_path = exe_path
 
             if getattr(self, "use_aio", False):
-                cmd = ["/home/deck/Downloads/steamless-aio.sh", target_path]
-                self.progress.emit(f"Running Steamless AIO: {' '.join(cmd)}")
-                
+                # ── Self-contained AIO path ──────────────────────────────────────
+                # steamless.py is bundled in deps/ — no external script needed.
+                steamless_py = str(Paths.deps("steamless.py"))
+                if not os.path.exists(steamless_py):
+                    self.error.emit(
+                        f"Bundled steamless.py not found at: {steamless_py}. "
+                        f"The AppImage may be corrupted — please reinstall."
+                    )
+                    self._last_exe_status = "error"
+                    return False
+
+                # Use the tool's own venv Python
+                from utils.helpers import get_venv_python
+                python_exe = get_venv_python()
+                if not python_exe or not os.path.exists(python_exe):
+                    self.error.emit(
+                        "Cannot find the tool's Python interpreter. "
+                        "Please reinstall ASSella."
+                    )
+                    self._last_exe_status = "error"
+                    return False
+
+                # Ensure pycryptodome and capstone are installed (first-run only)
+                self._ensure_aio_deps(python_exe)
+
+                cmd = [python_exe, steamless_py, target_path]
+                self.progress.emit(f"Running Steamless AIO (built-in): {os.path.basename(target_path)}")
+
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -495,20 +566,47 @@ class SteamlessIntegration(QObject):
                 self.progress.emit(
                     "No Steam DRM detected in executable, trying next..."
                 )
+                self._last_exe_status = "no_drm"
                 return False
             elif process.returncode > 1:
                 self.error.emit(
                     f"Steamless failed with exit code: {process.returncode}"
                 )
+                self._last_exe_status = "error"
                 return False
 
-            # Exit code 0 - Steamless handles file operations internally
-            self.finished.emit(True)
+            # Exit code 0 - Steamless was successful
+            try:
+                if getattr(self, "use_aio", False):
+                    # AIO creates a .original backup
+                    original_backup = exe_path + ".original"
+                    bak_file = exe_path + ".bak"
+                    if os.path.exists(original_backup):
+                        if os.path.exists(bak_file):
+                            os.remove(bak_file)
+                        os.rename(original_backup, bak_file)
+                        self.progress.emit(f"Backed up original executable to: {bak_file}")
+                else:
+                    # Steamless CLI creates an .unpacked.exe
+                    unpacked_exe = exe_path + ".unpacked.exe"
+                    bak_file = exe_path + ".bak"
+                    if os.path.exists(unpacked_exe):
+                        if os.path.exists(bak_file):
+                            os.remove(bak_file)
+                        os.rename(exe_path, bak_file)
+                        os.rename(unpacked_exe, exe_path)
+                        self.progress.emit(f"Backed up original executable to: {bak_file}")
+            except Exception as e:
+                self.progress.emit(f"Warning: Failed to rename backup files: {e}")
+
+            self.finished.emit(True)  # removed from here — now emitted once in process_game_with_steamless
+            self._last_exe_status = "success"
             return True
 
         except Exception as e:
             logger.error(f"Error running Steamless: {e}", exc_info=True)
             self.error.emit(f"Error running Steamless: {str(e)}")
+            self._last_exe_status = "error"
             return False
         finally:
             # Clean up process reference

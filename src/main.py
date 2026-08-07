@@ -4,8 +4,9 @@ import sys
 import threading
 from urllib.parse import unquote
 import ctypes
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
+from utils.paths import Paths
 from PyQt6.QtCore import QTimer, QMetaObject, Qt, Q_ARG
 from ui.main_window import MainWindow
 from ui.theme import update_appearance
@@ -45,21 +46,68 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+def migrate_manifests(logger):
+    """Migrate all cached manifest ZIP files from morrenus_manifests to hubcap_manifests."""
+    try:
+        from utils.helpers import get_base_path
+        import shutil
+        base = get_base_path()
+        morrenus_dir = base / "morrenus_manifests"
+        hubcap_dir = base / "hubcap_manifests"
+        if morrenus_dir.exists():
+            hubcap_dir.mkdir(parents=True, exist_ok=True)
+            copied = 0
+            for f in morrenus_dir.glob("accela_fetch_*.zip"):
+                dest = hubcap_dir / f.name
+                if not dest.exists():
+                    try:
+                        shutil.copy2(f, dest)
+                        copied += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to copy manifest {f.name}: {e}")
+            if copied > 0:
+                logger.info(f"Migrated {copied} manifest(s) from morrenus_manifests to hubcap_manifests")
+    except Exception as e:
+        logger.warning(f"Error during manifest migration: {e}")
+
+
 def main():
     logger = setup_logging()
+    migrate_manifests(logger)
 
     logger.info("========================================")
     logger.info(f"ASSELA {app_version} starting...")
     logger.info("========================================")
 
+    # Pre-scan for headless/helper mode to set environment variable before QApplication is created
+    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
+    if not headless_mode:
+        for arg in sys.argv:
+            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg):
+                headless_mode = True
+                break
+
+    if headless_mode:
+        logger.info("Headless/Helper mode requested. Setting QT_QPA_PLATFORM=offscreen")
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
     # People only have substance within the memories of other people.
 
     app = QApplication(sys.argv)
+    app.setApplicationName("ASSella")
+    app.setDesktopFileName("assella.desktop")
+
+    # Set default window icon for all dialogs and sub-windows
+    icon_path = Paths.resource("logo/icon.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # -------------------------------------------------------------------------
     # Argument Parsing
     # -------------------------------------------------------------------------
     cli_mode = False
+    helper_mode = False
+    check_updates_mode = False
     command_line_zips = []
     command_line_appid = None
 
@@ -75,12 +123,15 @@ def main():
         return False
 
     def _parse_url_action(url: str):
-        nonlocal cli_mode, command_line_appid
+        nonlocal cli_mode, command_line_appid, helper_mode
         try:
             url_content = url[9:]  # Remove 'accela://'
             if url_content.startswith("cli/"):
                 cli_mode = True
                 rest = url_content[4:]
+            elif url_content.startswith("helper/"):
+                helper_mode = True
+                rest = url_content[7:]
             else:
                 rest = url_content
 
@@ -93,23 +144,38 @@ def main():
 
             if action == "download" and param_val and param_val.isdigit():
                 command_line_appid = int(param_val)
-                mode_str = "CLI" if cli_mode else "GUI"
+                helper_mode = True
                 logger.info(
-                    f"Found accela://{action} URL for AppID: {param_val} ({mode_str} mode)"
+                    f"Found accela://{action} URL for AppID: {param_val} (Helper mode)"
                 )
             elif action == "zip" and param_val:
-                _add_zip_from_url(param_val, "(GUI mode)" if not cli_mode else "")
+                _add_zip_from_url(param_val, "(Helper mode)" if helper_mode else "(GUI mode)")
             else:
                 logger.warning(f"Invalid accela:// URL format: {url}")
         except ValueError as ve:
             logger.error(f"Failed to parse URL {url}: {ve}")
 
+    settings = get_settings()
+    server_port = int(settings.value("web_ui_port", 8765, type=int))
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         arg = args[i]
         if arg in ("-cli", "--cli"):
             cli_mode = True
+        elif arg in ("-helper", "--helper"):
+            helper_mode = True
+        elif arg == "--check-updates":
+            check_updates_mode = True
+        elif arg == "--headless":
+            # Already handled in pre-scan
+            pass
+        elif arg == "--port" and i + 1 < len(args):
+            try:
+                server_port = int(args[i + 1])
+            except ValueError:
+                logger.error(f"Invalid port: {args[i + 1]} (must be a number)")
+            i += 1
         elif arg == "--appid" and i + 1 < len(args):
             appid_str = args[i + 1]
             if appid_str.isdigit():
@@ -131,6 +197,19 @@ def main():
     if command_line_appid and command_line_zips:
         logger.error("Cannot use --appid and .zip files together. Choose one.")
         return None
+
+    # -------------------------------------------------------------------------
+    # Helper / Check Updates Mode Execution
+    # -------------------------------------------------------------------------
+    if check_updates_mode:
+        logger.info("Will perform headless update check...")
+        from managers.helper_manager import run_headless_update_check
+        return run_headless_update_check(logger)
+
+    if helper_mode and command_line_appid:
+        logger.info(f"Will process AppID {command_line_appid} via Headless Helper")
+        from managers.helper_manager import run_headless_helper
+        return run_headless_helper(command_line_appid, logger)
 
     # -------------------------------------------------------------------------
     # CLI Mode Execution
@@ -168,6 +247,12 @@ def main():
         if config_path.exists():
             if ensure_slssteam_api_enabled(config_path):
                 logger.info("SLSsteam API enabled in config")
+            
+            try:
+                from utils.yaml_config_manager import check_and_merge_fakeappid_db
+                check_and_merge_fakeappid_db(config_path)
+            except Exception as ex:
+                logger.error(f"Failed to check and merge Fake AppID database: {ex}")
     except OSError as e:
         logger.error(f"Startup I/O error (Config/Backup): {e}")
 
@@ -207,8 +292,15 @@ def main():
     # -------------------------------------------------------------------------
     try:
         main_win = MainWindow()
-        main_win.show()
-        logger.info("Main window displayed successfully.")
+        if headless_mode:
+            main_win.hide()
+            main_win.toggle_web_server(True, port=server_port)
+            logger.info("========================================")
+            logger.info(f"ASSella running headless on http://0.0.0.0:{server_port}")
+            logger.info("========================================")
+        else:
+            main_win.show()
+            logger.info("Main window displayed successfully.")
 
         # ---------------------------------------------------------------------
         # Post-Launch Processing

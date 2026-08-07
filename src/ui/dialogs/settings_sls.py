@@ -15,7 +15,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
+    QComboBox,
     QPushButton,
+    QFileDialog,
     QMessageBox,
 )
 
@@ -478,7 +481,154 @@ def create_sls_tab(dialog) -> QWidget:
             online_ver_label.setText(f"Latest Online: Error ({update_error[:30]}...)")
             online_ver_label.setStyleSheet("color: #cc4444;")
 
-        # layout.addWidget(updater_group)
+    # 4. Generate & Share Tickets (Experimental) Group
+    ticket_group = QGroupBox("Generate & Share Tickets (Experimental)")
+    ticket_layout = QVBoxLayout(ticket_group)
+    ticket_layout.setSpacing(10)
+
+    # Experimental Warning Banner
+    warning_lbl = QLabel(
+        "<b>[Experimental Feature]</b> Export ticket tokens from owned Steam titles.\n"
+        "<b>Notice:</b> Generated tickets are temporary auth tokens issued by Steam for sharing ownership. "
+        "If not imported or used within <b>1 to 10 hours</b> of generation, Steam ownership tokens may expire and require re-exporting."
+    )
+    warning_lbl.setWordWrap(True)
+    warning_lbl.setStyleSheet(
+        "background: rgba(255, 170, 0, 0.08); "
+        "border: 1px solid rgba(255, 170, 0, 0.3); "
+        "border-radius: 6px; "
+        "padding: 10px; "
+        "color: #ffca28; "
+        "font-size: 9pt; "
+        "line-height: 1.4;"
+    )
+    ticket_layout.addWidget(warning_lbl)
+
+    # Dropdown Selection for Available Games with Tickets
+    from utils.ticket_manager import get_available_ticket_games, export_ticket, export_all_tickets
+
+    drop_lbl = QLabel("Select Available Game to Export Ticket:")
+    drop_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9.5pt; font-weight: bold;")
+    ticket_layout.addWidget(drop_lbl)
+
+    combo_row = QHBoxLayout()
+    combo_row.setSpacing(6)
+
+    game_combo = QComboBox()
+    game_combo.setStyleSheet("""
+        QComboBox {
+            background: rgba(255, 255, 255, 0.08);
+            color: #FFFFFF;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 5px;
+            padding: 5px 10px;
+            font-size: 9.5pt;
+        }
+        QComboBox QAbstractItemView {
+            background: #1e1e24;
+            color: #FFFFFF;
+            selection-background-color: rgba(255, 255, 255, 0.2);
+        }
+    """)
+    game_combo.addItem("-- Select Game from Ticket Cache --", "")
+    combo_row.addWidget(game_combo, 1)
+
+    refresh_combo_btn = QPushButton("Refresh List")
+    refresh_combo_btn.setFixedHeight(28)
+    refresh_combo_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.1); color: #FFFFFF; border-radius: 4px; padding: 0 10px;")
+    combo_row.addWidget(refresh_combo_btn)
+
+    ticket_layout.addLayout(combo_row)
+
+    # Populate dropdown lazily / safely
+    is_populated = False
+
+    def _populate_game_combo():
+        nonlocal is_populated
+        try:
+            game_combo.blockSignals(True)
+            game_combo.clear()
+            avail_games = get_available_ticket_games()
+            game_combo.addItem(f"-- Select Game from Cache ({len(avail_games)} available) --", "")
+            for g in avail_games:
+                game_combo.addItem(g["display"], g["appid"])
+            is_populated = True
+        except Exception as err:
+            logger.error(f"Error populating ticket games: {err}")
+            game_combo.addItem("-- Error Loading Ticket Games --", "")
+        finally:
+            game_combo.blockSignals(False)
+
+    refresh_combo_btn.clicked.connect(_populate_game_combo)
+
+    # Initial population trigger
+    _populate_game_combo()
+
+    # AppID Export Row
+    app_export_lay = QHBoxLayout()
+    app_export_lay.setSpacing(8)
+
+    appid_input = QLineEdit()
+    appid_input.setPlaceholderText("Or enter custom AppID (e.g. 108600, 2934220)...")
+    appid_input.setStyleSheet("background: rgba(255, 255, 255, 0.06); color: #FFFFFF; border-radius: 4px; padding: 4px 8px;")
+    app_export_lay.addWidget(appid_input, 1)
+
+    def _on_game_selected(idx):
+        try:
+            selected_appid = game_combo.itemData(idx)
+            if selected_appid:
+                appid_input.setText(str(selected_appid))
+        except Exception as _e:
+            logger.debug(f"Error in _on_game_selected: {_e}")
+
+    game_combo.currentIndexChanged.connect(_on_game_selected)
+
+    export_single_btn = QPushButton("Export Ticket (.yaml)")
+    export_single_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.1); color: #FFFFFF; border-radius: 4px; padding: 4px 12px;")
+
+    def _do_export_single(_checked=False):
+        try:
+            appid = appid_input.text().strip()
+            if not appid or not appid.isdigit():
+                QMessageBox.warning(dialog, "Invalid AppID", "Please select a game from dropdown or enter a valid numeric Steam AppID.")
+                return
+            save_path, _ = QFileDialog.getSaveFileName(dialog, "Save Ownership Ticket YAML", f"ticket_{appid}.yaml", "YAML Files (*.yaml)")
+            if save_path:
+                ok, msg = export_ticket(appid, save_path)
+                if ok:
+                    QMessageBox.information(dialog, "Ticket Exported", msg)
+                else:
+                    QMessageBox.critical(dialog, "Export Failed", msg)
+        except Exception as err:
+            logger.error(f"Error exporting single ticket: {err}")
+            QMessageBox.critical(dialog, "Export Error", f"Failed to export ticket: {err}")
+
+    export_single_btn.clicked.connect(lambda _c=False: _do_export_single())
+    app_export_lay.addWidget(export_single_btn)
+    ticket_layout.addLayout(app_export_lay)
+
+    # Batch Export Row
+    batch_btn = QPushButton("Export All Available Tickets (Batch)")
+    batch_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.12); color: #FFFFFF; border-radius: 4px; padding: 6px 12px;")
+
+    def _do_export_all(_checked=False):
+        try:
+            dest_dir = QFileDialog.getExistingDirectory(dialog, "Select Output Directory for Ticket Batch Export")
+            if dest_dir:
+                from utils.ticket_manager import export_all_tickets
+                ok, msg, count = export_all_tickets(dest_dir)
+                if ok:
+                    QMessageBox.information(dialog, "Batch Export Complete", msg)
+                else:
+                    QMessageBox.warning(dialog, "Batch Export", msg)
+        except Exception as err:
+            logger.error(f"Error exporting all tickets: {err}")
+            QMessageBox.critical(dialog, "Export Error", f"Failed batch export: {err}")
+
+    batch_btn.clicked.connect(lambda _c=False: _do_export_all())
+    ticket_layout.addWidget(batch_btn)
+
+    layout.addWidget(ticket_group)
 
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "SLS")

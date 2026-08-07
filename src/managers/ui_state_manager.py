@@ -2,7 +2,7 @@ import os
 import random
 import logging
 from typing import cast
-from PyQt6.QtGui import QMovie, QFont
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -28,10 +28,7 @@ class UIStateManager:
         # UI state
         self.fetch_dialog = None
         self.depot_dialog = None
-        self.current_movie = None
-        self.random_gif_path = None
-        self.download_movie = None
-        self.main_movie = None
+
 
         # Queue UI elements
         self.queue_widget = None
@@ -42,197 +39,9 @@ class UIStateManager:
         self.pause_button = None
         self.cancel_button = None
 
-        self.disable_default_gifs = self.settings.value("disable_default_gifs", False)
 
-        self._initialize_gifs()
-        # Gifs are set up later in apply_style_settings()
 
-    def _initialize_gifs(self):
-        """Initialize GIF resources"""
-        colored_dir = get_base_path() / "gifs/colorized"
-        os.makedirs(str(colored_dir), exist_ok=True)
 
-        self.remove_old_downloading_gifs()
-
-        # Custom downloading GIFs (excluding defaults)
-        custom_patterns = ["downloading_custom*.gif"]
-        self.download_gifs = []
-        for pattern in custom_patterns:
-            for p in colored_dir.glob(pattern):
-                # Exclude default GIFs
-                if "downloading_lain" not in p.name:
-                    self.download_gifs.append(str(p))
-
-        # Default downloading GIFs
-        self.default_download_gifs = []
-        default_dir = get_base_path() / "gifs/colorized"
-        for p in default_dir.glob("downloading_lain*.gif"):
-            self.default_download_gifs.append(str(p))
-
-        # Sort both lists
-        self.download_gifs.sort()
-        self.default_download_gifs.sort()
-
-        logger.debug(f"Found {len(self.download_gifs)} custom GIFs")
-        logger.debug(f"Found {len(self.default_download_gifs)} default GIFs")
-
-    def initialize_gifs(self):
-        self._initialize_gifs()
-
-    @staticmethod
-    def remove_old_downloading_gifs():
-        """Remove old downloading*.gif files and rename custom ones to sequential names"""
-        total_removed = 0
-        total_renamed = 0
-
-        gifs_base = get_base_path() / "gifs"
-
-        if not gifs_base.exists():
-            logger.warning(f"Directory does not exist: {gifs_base}")
-            return {"removed": 0, "renamed": 0}
-
-        # Remove old downloading*.gif files
-        colorized_dir = gifs_base / "colorized"
-
-        if colorized_dir.exists() and colorized_dir.is_dir():
-            removed_count = 0
-            for file_path in colorized_dir.rglob("downloading*.gif"):
-                # EXCLUDE downloading_lain*.gif and downloading_custom*.gif
-                filename_lower = file_path.name.lower()
-                if (
-                    "downloading_lain" in filename_lower
-                    or "downloading_custom" in filename_lower
-                ):
-                    continue
-
-                try:
-                    file_path.unlink()
-                    removed_count += 1
-                    logger.info(f"Removed from colorized: {file_path}")
-                except Exception as e:
-                    logger.error(f"Failed to remove {file_path}: {e}")
-
-            total_removed += removed_count
-            if removed_count > 0:
-                logger.info(
-                    f"Removed {removed_count} downloading*.gif files from colorized"
-                )
-        else:
-            logger.warning(f"Colorized directory does not exist: {colorized_dir}")
-
-        # Rename old downloading*.gif files
-        custom_dir = gifs_base / "custom"
-
-        if custom_dir.exists() and custom_dir.is_dir():
-            # Find all generic downloading*.gif files (exclude _custom and _lain)
-            files_to_rename = []
-            for file_path in custom_dir.rglob("downloading*.gif"):
-                filename_lower = file_path.name.lower()
-                if "_custom" not in filename_lower and "_lain" not in filename_lower:
-                    files_to_rename.append(file_path)
-
-            if files_to_rename:
-                # Sort the files (case-insensitive)
-                files_to_rename.sort(key=lambda x: x.name.lower())
-
-                # Find existing downloading_custom*.gif files to determine used indices
-                used_indices = set()
-                for file_path in custom_dir.rglob("downloading_custom*.gif"):
-                    try:
-                        # Extract number from filename: downloading_custom{number}.gif
-                        stem = file_path.stem
-                        if stem.lower().startswith("downloading_custom"):
-                            num_str = stem[18:]  # Remove "downloading_custom"
-                            if num_str and num_str.isdigit():
-                                used_indices.add(int(num_str))
-                    except (ValueError, AttributeError, IndexError):
-                        pass
-
-                # Rename files in sequence
-                renamed_count = 0
-                for file_path in files_to_rename:
-                    try:
-                        # Find next available index
-                        index = 1
-                        while index in used_indices:
-                            index += 1
-
-                        new_name = f"downloading_custom{index}.gif"
-                        new_path = file_path.parent / new_name
-
-                        # Rename the file
-                        file_path.rename(new_path)
-                        renamed_count += 1
-                        used_indices.add(index)  # Mark this index as used
-                        logger.info(f"Renamed: {file_path.name} -> {new_name}")
-
-                    except Exception as e:
-                        logger.error(f"Failed to rename {file_path}: {e}")
-
-                total_renamed = renamed_count
-                if renamed_count > 0:
-                    logger.info(
-                        f"Renamed {renamed_count} downloading*.gif files to sequential names"
-                    )
-            else:
-                logger.info("No files to rename in custom directory")
-        else:
-            logger.warning(f"Custom directory does not exist: {custom_dir}")
-
-        logger.info(
-            f"Total: {total_removed} files removed, {total_renamed} files renamed"
-        )
-        return {"removed": total_removed, "renamed": total_renamed}
-
-    def _update_gifs(self):
-        """Update GIFs with current accent color"""
-        output_dir = get_base_path() / "gifs" / "colorized"
-        self.main_window.gif_manager.process_gif_batch(
-            output_dir, self.main_window.accent_color
-        )
-        self._reload_movies()
-
-    def update_gifs(self):
-        self._update_gifs()
-
-    def _reload_movies(self):
-        """Reload movie objects with current GIFs"""
-        if not hasattr(self.main_window, "drop_zone_gif"):
-            return
-        main_gif_path = get_base_path() / "gifs/colorized/main.gif"
-        default_gif_path = Paths.resource("gif/main.gif")
-
-        ui_mode = self.settings.value("ui_mode", "default")
-        sonic_main_applied = False
-        if ui_mode == "sonic":
-            sonic_gif = Paths.resource("sonic/gifs/main.gif")
-            default_gif_path = sonic_gif
-            sonic_main_applied = True
-
-        if hasattr(self.main_movie, "main_movie"):
-            if self.main_movie:
-                self.main_movie.stop()
-
-        self.main_movie = QMovie(str(default_gif_path))
-        self.main_movie.start()
-        self.main_window.drop_zone_gif.setMovie(self.main_movie)
-        self.current_movie = self.main_movie
-
-        if main_gif_path.exists() and not sonic_main_applied:
-            self.main_movie.stop()
-            self.main_movie = QMovie(str(main_gif_path))
-            self.main_window.drop_zone_gif.setMovie(self.main_movie)
-            self.main_movie.start()
-            self.current_movie = self.main_movie
-
-        if (
-            self.main_window.task_manager.current_job
-            or self.main_window.task_manager.current_job
-        ):
-            self.switch_to_download_gif()
-
-    def reload_movies(self):
-        self._reload_movies()
 
     def setup_queue_panel(self):
         """Setup the download queue panel"""
@@ -288,6 +97,133 @@ class UIStateManager:
         queue_button_layout.addWidget(self.cancel_button)
 
         parent_layout.addLayout(queue_button_layout)
+
+    def set_download_controls_visible(self, visible: bool) -> None:
+        """Show or hide pause/cancel buttons based on current settings."""
+        # Hide the traditional queue buttons
+        if self.pause_button:
+            self.pause_button.setVisible(False)
+        if self.cancel_button:
+            self.cancel_button.setVisible(False)
+        # Show/hide inline text controls on main window
+        mw = self.main_window
+        if hasattr(mw, "media_pause_button") and mw.media_pause_button:
+            mw.media_pause_button.setVisible(visible)
+        if hasattr(mw, "media_cancel_button") and mw.media_cancel_button:
+            mw.media_cancel_button.setVisible(visible)
+        if hasattr(mw, "_sep_label") and mw._sep_label:
+            mw._sep_label.setVisible(visible)
+
+    def set_pause_button_text(self, text: str) -> None:
+        """Set text for pause button based on state."""
+        # Use plain text (Pause / Resume) — no emoji
+        if hasattr(self.main_window, "media_pause_button") and self.main_window.media_pause_button:
+            self.main_window.media_pause_button.setText(text)
+            self.main_window.media_pause_button.setToolTip("")
+
+    def _apply_queue_styles(self, beta: bool) -> None:
+        accent = self.main_window.accent_color or "#C06C84"
+        
+        def hex_to_rgba(hex_color, alpha):
+            hex_color = hex_color.lstrip('#')
+            if len(hex_color) == 3:
+                hex_color = ''.join([c*2 for c in hex_color])
+            try:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                return f"rgba({r}, {g}, {b}, {alpha})"
+            except Exception:
+                return f"rgba(255, 255, 255, {alpha})"
+
+        accent_alpha = hex_to_rgba(accent, 40)
+        accent_hover_alpha = hex_to_rgba(accent, 60)
+        
+        if beta:
+            # Styled list widget for 2.0
+            list_style = f"""
+                QListWidget {{
+                    background-color: rgba(20, 20, 20, 160);
+                    border: 1px solid rgba(255, 255, 255, 12);
+                    border-radius: 6px;
+                    color: #FFFFFF;
+                    padding: 4px;
+                }}
+                QListWidget::item {{
+                    background-color: rgba(255, 255, 255, 8);
+                    border-radius: 4px;
+                    padding: 5px 8px;
+                    margin-bottom: 3px;
+                }}
+                QListWidget::item:hover {{
+                    background-color: rgba(255, 255, 255, 18);
+                }}
+                QListWidget::item:selected {{
+                    background-color: {accent_alpha};
+                    border: 1px solid {accent};
+                    color: #FFFFFF;
+                }}
+                QListWidget::item:selected:hover {{
+                    background-color: {accent_hover_alpha};
+                }}
+                QScrollBar:vertical {{
+                    border: none;
+                    background: rgba(0, 0, 0, 20);
+                    width: 6px;
+                    margin: 0px;
+                    border-radius: 3px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: rgba(255, 255, 255, 30);
+                    min-height: 20px;
+                    border-radius: 3px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {accent};
+                }}
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                    height: 0px;
+                }}
+            """
+            self.queue_list_widget.setStyleSheet(list_style)
+            
+            # Styled control buttons for 2.0
+            btn_style = f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 6);
+                    border: 1px solid rgba(255, 255, 255, 15);
+                    border-radius: 4px;
+                    color: #EEEEEE;
+                    padding: 4px 8px;
+                    font-size: 9pt;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 16);
+                    border: 1px solid {accent};
+                    color: {accent};
+                }}
+                QPushButton:pressed {{
+                    background-color: rgba(255, 255, 255, 24);
+                }}
+                QPushButton:disabled {{
+                    background-color: transparent;
+                    border: 1px solid rgba(255, 255, 255, 8);
+                    color: rgba(255, 255, 255, 20);
+                }}
+            """
+            self.queue_move_up_button.setStyleSheet(btn_style)
+            self.queue_move_down_button.setStyleSheet(btn_style)
+            self.queue_remove_button.setStyleSheet(btn_style)
+            self.pause_button.setStyleSheet(btn_style)
+            self.cancel_button.setStyleSheet(btn_style)
+        else:
+            # Default style (reset to standard styles)
+            self.queue_list_widget.setStyleSheet("")
+            self.queue_move_up_button.setStyleSheet("")
+            self.queue_move_down_button.setStyleSheet("")
+            self.queue_remove_button.setStyleSheet("")
+            self.pause_button.setStyleSheet("")
+            self.cancel_button.setStyleSheet("")
 
     def apply_style_settings(self):
         """Apply current style settings to UI"""
@@ -346,10 +282,18 @@ class UIStateManager:
             sonic_font.setPointSize(font_size)
             self.main_window.font = sonic_font
 
+        self.queue_move_up_button.setText("▲ Move Up")
+        self.queue_move_down_button.setText("▼ Move Down")
+        self.queue_remove_button.setText("✖ Remove")
+        # Hide the traditional pause/cancel buttons in queue list
+        self.pause_button.setVisible(False)
+        self.cancel_button.setVisible(False)
+
+        self._apply_queue_styles(True)
+
         # Apply styles to various UI elements
         self._apply_background_color()
         self._apply_accent_color()
-        self._update_gifs()
 
     def _apply_background_color(self):
         """Apply background color to main content"""
@@ -363,8 +307,15 @@ class UIStateManager:
         """Apply accent color to UI elements"""
         accent_style = f"color: {self.main_window.accent_color};"
 
-        # Drop text label
-        self.main_window.drop_text_label.setStyleSheet(accent_style)
+        # Status Pager
+        if hasattr(self.main_window, "status_pager") and self.main_window.status_pager:
+            self.main_window.status_pager.update_style()
+
+        # Active Hubcap label
+        if hasattr(self.main_window, "active_hubcap_label") and self.main_window.active_hubcap_label:
+            self.main_window.active_hubcap_label.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
 
         # Queue label
         if hasattr(self, "queue_widget") and self.queue_widget:
@@ -378,9 +329,46 @@ class UIStateManager:
         # Log output
         self.main_window.log_output.setStyleSheet(accent_style)
 
+        # Simplified terminal
+        if hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            self.main_window.simplified_terminal.update_style()
+
         # Bottom titlebar
         if hasattr(self.main_window, "bottom_titlebar"):
             self.main_window.bottom_titlebar.update_style()
+
+        # Dashboard elements styling
+        if hasattr(self.main_window, "usage_value") and self.main_window.usage_value:
+            self.main_window.usage_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "expiry_value") and self.main_window.expiry_value:
+            self.main_window.expiry_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "sls_status_value") and self.main_window.sls_status_value:
+            self.main_window.sls_status_value.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+            )
+        if hasattr(self.main_window, "update_all_btn") and self.main_window.update_all_btn:
+            self.main_window.update_all_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {self.main_window.accent_color};
+                    border: 1px solid {self.main_window.accent_color};
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 15);
+                }}
+                QPushButton:disabled {{
+                    border: 1px solid rgba(255, 255, 255, 15);
+                    color: rgba(255, 255, 255, 60);
+                }}
+            """)
 
     def update_queue_visibility(self, is_processing, has_jobs):
         """Update queue visibility based on current state"""
@@ -388,7 +376,6 @@ class UIStateManager:
             if self.queue_widget:
                 self.queue_widget.setVisible(False)
             self.main_window.drop_text_label.setText("Drag and Drop Zip here")
-            self._show_main_gif()
         else:
             if self.queue_widget:
                 self.queue_widget.setVisible(True)
@@ -397,83 +384,10 @@ class UIStateManager:
                     "Queue idle. Ready for next job."
                 )
 
-    def _show_main_gif(self):
-        """Show the main GIF animation"""
-        if (
-            self.current_movie != self.main_movie
-            and self.main_movie
-            and self.main_movie.isValid()
-        ):
-            self.main_window.drop_zone_gif.setMovie(self.main_movie)
-            self.main_movie.start()
-            self.current_movie = self.main_movie
+        # Toggle dashboard and active hubcap label based on processing state
+        if hasattr(self.main_window, "dashboard_widget") and self.main_window.dashboard_widget:
+            self.main_window.dashboard_widget.setVisible(not is_processing)
+        if hasattr(self.main_window, "active_hubcap_label") and self.main_window.active_hubcap_label:
+            self.main_window.active_hubcap_label.setVisible(is_processing)
 
-    def show_main_gif(self):
-        self._show_main_gif()
 
-    def switch_to_download_gif(self):
-        """Switch to a random download GIF"""
-        # Update setting from current value
-        self.disable_default_gifs = self.settings.value(
-            "disable_default_gifs", False, type=bool
-        )
-
-        if self.current_movie:
-            self.current_movie.stop()
-
-        colored_dir = get_base_path() / "gifs/colorized"
-        os.makedirs(str(colored_dir), exist_ok=True)
-
-        # Determine which GIFs to use based on setting
-        ui_mode = self.settings.value("ui_mode", "default")
-        if ui_mode == "sonic":
-            sonic_dir = Paths.resource("sonic/gifs")
-            sonic_downloads = []
-            if sonic_dir.exists() and sonic_dir.is_dir():
-                sonic_downloads.extend(
-                    [str(p) for p in sonic_dir.glob("downloading*.gif")]
-                )
-
-            if sonic_downloads:
-                available_gifs = sorted(sonic_downloads)
-            else:
-                available_gifs = []
-        elif self.disable_default_gifs:
-            # Use only custom GIFs
-            custom_gifs = sorted(
-                [str(p) for p in colored_dir.glob("downloading_custom*.gif")]
-            )
-
-            # Filter out default GIFs (if they exist in the custom directory)
-            default_names = ["downloading_lain"]
-            available_gifs = [
-                gif
-                for gif in custom_gifs
-                if not any(name in gif for name in default_names)
-            ]
-
-            # If no custom GIFs found, fall back to defaults
-            if not available_gifs:
-                available_gifs = self.default_download_gifs
-                logger.warning("No custom GIFs found, using defaults")
-        else:
-            # Use only default GIFs
-            available_gifs = self.default_download_gifs
-
-        # Make sure we have GIFs to use
-        if not available_gifs:
-            logger.error("No download GIFs available!")
-            self.main_window.drop_text_label.setText("Downloading...")
-            return
-
-        # Select and load a random GIF
-        self.random_gif_path = random.choice(available_gifs)
-        self.download_movie = QMovie(self.random_gif_path)
-
-        if self.download_movie.isValid():
-            self.current_movie = self.download_movie
-            self.main_window.drop_zone_gif.setMovie(self.current_movie)
-            self.current_movie.start()
-        else:
-            logger.error(f"Failed to load GIF: {self.random_gif_path}")
-            self.main_window.drop_text_label.setText("Downloading...")

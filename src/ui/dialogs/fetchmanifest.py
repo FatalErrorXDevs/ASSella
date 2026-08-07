@@ -594,6 +594,28 @@ class FetchManifestDialog(QDialog):
             self.status_label.setText("Enter at least 2 characters")
             return
 
+        # Direct AppID bypass: check library status or fetch branches, fallback to text search
+        if query.isdigit():
+            in_library = False
+            if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
+                if self.parent_window.game_manager.get_game(query) is not None:
+                    in_library = True
+
+            if in_library:
+                self.accept()
+                from ui.dialogs.gamelibrary import GameLibraryDialog
+                dialog = GameLibraryDialog(self.parent_window, show_details_for_appid=query)
+                dialog.exec()
+                return
+
+            logger.info(f"Numeric AppID query '{query}' — fetching branches first...")
+            self._toggle_inputs(False)
+            self.status_label.setText(f"Checking branches for App ID {query}...")
+            worker = self.task_runner.run(self._fetch_branches_and_prompt, query)
+            worker.finished.connect(self._on_branches_fetched)
+            worker.error.connect(lambda err, q=query: self._on_direct_manifest_error(err, q))
+            return
+
         # Reset UI
         self.results_list.clear()
         self._stop_active_image_fetchers()
@@ -601,6 +623,26 @@ class FetchManifestDialog(QDialog):
         self.status_label.setText("Searching...")
 
         # Run search + filtering in a worker thread.
+        worker = self.task_runner.run(self._search_and_filter_results, query)
+        worker.finished.connect(self.on_search_finished)
+        worker.error.connect(self.on_task_error)
+
+    def _on_direct_manifest_finished(self, result, query: str):
+        filepath, error_msg = result
+        if filepath and not error_msg:
+            self.on_download_finished(result)
+        else:
+            logger.info(f"Direct AppID lookup for '{query}' failed — falling back to standard text search.")
+            self.results_list.clear()
+            self.status_label.setText(f"Searching for '{query}'...")
+            worker = self.task_runner.run(self._search_and_filter_results, query)
+            worker.finished.connect(self.on_search_finished)
+            worker.error.connect(self.on_task_error)
+
+    def _on_direct_manifest_error(self, error_info, query: str):
+        logger.info(f"Direct AppID lookup for '{query}' errored — falling back to standard text search.")
+        self.results_list.clear()
+        self.status_label.setText(f"Searching for '{query}'...")
         worker = self.task_runner.run(self._search_and_filter_results, query)
         worker.finished.connect(self.on_search_finished)
         worker.error.connect(self.on_task_error)
@@ -916,10 +958,13 @@ class FetchManifestDialog(QDialog):
             from managers.db_manager import DatabaseManager
 
             manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-            cached_path = manifests_dir / f"accela_fetch_{app_id}.zip"
+            if branch and branch != "public":
+                cached_path = manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
+            else:
+                cached_path = manifests_dir / f"accela_fetch_{app_id}.zip"
 
             if cached_path.exists():
-                logger.info(f"Checking updates for cached manifest {app_id}")
+                logger.info(f"Checking updates for cached manifest {app_id} (Branch: {branch})")
                 # 1. Parse the zip to find the manifests inside it and the app token
                 local_manifests = {}
                 app_token = None
@@ -1006,6 +1051,55 @@ class FetchManifestDialog(QDialog):
 
         return morrenus_api.download_manifest(app_id, branch=branch)
 
+    def _fetch_branches_and_prompt(self, app_id: str):
+        """Worker function to fetch branches for an AppID."""
+        from core.steam_api import get_app_branches
+        try:
+            branches = get_app_branches(app_id, force_refresh=True)
+            return app_id, branches
+        except Exception as e:
+            logger.error(f"Failed to fetch branches for AppID {app_id}: {e}")
+            return app_id, {"public": {"buildid": ""}}
+
+    def _on_branches_fetched(self, result):
+        app_id, branches = result
+        self._toggle_inputs(True)
+
+        selected_branch = "public"
+        if branches and len(branches) > 1:
+            from PyQt6.QtWidgets import QInputDialog
+            items = sorted(branches.keys(), key=lambda k: (0 if k == "public" else 1, k))
+
+            display_items = []
+            for b in items:
+                b_info = branches[b]
+                bid = b_info.get("buildid", "") if isinstance(b_info, dict) else ""
+                display_items.append(f"{b} (Build: {bid})" if bid else b)
+
+            item, ok = QInputDialog.getItem(
+                self,
+                "Select Branch",
+                f"Multiple branches found for AppID {app_id}.\nSelect which branch manifest to fetch:",
+                display_items,
+                0,
+                False
+            )
+            if ok and item:
+                idx = display_items.index(item)
+                selected_branch = items[idx]
+            else:
+                self.status_label.setText("Fetch cancelled.")
+                return
+
+        self._current_selected_branch = selected_branch
+        self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
+        self._toggle_inputs(False)
+        self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
+
+        worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
+        worker.finished.connect(self.on_download_finished)
+        worker.error.connect(self.on_task_error)
+
     def on_item_double_clicked(self, item):
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -1032,14 +1126,10 @@ class FetchManifestDialog(QDialog):
             dialog.exec()
             return
 
-        selected_branch = "public"
-        self._current_selected_branch = selected_branch
-        self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
-        self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
-
-        worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
-        worker.finished.connect(self.on_download_finished)
+        self.status_label.setText(f"Checking branches for App ID {app_id}...")
+        worker = self.task_runner.run(self._fetch_branches_and_prompt, app_id)
+        worker.finished.connect(self._on_branches_fetched)
         worker.error.connect(self.on_task_error)
 
     def on_download_finished(self, result):
@@ -1196,19 +1286,11 @@ class FetchManifestDialog(QDialog):
             QMessageBox.critical(self, "Error", "Could not access the application job queue.")
 
     def accept(self):
-        try:
-            from core.steam_api import disconnect_shared_client
-            disconnect_shared_client()
-        except Exception as e:
-            logger.debug(f"Error disconnecting shared client in accept: {e}")
+        self._stop_active_image_fetchers()
         super().accept()
 
     def reject(self):
-        try:
-            from core.steam_api import disconnect_shared_client
-            disconnect_shared_client()
-        except Exception as e:
-            logger.debug(f"Error disconnecting shared client in reject: {e}")
+        self._stop_active_image_fetchers()
         super().reject()
 
     def closeEvent(self, event):
@@ -1219,12 +1301,6 @@ class FetchManifestDialog(QDialog):
                 self.task_runner.stop()
             except RuntimeError as e:
                 logger.debug(f"Error stopping task runner: {e}")
-
-        try:
-            from core.steam_api import disconnect_shared_client
-            disconnect_shared_client()
-        except Exception as e:
-            logger.debug(f"Error disconnecting shared client in closeEvent: {e}")
 
         super().closeEvent(event)
 

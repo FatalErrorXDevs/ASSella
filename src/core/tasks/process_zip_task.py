@@ -8,12 +8,19 @@ import tempfile
 from ui.assets import DEPOT_BLACKLIST
 from core.steam_api import get_depot_info_from_api
 from core.ini_parser import parse_depots_ini
+from utils.helpers import get_base_path
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_app_token,
     is_slssteam_mode_enabled,
 )
 from core.appinfo_editor import get_appinfo_path, add_token_to_appinfo
+from utils.settings import get_settings
+
+try:
+    from managers.depot_key_manager import DepotKeyManager
+except Exception:
+    DepotKeyManager = None
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +161,43 @@ class ProcessZipTask:
             known_depot_descriptions = {}
 
         game_data = {}
+        fn = os.path.basename(zip_path)
+        b_match = re.search(r"_branch_([a-zA-Z0-9_-]+)\.zip$", fn)
+        if b_match:
+            game_data["branch"] = b_match.group(1)
+            logger.info(f"[ProcessZipTask] Extracted branch '{game_data['branch']}' from zip filename {fn}")
         try:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 lua_files = [f for f in zip_ref.namelist() if f.endswith(".lua")]
-                if not lua_files:
-                    raise FileNotFoundError("No .lua file found in the zip archive.")
+                lua_content = None
+                lua_timestamp = None
+                if lua_files:
+                    try:
+                        lua_info = zip_ref.getinfo(lua_files[0])
+                        dt = lua_info.date_time
+                        import datetime, time
+                        lua_timestamp = int(time.mktime(datetime.datetime(*dt).timetuple()))
+                    except Exception:
+                        pass
+                    lua_content = zip_ref.read(lua_files[0]).decode("utf-8")
+                    if lua_content:
+                        ProcessZipTask._parse_lua(lua_content, game_data)
+                        token = ProcessZipTask._extract_app_token(lua_content, game_data.get("appid"))
+                        if token:
+                            game_data["app_token"] = token
+
+                        try:
+                            _extracted_appid = game_data.get("appid")
+                            if not _extracted_appid and lua_files and lua_files[0].endswith(".lua"):
+                                _extracted_appid = lua_files[0].replace(".lua", "").replace("accela_", "")
+                            if _extracted_appid:
+                                lua_dir = get_base_path() / "cached_luas"
+                                lua_dir.mkdir(parents=True, exist_ok=True)
+                                lua_save_file = lua_dir / f"{_extracted_appid}.lua"
+                                lua_save_file.write_text(lua_content, encoding="utf-8")
+                                logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+                        except Exception as _lua_arch_err:
+                            logger.debug(f"Failed to archive LUA backup: {_lua_arch_err}")
 
                 manifest_files = {
                     os.path.basename(f): zip_ref.read(f)
@@ -170,13 +209,35 @@ class ProcessZipTask:
                     if len(parts) == 2:
                         game_data.setdefault("manifests", {})[parts[0]] = parts[1]
 
-                lua_content = zip_ref.read(lua_files[0]).decode("utf-8")
-
-                self._parse_lua(lua_content, game_data)
-
-                token = self._extract_app_token(lua_content, game_data.get("appid"))
-                if token:
-                    game_data["app_token"] = token
+                # ── Persist depot keys + AppToken to depot_keys.db ──
+                # This enables Smart Update Mode for this game from here on.
+                _appid_for_cache = game_data.get("appid")
+                if DepotKeyManager and _appid_for_cache and lua_content:
+                    try:
+                        _dkm = DepotKeyManager()
+                        raw_depots = game_data.get("depots", {})
+                        _keys_to_save = {
+                            did: info.get("key")
+                            for did, info in raw_depots.items()
+                            if info.get("key")
+                        }
+                        if _keys_to_save:
+                            _dkm.save_depot_keys(_appid_for_cache, _keys_to_save, timestamp=lua_timestamp)
+                            logger.info(
+                                f"[DepotKeyCache] Persisted {len(_keys_to_save)} depot key(s) "
+                                f"for AppID {_appid_for_cache} to depot_keys.db"
+                            )
+                        if token:
+                            _dkm.save_app_token(_appid_for_cache, token, timestamp=lua_timestamp)
+                            logger.info(
+                                f"[DepotKeyCache] Persisted AppToken for AppID {_appid_for_cache} "
+                                f"to depot_keys.db"
+                            )
+                    except Exception as _dkm_err:
+                        logger.warning(
+                            f"[DepotKeyCache] Failed to persist keys for AppID "
+                            f"{_appid_for_cache}: {_dkm_err}"
+                        )
 
                 if game_data.get("dlcs"):
                     enriched_dlcs = {}
@@ -185,6 +246,32 @@ class ProcessZipTask:
                             dlc_id, lua_desc
                         )
                     game_data["dlcs"] = enriched_dlcs
+
+                if not lua_content:
+                    fn = os.path.basename(zip_path)
+                    match = re.search(r"accela_fetch_(\d+)", fn)
+                    if match:
+                        inferred_appid = match.group(1)
+                        game_data["appid"] = inferred_appid
+                        logger.info(f"[ProcessZipTask] Inferred AppID {inferred_appid} from zip filename {fn}")
+                        if DepotKeyManager:
+                            try:
+                                _dkm = DepotKeyManager()
+                                cached_keys = _dkm.get_depot_keys(inferred_appid)
+                                cached_token = _dkm.get_app_token(inferred_appid)
+                                if cached_token:
+                                    game_data["app_token"] = cached_token
+                                if cached_keys:
+                                    depots_map = {}
+                                    for did, k in cached_keys.items():
+                                        if str(did) == str(inferred_appid):
+                                            continue
+                                        desc = known_depot_descriptions.get(did, f"Depot {did}")
+                                        depots_map[did] = {"key": k, "desc": desc, "system": None}
+                                    game_data["depots"] = depots_map
+                                    logger.info(f"[ProcessZipTask] Reconstructed {len(depots_map)} depot(s) from depot_keys.db for AppID {inferred_appid}")
+                            except Exception as _recon_err:
+                                logger.warning(f"[ProcessZipTask] Failed to reconstruct depots from cache: {_recon_err}")
 
                 unfiltered_depots = game_data.get("depots", {})
                 if not unfiltered_depots:
@@ -228,9 +315,19 @@ class ProcessZipTask:
 
                         if api_data.get("buildid"):
                             game_data["buildid"] = api_data["buildid"]
+                            get_settings().setValue(f"fetched_buildid/{game_data['appid']}", api_data["buildid"])
                             logger.info(
                                 f"Found official buildid: {game_data['buildid']}"
                             )
+                            if not game_data.get("branch"):
+                                try:
+                                    from core.steam_api import find_branch_for_buildid
+                                    pics_branch = find_branch_for_buildid(game_data["appid"], game_data["buildid"])
+                                    if pics_branch:
+                                        game_data["branch"] = pics_branch
+                                        logger.info(f"[ProcessZipTask] Steam PICS matched buildid {game_data['buildid']} -> branch '{pics_branch}'")
+                                except Exception as _pb_err:
+                                    logger.debug(f"PICS branch match failed: {_pb_err}")
 
                         if api_data.get("header_url"):
                             game_data["header_url"] = api_data["header_url"]
@@ -251,6 +348,7 @@ class ProcessZipTask:
                             )
 
                         enriched_depots = {}
+                        filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
                         for depot_id, lua_data in filtered_depots.items():
                             final_depot_data = {"key": lua_data["key"]}
                             details = api_details.get(str(depot_id))
@@ -282,14 +380,15 @@ class ProcessZipTask:
                             else:
                                 final_description = base_description
 
-                            lower_desc = final_description.lower()
-                            if "soundtrack" in lower_desc or re.search(
-                                r"\bost\b", lower_desc
-                            ):
-                                logger.info(
-                                    f"Filtering out soundtrack depot {depot_id} ('{final_description}')."
-                                )
-                                continue
+                            if filter_soundtracks:
+                                lower_desc = final_description.lower()
+                                if "soundtrack" in lower_desc or re.search(
+                                    r"\bost\b", lower_desc
+                                ):
+                                    logger.info(
+                                        f"Filtering out soundtrack depot {depot_id} ('{final_description}')."
+                                    )
+                                    continue
 
                             api_size = details.get("size") if details else None
                             if api_size:
@@ -317,9 +416,10 @@ class ProcessZipTask:
                         game_data["depots"] = enriched_depots
 
                 if not game_data.get("game_name"):
-                    game_data["game_name"] = f"App_{game_data['appid']}"
+                    _fallback_name = f"App_{game_data.get('appid', 'Unknown')}"
+                    game_data["game_name"] = _fallback_name
                     logger.warning(
-                        f"Could not determine game name from Lua or API. Fallback to {game_data['game_name']}"
+                        f"Could not determine game name from Lua or API. Fallback to {_fallback_name}"
                     )
 
                 manifest_dir = os.path.join(

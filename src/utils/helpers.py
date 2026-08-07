@@ -399,6 +399,59 @@ def get_base_path(app_name: str = "ACCELA") -> Path:
         return Path.home() / ".logs" / app_name
 
 
+def get_cache_dir(subfolder: str = "") -> Path:
+    """Return cache directory (~/.local/share/ACCELA/cache/[subfolder]).
+    Checks legacy location first to maintain 100% backward compatibility.
+    """
+    base = get_base_path()
+    if subfolder:
+        legacy_path = base / subfolder
+        if legacy_path.exists():
+            return legacy_path
+        new_path = base / "cache" / subfolder
+        new_path.mkdir(parents=True, exist_ok=True)
+        return new_path
+    c_path = base / "cache"
+    c_path.mkdir(parents=True, exist_ok=True)
+    return c_path
+
+
+def get_manifests_dir(subfolder: str = "") -> Path:
+    """Return manifests directory (~/.local/share/ACCELA/manifests/[subfolder]).
+    Checks legacy location first to maintain 100% backward compatibility.
+    """
+    base = get_base_path()
+    if subfolder:
+        legacy_path = base / subfolder
+        if legacy_path.exists():
+            return legacy_path
+        new_path = base / "manifests" / subfolder
+        new_path.mkdir(parents=True, exist_ok=True)
+        return new_path
+    m_path = base / "manifests"
+    m_path.mkdir(parents=True, exist_ok=True)
+    return m_path
+
+
+def get_data_dir() -> Path:
+    """Return data directory (~/.local/share/ACCELA/data/)."""
+    base = get_base_path()
+    d_path = base / "data"
+    d_path.mkdir(parents=True, exist_ok=True)
+    return d_path
+
+
+def get_data_file_path(filename: str) -> Path:
+    """Return path for a database or state file (e.g. steam_headers.db, install_history.json).
+    Checks legacy location under base_path first; if not found, uses data_dir.
+    """
+    base = get_base_path()
+    legacy_file = base / filename
+    if legacy_file.exists():
+        return legacy_file
+    return get_data_dir() / filename
+
+
 def _get_slscheevo_path() -> Path:
     """Get path to SLScheevo executable or Python script."""
 
@@ -427,6 +480,15 @@ def _get_slscheevo_path() -> Path:
 
 def get_slscheevo_path() -> Path:
     return _get_slscheevo_path()
+
+
+def get_schema_grabber_path() -> Path:
+    binary_path = Paths.deps("schema-grabber/schema-grabber")
+    if not binary_path.exists():
+        fallback_path = Path.home() / ".local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber"
+        if fallback_path.exists():
+            return fallback_path
+    return binary_path
 
 
 def _ensure_template_file(save_dir: Path) -> None:
@@ -516,6 +578,19 @@ def get_venv_path() -> Path | None:
         venv_dir = check_venv(Path(app_dir) / "bin" / ".venv")
         if venv_dir:
             return venv_dir
+        # The APPDIR env var is set but the venv wasn't found there.
+        # Log what was tried so it's easier to debug future mismatches.
+        logger.debug(f"AppImage APPDIR set to '{app_dir}' but no .venv found at {Path(app_dir) / 'bin' / '.venv'}")
+
+    # 1b. Glob-based fallback for AppImages whose mount point has a random suffix
+    # e.g. /tmp/.mount_ASSellXYZ/bin/.venv — the suffix changes every run.
+    if not venv_dir and sys.platform != "win32":
+        import glob
+        for candidate in glob.glob("/tmp/.mount_*/bin/.venv"):
+            venv_dir = check_venv(Path(candidate))
+            if venv_dir:
+                logger.debug(f"Found AppImage .venv via glob: {venv_dir}")
+                return venv_dir
 
     # 2. Check relative to this script file (Absolute traversal)
     current_file_dir = Path(__file__).resolve().parent
@@ -656,12 +731,8 @@ def create_slider_setting(
     return layout, slider, value_label, reset_button
 
 
-class CheckboxSetting(QWidget):
-    """A small widget that contains a QCheckBox and an explanatory QLabel.
-
-    It exposes a minimal QCheckBox-like interface (isChecked, setChecked,
-    stateChanged signal proxy) so callers can use it like a plain checkbox.
-    """
+class CheckboxSetting(QCheckBox):
+    """A native QCheckBox with settings initialization support."""
 
     def __init__(
         self,
@@ -671,48 +742,28 @@ class CheckboxSetting(QWidget):
         parent_widget: Optional[QWidget] = None,
         tooltip: Optional[str] = None,
     ):
-        super().__init__()
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self.checkbox = QCheckBox(text)
-
+        super().__init__(text)
+        self.checkbox = self  # For compatibility with settings.checkbox access patterns
+        
         # Initialize checked state from settings when parent_widget provided
         if parent_widget and hasattr(parent_widget, "settings"):
             current_value = parent_widget.settings.value(
                 setting_key, default_value, type=bool
             )
-            self.checkbox.setChecked(current_value)
+            self.setChecked(current_value)
 
+        self.explanation_label = None
         if tooltip:
-            # Use tooltip both as hover tooltip and as visible explanatory label
-            self.checkbox.setToolTip(tooltip)
-            self.explanation_label = QLabel(tooltip)
-            self.explanation_label.setStyleSheet("color: #888888; font-size: 11px;")
-            self.explanation_label.setWordWrap(True)
-            # Add checkbox and then an indented explanation label using
-            # an inner HBoxLayout
-            self._layout.addWidget(self.checkbox)
-            ex_layout = QHBoxLayout()
-            ex_layout.setContentsMargins(0, 0, 0, 0)
-            ex_layout.addSpacing(14)
-            ex_layout.addWidget(self.explanation_label)
-            self._layout.addLayout(ex_layout)
-        else:
-            self.explanation_label = None
-            self._layout.addWidget(self.checkbox)
+            self.setToolTip(tooltip)
 
     def isChecked(self) -> bool:  # noqa: N802
-        return self.checkbox.isChecked()
+        return super().isChecked()
 
     def setChecked(self, value: bool) -> None:  # noqa: N802
-        return self.checkbox.setChecked(value)
-
-    @property
-    def stateChanged(self):  # noqa: N802
-        return self.checkbox.stateChanged
+        super().setChecked(value)
 
     def setToolTip(self, text: Optional[str]):  # noqa: N802
-        self.checkbox.setToolTip(text)
+        super().setToolTip(text)
         if self.explanation_label:
             self.explanation_label.setText(text if text is not None else "")
 
@@ -863,3 +914,164 @@ def create_font_from_settings(settings) -> QFont:
         font.setItalic(True)
 
     return font
+
+
+def get_machine_id() -> bytes:
+    import os
+    import sys
+    # 1. Try /etc/machine-id (Linux standard)
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        return content.encode("utf-8")
+        except Exception:
+            pass
+
+    # 2. Try Windows registry GUID if on Windows
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography"
+            )
+            machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+            winreg.CloseKey(key)
+            if machine_guid:
+                return machine_guid.strip().encode("utf-8")
+        except OSError:
+            pass
+
+    # 3. Fallback to uuid.getnode()
+    import uuid
+    return str(uuid.getnode()).encode("utf-8")
+
+
+def get_encryption_key() -> bytes:
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    # Derive a key from the machine's persistent ID
+    machine_id = get_machine_id()
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b'assella_salt_key_123', # Fixed salt
+        iterations=100000,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(machine_id))
+
+
+def encrypt_string(plain_text: str) -> str:
+    if not plain_text:
+        return ""
+    from cryptography.fernet import Fernet
+    try:
+        key = get_encryption_key()
+        f = Fernet(key)
+        return f.encrypt(plain_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return ""
+
+
+def decrypt_string(encrypted_text: str) -> str:
+    if not encrypted_text:
+        return ""
+    from cryptography.fernet import Fernet
+    
+    # Try decrypting using the new persistent machine ID key
+    try:
+        key = get_encryption_key()
+        f = Fernet(key)
+        return f.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        pass
+
+    # Fallback to the old MAC-address-based key in case they have an old config
+    try:
+        import uuid
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        old_machine_id = str(uuid.getnode()).encode('utf-8')
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b'assella_salt_key_123',
+            iterations=100000,
+        )
+        old_key = base64.urlsafe_b64encode(kdf.derive(old_machine_id))
+        f = Fernet(old_key)
+        return f.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return ""
+
+
+def get_steam_stats_dir() -> Path | None:
+    import sys
+    import os
+    from pathlib import Path
+    if sys.platform == "win32":
+        import winreg
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"
+            )
+            steam_path, _ = winreg.QueryValueEx(key, "SteamPath")
+            winreg.CloseKey(key)
+            dest = Path(os.path.normpath(steam_path)) / "appcache/stats"
+            return dest
+        except OSError:
+            return None
+    else:
+        native_path = Path.home() / ".local/share/Steam"
+        symlink_path = Path.home() / ".steam/steam"
+        flatpak_path = Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam"
+        
+        for path in (native_path, symlink_path, flatpak_path):
+            if path.exists():
+                dest = path / "appcache/stats"
+                return dest
+    return None
+
+
+def get_dotnet_env():
+    import os
+    from pathlib import Path
+    import sys
+    env = os.environ.copy()
+    
+    # 1. Clean AppImage library overrides that break .NET runtime host
+    env.pop("LD_LIBRARY_PATH", None)
+    env.pop("LD_PRELOAD", None)
+    
+    # 2. Find local or system .dotnet directory
+    local_dotnet = Path.home() / ".dotnet"
+    system_dotnet = Path("/usr/share/dotnet")
+    usr_lib_dotnet = Path("/usr/lib/dotnet")
+    
+    dotnet_dir = None
+    if local_dotnet.exists():
+        dotnet_dir = local_dotnet
+    elif system_dotnet.exists():
+        dotnet_dir = system_dotnet
+    elif usr_lib_dotnet.exists():
+        dotnet_dir = usr_lib_dotnet
+        
+    if dotnet_dir:
+        # Set DOTNET_ROOT (required for .NET to find runtimes)
+        env["DOTNET_ROOT"] = str(dotnet_dir)
+        # Prepend to PATH so dotnet executable is found if needed
+        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
+        
+    return env
+
+
+from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode
+
+
+

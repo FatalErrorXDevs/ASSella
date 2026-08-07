@@ -1,8 +1,8 @@
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QMovie, QPainter, QPixmap
+from PyQt6.QtCore import QSize, Qt, QTimer, QPropertyAnimation
+from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QFrame,
@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QWidget,
+    QGraphicsOpacityEffect,
 )
 
 from utils.helpers import get_base_path
@@ -40,7 +41,7 @@ class ClickableLabel(QLabel):
     ):
         super().__init__(text, parent)
         self.callback = callback
-        self.setStyleSheet("cursor: pointer;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self.callback:
@@ -59,7 +60,6 @@ class BottomTitleBar(QFrame):
         self.no_previous_state = True
 
         self.navi_label: Optional[QLabel] = None
-        self.navi_movie: Optional[QMovie] = None
         self.title_label: Optional[QLabel] = None
 
         # Buttons
@@ -70,6 +70,8 @@ class BottomTitleBar(QFrame):
         self.minimize_button: Optional[QPushButton] = None
         self.maximize_button: Optional[QPushButton] = None
         self.close_button: Optional[QPushButton] = None
+
+        self.update_arrow_label: Optional[QLabel] = None
 
         self._setup_ui()
         self._apply_style()
@@ -100,7 +102,7 @@ class BottomTitleBar(QFrame):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._setup_navi_animation(layout)
+        # Navi GIF removed per user request
 
         version_label = ClickableLabel(
             app_version,
@@ -111,34 +113,31 @@ class BottomTitleBar(QFrame):
         version_label.setToolTip("View credits")
         layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
+        self.update_arrow_label = ClickableLabel(
+            " ⬆ Update Available",
+            self.parent_window,
+            lambda: self.trigger_update_flow()
+        )
+        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold;")
+        self.update_arrow_label.setToolTip("Click here to apply delta updates (ZSync) now.")
+        self.update_arrow_label.setVisible(False)
+        layout.addWidget(self.update_arrow_label, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # Pulse fading effect using QGraphicsOpacityEffect & QPropertyAnimation
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.update_arrow_label.setGraphicsEffect(self.opacity_effect)
+
+        self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_animation.setDuration(3000) # Super slow 3-second cycle
+        self.fade_animation.setKeyValueAt(0, 0.15) # Pulse start (almost invisible)
+        self.fade_animation.setKeyValueAt(0.5, 0.75) # Pulse peak (75% opacity)
+        self.fade_animation.setKeyValueAt(1, 0.15) # Pulse end
+        self.fade_animation.setLoopCount(-1) # Infinite looping
+
         widget.setMinimumSize(widget.sizeHint())
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return widget
 
-    def _setup_navi_animation(self, layout: QHBoxLayout) -> None:
-        """Setup the Navi GIF animation."""
-        self.navi_label = QLabel()
-        gif_path = get_base_path() / "gifs/colorized/navi.gif"
-        self.navi_movie = QMovie(str(gif_path))
-
-        if not self.navi_movie.isValid():
-            return
-
-        self.navi_movie.jumpToFrame(0)
-        orig_size = self.navi_movie.currentImage().size()
-        height = 20
-        width = (
-            int(height * (orig_size.width() / orig_size.height()))
-            if orig_size.height() > 0
-            else 57
-        )
-
-        self.navi_label.setFixedSize(width, height)
-        self.navi_label.setScaledContents(True)
-        self.navi_label.setMovie(self.navi_movie)
-        self.navi_movie.start()
-
-        layout.addWidget(self.navi_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def _create_right_section(self) -> QWidget:
         """Create the right section containing buttons."""
@@ -154,17 +153,13 @@ class BottomTitleBar(QFrame):
             getattr(parent, "open_status_dialog", None),
             "Download Status",
         )
-        layout.addWidget(self.status_button)
+        self.status_button.setVisible(False)
 
         self.search_button = self._create_svg_button(
             SEARCH_SVG, getattr(parent, "open_fetch_dialog", None), "Download Game"
         )
         layout.addWidget(self.search_button)
 
-        self.workshop_button = self._create_svg_button(
-            PALETTE_SVG, getattr(parent, "open_workshop_dialog", None), "Workshop Downloader"
-        )
-        layout.addWidget(self.workshop_button)
 
         self.game_library_button = self._create_svg_button(
             BOOK_SVG, getattr(parent, "open_game_library", None), "Game Library"
@@ -251,7 +246,6 @@ class BottomTitleBar(QFrame):
             self.minimize_button,
             self.maximize_button,
             self.search_button,
-            self.workshop_button,
             self.game_library_button,
             self.settings_button,
             self.close_button,
@@ -270,7 +264,6 @@ class BottomTitleBar(QFrame):
             (self.minimize_button, MINIMIZE),
             (self.maximize_button, MAXIMIZE),
             (self.search_button, SEARCH_SVG),
-            (self.workshop_button, PALETTE_SVG),
             (self.game_library_button, BOOK_SVG),
             (self.settings_button, GEAR_SVG),
             (self.close_button, POWER_SVG),
@@ -427,6 +420,21 @@ class BottomTitleBar(QFrame):
             window.startSystemMove()
 
         event.accept()
+
+    def show_update_indicator(self, show: bool) -> None:
+        """Show or hide the update indicator and start/stop the pulse animation."""
+        if hasattr(self, "update_arrow_label") and self.update_arrow_label:
+            self.update_arrow_label.setVisible(show)
+            if show:
+                self.fade_animation.start()
+            else:
+                self.fade_animation.stop()
+
+    def trigger_update_flow(self) -> None:
+        """Triggers the self-update logic on the main window."""
+        if hasattr(self, "parent_window") and self.parent_window:
+            if hasattr(self.parent_window, "run_self_update"):
+                self.parent_window.run_self_update()
 
 
 """

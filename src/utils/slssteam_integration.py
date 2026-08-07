@@ -134,7 +134,7 @@ def _wait_for_sls_license(appid: str, log_offset: int) -> bool:
     return found
 
 
-def _verify_acf_created(appid: str) -> bool:
+def _verify_acf_created(appid: str, timeout: Optional[float] = None) -> bool:
     """Poll for ACF manifest creation by Steam across all known library paths."""
     acf_filename = f"appmanifest_{appid}.acf"
 
@@ -156,7 +156,8 @@ def _verify_acf_created(appid: str) -> bool:
     except (OSError, IOError):
         pass
 
-    deadline = time.time() + MAX_ACF_VERIFY_SECONDS
+    verify_seconds = timeout if timeout is not None else MAX_ACF_VERIFY_SECONDS
+    deadline = time.time() + verify_seconds
     while time.time() < deadline:
         for p in candidate_paths:
             if p.exists():
@@ -166,10 +167,27 @@ def _verify_acf_created(appid: str) -> bool:
 
     searched = ", ".join(str(p) for p in candidate_paths)
     logger.warning(
-        f"ACF manifest for {appid} not found after {MAX_ACF_VERIFY_SECONDS}s. "
+        f"ACF manifest for {appid} not found after {verify_seconds}s. "
         f"Searched: {searched} — Steam may create it later"
     )
     return False
+
+
+def _silent_background_retry_pipe(appid: str, library_index: int, max_retries: int = 12) -> None:
+    """Silent background worker thread to retry install pipe command if Steam was delayed."""
+    import threading
+
+    def _retry_worker():
+        for i in range(max_retries):
+            time.sleep(5)
+            if _verify_acf_created(appid, timeout=1.0):
+                logger.info(f"Silent retry confirmed ACF manifest created for AppID {appid} on retry {i + 1}")
+                return
+            logger.info(f"Silent background retry ({i + 1}/{max_retries}) sending install|{appid}|{library_index}...")
+            _slssteam_api_send(f"install|{appid}|{library_index}")
+
+    t = threading.Thread(target=_retry_worker, daemon=True)
+    t.start()
 
 
 def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> bool:
@@ -227,8 +245,11 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
         logger.warning(f"Failed to send install command for {appid}")
         return True  # Config is still written
 
-    # 6. Verify ACF (non-blocking — don't fail if not found)
-    _verify_acf_created(appid)
+    # 6. Verify ACF (non-blocking). If delayed, launch silent background retry
+    acf_created = _verify_acf_created(appid)
+    if not acf_created:
+        logger.info(f"ACF creation delayed for {appid} — launching silent background retry worker...")
+        _silent_background_retry_pipe(appid, library_index)
 
     return True
 

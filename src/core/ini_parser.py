@@ -5,8 +5,17 @@ from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton cache — depots.ini is a static bundled file that never
+# changes during a session.  Parsing 146K entries on every zip processed is
+# wasteful; cache the result after the first read.
+_depot_cache: dict | None = None
+
 
 def parse_depots_ini():
+    global _depot_cache
+    if _depot_cache is not None:
+        return _depot_cache
+
     config = configparser.ConfigParser()
     depot_descriptions = {}
 
@@ -17,7 +26,8 @@ def parse_depots_ini():
             logger.warning(
                 f"'depots.ini' file not found at {str(ini_path)}. Depot names may be generic."
             )
-            return {}
+            _depot_cache = {}
+            return _depot_cache
 
         config.read(str(ini_path), encoding="utf-8")
 
@@ -38,4 +48,5 @@ def parse_depots_ini():
             exc_info=True,
         )
 
-    return depot_descriptions
+    _depot_cache = depot_descriptions
+    return _depot_cache

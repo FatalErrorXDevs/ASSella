@@ -163,7 +163,7 @@ class DatabaseManager:
             logger.error(f"DB Read Error for header_url {appid}: {e}")
             return None
 
-    def get_app_info(self, appid: str) -> Optional[Dict[str, Any]]:
+    def get_app_info(self, appid: str, bypass_expiration: bool = False) -> Optional[Dict[str, Any]]:
         if not self.conn or not self.dctx:
             return None
 
@@ -181,14 +181,16 @@ class DatabaseManager:
                     return None
 
                 last_updated = row["last_updated"] or 0
-                if (int(time.time()) - last_updated) > EXPIRATION_SECONDS:
+                if not bypass_expiration and (int(time.time()) - last_updated) > EXPIRATION_SECONDS:
                     return None
 
                 depots_data = self._decompress_depots(row["depots_json"], appid)
                 buildid = None
+                branches = None
                 if "branches" in depots_data:
+                    branches = depots_data.get("branches")
                     buildid = (
-                        depots_data.get("branches", {}).get("public", {}).get("buildid")
+                        branches.get("public", {}).get("buildid") if isinstance(branches, dict) else None
                     )
                     del depots_data["branches"]
 
@@ -201,6 +203,7 @@ class DatabaseManager:
                     "header_url": full_header_url,
                     "depots": depots_data,
                     "buildid": buildid,
+                    "branches": branches,
                     "source": "database",
                 }
 
@@ -283,4 +286,27 @@ class DatabaseManager:
                 self.conn.close()
 
     def clear_app_info(self, appid):
-        pass
+        if not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("DELETE FROM apps WHERE appid = ?", (str(appid),))
+                self.conn.commit()
+        except Exception as e:
+            logger.error(f"DB Delete Error {appid}: {e}")
+
+    def get_cache_time(self, appid: str) -> Optional[int]:
+        """Get the last_updated timestamp for a given appid (ignoring expiration)."""
+        if not self.conn:
+            return None
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("SELECT last_updated FROM apps WHERE appid = ?", (str(appid),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        except Exception as e:
+            logger.error(f"DB Read Error for cache time {appid}: {e}")
+        return None

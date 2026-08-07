@@ -23,7 +23,12 @@ class Worker(QObject):
             result = self.target_func(*self.args, **self.kwargs)
             self.finished.emit(result)
             logger.debug(f"Worker finished function '{func_name}' successfully.")
-        except Exception as e:
+        except BaseException as e:
+            # Catch BaseException (not just Exception) so that gevent.timeout.Timeout
+            # and similar non-Exception subclasses don't silently kill the thread
+            # without emitting completed(), which would deadlock the job queue.
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
             logger.error(
                 f"An error occurred in worker function '{func_name}': {e}",
                 exc_info=True,

@@ -380,37 +380,41 @@ def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
 def _append_to_additional_apps(
     content: str, app_id: str, comment: str, match: re.Match
 ) -> str:
-    """Append AppID to existing AdditionalApps section."""
+    """Append AppID to existing AdditionalApps section directly after the last list item."""
     start_pos = match.end()
     remaining = content[start_pos:]
     lines = remaining.split("\n")
 
-    # Find position after the last list item
-    last_item_end = start_pos
-    for i, line in enumerate(lines):
+    last_item_offset = 0
+    curr_offset = 0
+
+    for line in lines:
+        line_len = len(line) + 1  # includes \n
         stripped = line.strip()
         if stripped.startswith("-"):
-            last_item_end = start_pos + sum(len(lines[j]) + 1 for j in range(i + 1))
-        elif not stripped or stripped.startswith("#"):
-            continue
-        else:
+            last_item_offset = curr_offset + line_len
+        elif stripped and not stripped.startswith("#") and not line.startswith(" ") and not line.startswith("\t"):
+            # Encountered a new top-level YAML section (e.g., DlcData:)
             break
-    else:
-        last_item_end = len(content)
+        curr_offset += line_len
 
-    insert_pos = last_item_end
-    if comment:
-        new_entry = f"  - {app_id}   # {comment}\n"
-    else:
-        new_entry = f"  - {app_id}\n"
+    if last_item_offset == 0:
+        # AdditionalApps: was empty
+        insert_pos = start_pos
+        if not content[start_pos:].startswith("\n"):
+            new_entry = f"\n  - {app_id}   # {comment}\n" if comment else f"\n  - {app_id}\n"
+        else:
+            new_entry = f"  - {app_id}   # {comment}\n" if comment else f"  - {app_id}\n"
+        return content[:insert_pos] + new_entry + content[insert_pos:]
 
+    insert_pos = start_pos + last_item_offset
+    new_entry = f"  - {app_id}   # {comment}\n" if comment else f"  - {app_id}\n"
     return content[:insert_pos] + new_entry + content[insert_pos:]
 
 
 def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
     try:
-        ensure_disable_updates_off(config_path)
         content = _read_config_content(config_path)
         if content is None:
             return _init_config_with_app(config_path, app_id, comment)

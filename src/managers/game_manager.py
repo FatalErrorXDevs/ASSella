@@ -4,7 +4,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot
 
 from core.steam_helpers import (
     get_steam_libraries,
@@ -14,6 +14,8 @@ from core.steam_helpers import (
 from core.tasks.manifest_check_task import ManifestCheckTask
 from utils.helpers import get_base_path
 from utils.task_runner import TaskRunner
+from utils.settings import get_settings
+from utils.update_status_cache import get_update_cache
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_additional_app,
@@ -49,6 +51,16 @@ class GameManager(QObject):
     game_selected = pyqtSignal(str)
     scan_complete = pyqtSignal(int)  # Emits number of games found
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
+    all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
+    game_hubcap_status_checked = pyqtSignal(str, bool, bool)  # (appid, needs_update, update_in_progress)
+    update_check_progress = pyqtSignal(int, int)  # (current, total)
+
+    @pyqtSlot(int)
+    def _emit_scan_signals(self, games_found: int) -> None:
+        """Main-thread slot: emit library_updated and scan_complete after a background scan."""
+        self.is_scanning = False
+        self.library_updated.emit()
+        self.scan_complete.emit(games_found)
 
     def __init__(self, main_window):
         super().__init__()
@@ -60,14 +72,20 @@ class GameManager(QObject):
         self.selected_game = None
         self.filtered_games = []
 
+        # O(1) lookup: appid -> game dict reference
+        self._games_by_appid: dict = {}
+
         # Manifest check task management
         self.manifest_check_task = None
         self.manifest_check_runner = None
         self._games_to_check = []
+        # Counter used by single-game checks (not the batch runner)
+        self._single_check_runners: list = []
 
         # Library scan task management
         self.scan_runner = None
         self._scan_cancelled = False
+        self.is_scanning = False
 
         logger.info("GameManager initialized")
 
@@ -78,9 +96,11 @@ class GameManager(QObject):
 
     def add_game(self, game_data):
         """Add a game to the library"""
-        # TODO: Implement game addition logic
         logger.info(f"Adding game to library: {game_data.get('game_name', 'Unknown')}")
         self.games.append(game_data)
+        game_id = str(game_data.get("appid", ""))
+        if game_id:
+            self._games_by_appid[game_id] = game_data
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
@@ -98,16 +118,13 @@ class GameManager(QObject):
         self.library_updated.emit()
 
     def get_game(self, game_id):
-        """Get a specific game by ID"""
-        for game in self.games:
-            if game.get("appid") == game_id:
-                return game
-        return None
+        """Get a specific game by ID (O(1) lookup)"""
+        return self._games_by_appid.get(str(game_id))
 
     def get_all_games(self):
         """Get all games in the library - returns sorted list"""
         games_to_return = self.filtered_games if self.filtered_games else self.games
-        return self._get_sorted_games(games_to_return)
+        return list(games_to_return)
 
     def select_game(self, game_id):
         """Select a specific game"""
@@ -123,11 +140,11 @@ class GameManager(QObject):
 
     def update_game(self, game_id, game_data):
         """Update game information"""
-        # TODO: Implement game update logic
         logger.info(f"Updating game: {game_id}")
         for i, game in enumerate(self.games):
             if game.get("appid") == game_id:
                 self.games[i].update(game_data)
+                self._games_by_appid[str(game_id)] = self.games[i]
                 # Sort the main games list after update
                 self.games = self._get_sorted_games(self.games)
                 self.game_updated.emit(game_id)
@@ -138,12 +155,10 @@ class GameManager(QObject):
 
     def _apply_filters(self):
         """Apply current filters to the game list"""
-        # TODO: Implement filtering logic
         self.filtered_games = self._get_sorted_games(self.games)
 
     def search_games(self, query):
         """Search games by name or other criteria"""
-        # TODO: Implement search functionality
         if not query:
             self.filtered_games = []
             self._apply_filters()
@@ -163,12 +178,34 @@ class GameManager(QObject):
         self._apply_filters()
         self.library_updated.emit()
 
-    def check_game_updates_async(self):
+    def reset_up_to_date_for_recheck(self) -> None:
         """
-        Start async update checking for all games in the library.
-        Games appear with 'checking' status initially, then update individually.
+        Reset 'up_to_date' games back to 'checking' so the next batch check
+        re-validates them. Called exclusively by the periodic update timer.
+        Games with 'update_available' are left untouched.
         """
-        # Cancel any existing task by stopping it and waiting for cleanup
+        reset_count = 0
+        settings = get_settings()
+        for game in self.games:
+            appid = game.get("appid")
+            if appid and settings.value(f"pin_build/{appid}", False, type=bool):
+                continue
+            if game.get("update_status") == UPDATE_STATUS["UP_TO_DATE"]:
+                game["update_status"] = UPDATE_STATUS["CHECKING"]
+                reset_count += 1
+        if reset_count:
+            logger.info(f"Periodic recheck: reset {reset_count} 'up_to_date' game(s) to 'checking'")
+
+    def check_game_updates_async(self, is_periodic: bool = False, force_refresh: bool = False):
+        """
+        Start async update checking for games that still need a check.
+
+        Smart skip logic:
+        - If force_refresh is True, we check ALL games (ignoring cache/update status).
+        - Otherwise, we only skip games that are already marked 'update_available'.
+        - 'up_to_date' entries in the cache are ignored for checks but act as a UI middleman.
+        """
+        # Cancel any existing batch task before starting a new one
         if (
             self.manifest_check_task is not None
             or self.manifest_check_runner is not None
@@ -176,21 +213,40 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
-        # Get games with valid appids
-        self._games_to_check = [
-            g for g in self.games if g.get("appid") not in ("0", "N/A", "unknown")
-        ]
+        # Build filtered list according to smart skip logic
+        games_to_check = []
+        for g in self.games:
+            appid = g.get("appid")
+            if appid in ("0", "N/A", "unknown"):
+                continue
+
+            # Pinned build bypass
+            settings = get_settings()
+            if settings.value(f"pin_build/{appid}", False, type=bool):
+                g["update_status"] = UPDATE_STATUS["UP_TO_DATE"]
+                self.game_update_status_changed.emit(appid, UPDATE_STATUS["UP_TO_DATE"])
+                continue
+
+            status = g.get("update_status", "")
+            if not force_refresh and status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                continue  # Skip checking already known updateable games
+            games_to_check.append(g)
+
+        self._games_to_check = games_to_check
 
         if not self._games_to_check:
-            logger.info("No games with valid appids to check")
+            logger.info("No games need an update check at this time")
+            self.all_updates_checked.emit()
             return
 
         logger.info(
-            f"Starting async update check for {len(self._games_to_check)} games"
+            f"Starting async update check for {len(self._games_to_check)} game(s) "
+            f"(skipped {len(self.games) - len(self._games_to_check)} with known status)"
         )
 
         # Create new task
         self.manifest_check_task = ManifestCheckTask(self._games_to_check)
+        self.update_check_progress.emit(0, len(self._games_to_check))
 
         # Connect signals
         self.manifest_check_task.game_update_checked.connect(
@@ -208,28 +264,181 @@ class GameManager(QObject):
         )
         self.manifest_check_runner.run(self.manifest_check_task.run)
 
-    def _on_game_update_checked(self, appid, update_status):
-        """Handle individual game update check result"""
-        # Find and update the game
-        for game in self.games:
-            if game.get("appid") == appid:
-                game["update_status"] = update_status
-                logger.debug(f"Updated status for game {appid}: {update_status}")
-                # Emit specific signal for individual game update (UI can choose to update just that item)
-                self.game_update_status_changed.emit(appid, update_status)
-                break
+    def check_single_game_update(self, appid: str) -> None:
+        """
+        Trigger an update check for a single game by appid.
+        Resets its status to 'checking', then runs ManifestCheckTask for just that game.
+        Called from the per-game 'Check for Updates' button in the library UI.
 
-    @staticmethod
-    def _on_update_check_progress(current, total):
+        If a batch check is currently running, defers to it — the batch will
+        include this game and emit the result when done.
+        """
+        game = self._games_by_appid.get(appid) or self.get_game(appid)
+        if not game:
+            logger.warning(f"check_single_game_update: appid {appid} not found")
+            return
+
+        # Pinned build bypass
+        settings = get_settings()
+        if settings.value(f"pin_build/{appid}", False, type=bool):
+            logger.info(f"check_single_game_update: appid {appid} is pinned. Bypassing check.")
+            game["update_status"] = UPDATE_STATUS["UP_TO_DATE"]
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["UP_TO_DATE"])
+            return
+
+        # If a batch is already running, include this game in the batch instead
+        if self.manifest_check_task is not None and self.manifest_check_runner is not None:
+            logger.info(f"Batch check running — adding {appid} to existing batch")
+            game["update_status"] = UPDATE_STATUS["CHECKING"]
+            game["hubcap_needs_update"] = False
+            game["hubcap_update_in_progress"] = False
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
+            if game not in self._games_to_check:
+                self._games_to_check.append(game)
+            return
+
+        # Reset status so the UI shows spinner
+        game["update_status"] = UPDATE_STATUS["CHECKING"]
+        game["hubcap_needs_update"] = False
+        game["hubcap_update_in_progress"] = False
+        self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
+
+        task = ManifestCheckTask([game])
+        runner = TaskRunner()
+
+        def _on_checked(checked_appid, status):
+            self._on_game_update_checked(checked_appid, status)
+            if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                self._check_hubcap_status_async(checked_appid)
+
+        def _on_done():
+            # Clean up this runner from the list
+            self._single_check_runners[:] = [
+                r for r in self._single_check_runners if r is not runner
+            ]
+
+        task.game_update_checked.connect(_on_checked)
+        task.completed.connect(_on_done)
+        task.error.connect(self._on_update_check_error)
+
+        self._single_check_runners.append(runner)
+        runner.run(task.run)
+        logger.info(f"Single update check started for appid {appid}")
+
+    def _check_hubcap_status_async(self, appid: str) -> None:
+        """Fetch Hubcap status asynchronously and update game dict/UI."""
+        from core import morrenus_api
+
+        runner = TaskRunner()
+        self._single_check_runners.append(runner)
+
+        def _fetch_status():
+            try:
+                res = morrenus_api.get_manifest_status(appid)
+                return res
+            except Exception as e:
+                logger.error(f"Error fetching Hubcap status for {appid}: {e}")
+                return {"error": str(e)}
+
+        def _on_status_done(result):
+            # Clean up runner
+            self._single_check_runners[:] = [
+                r for r in self._single_check_runners if r is not runner
+            ]
+            if not result or "error" in result:
+                logger.warning(f"Failed to get Hubcap status for {appid}: {result.get('error') if result else 'empty'}")
+                return
+
+            needs_update = result.get("needs_update", False)
+            update_in_progress = result.get("update_in_progress", False)
+
+            is_refined = False
+            if is_refined and not needs_update and not update_in_progress:
+                from utils.manifest_verifier import verify_hubcap_freshness
+                ver_status, reason, _ = verify_hubcap_freshness(appid, result)
+                if ver_status == "stale":
+                    needs_update = True  # Override flag so UI indicates Hubcap is not ready
+
+            game = self._games_by_appid.get(appid)
+            if game:
+                game["hubcap_needs_update"] = needs_update
+                game["hubcap_update_in_progress"] = update_in_progress
+
+            self.game_hubcap_status_checked.emit(appid, needs_update, update_in_progress)
+
+        worker = runner.run(_fetch_status)
+        worker.finished.connect(_on_status_done)
+
+    def _on_game_update_checked(self, appid: str, update_status: str) -> None:
+        """Handle individual game update check result — O(1) via _games_by_appid dict."""
+        game = self._games_by_appid.get(appid)
+        if game is None:
+            # Fallback to linear search for safety (e.g. dict not yet populated)
+            for g in self.games:
+                if g.get("appid") == appid:
+                    game = g
+                    break
+
+        if game is not None:
+            old_status = game.get("update_status")
+            game["update_status"] = update_status
+            game_title = game.get("name", f"AppID {appid}")
+            if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
+                logger.info(f"Updated status for game {appid} ({game_title}): {update_status}")
+            else:
+                logger.debug(f"Updated status for game {appid} ({game_title}): {update_status}")
+            self.game_update_status_changed.emit(appid, update_status)
+
+            # Persist to disk cache with diagnostic metadata
+            diag_meta = self._build_diag_metadata(appid, update_status)
+            get_update_cache().set_status(appid, update_status, diag_meta)
+            get_update_cache().save_async()
+
+            # If an update is detected, invalidate the manifest freshness cache
+            if update_status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                self.settings.setValue(f"manifest_is_fresh/{appid}", False)
+            elif update_status == UPDATE_STATUS["UP_TO_DATE"]:
+                self.settings.remove(f"manifest_is_fresh/{appid}")
+                self.settings.remove(f"fetched_manifest_id/{appid}")
+                self.settings.remove(f"latest_steam_manifest_id/{appid}")
+
+    def _build_diag_metadata(self, appid: str, status: str) -> dict:
+        """Build diagnostic metadata for cache entry from the last check context."""
+        meta = {}
+        meta["branch"] = str(self.settings.value(f"last_checked_branch/{appid}", "public"))
+        meta["branch_buildid"] = str(self.settings.value(f"last_checked_branch_buildid/{appid}", ""))
+        meta["local_buildid"] = str(self.settings.value(f"last_checked_local_buildid/{appid}", ""))
+
+        if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+            meta["reason"] = "depot_manifest_mismatch"
+            dep_diff = {}
+            i = 0
+            while True:
+                dk = f"last_check_depot_diff/{appid}/{i}"
+                diff_str = self.settings.value(dk, "", type=str)
+                if not diff_str:
+                    break
+                parts = diff_str.split("|", 2)
+                if len(parts) >= 2:
+                    dep_diff[parts[0]] = {"saved": parts[1], "current": parts[2] if len(parts) > 2 else ""}
+                i += 1
+            if dep_diff:
+                meta["depot_diffs"] = dep_diff
+        elif status == UPDATE_STATUS["UP_TO_DATE"]:
+            meta["reason"] = "manifests_match"
+
+        return meta
+
+    def _on_update_check_progress(self, current, total):
         """Handle update check progress"""
         logger.debug(f"Update check progress: {current}/{total}")
+        self.update_check_progress.emit(current, total)
 
-    @staticmethod
-    def _on_update_check_completed():
+    def _on_update_check_completed(self):
         """Handle update check completion"""
         logger.info("All game updates checked")
-        # Note: We don't clear references here
-        # They will be cleared by _on_manifest_check_runner_cleanup when thread finishes
+        self.all_updates_checked.emit()
+        # Note: references cleared by _on_manifest_check_runner_cleanup when thread finishes
 
     @staticmethod
     def _on_update_check_error(error_info):
@@ -239,8 +448,6 @@ class GameManager(QObject):
             f"Error during update check: {exc_msg}",
             exc_info=(exc_type, exc_msg, exc_traceback),
         )
-        # Note: We don't clear references here
-        # They will be cleared by _on_manifest_check_runner_cleanup when thread finishes
 
     def _on_manifest_check_runner_cleanup(self):
         """Handle TaskRunner cleanup completion - called when thread finishes"""
@@ -256,12 +463,9 @@ class GameManager(QObject):
         """
         logger.info("Starting async scan of Steam libraries for installed Steam games...")
 
-        # Reset cancel flag
+        # Reset cancel flag and set scanning state
         self._scan_cancelled = False
-
-        # Clear existing games before scanning
-        self.games.clear()
-        self.filtered_games.clear()
+        self.is_scanning = True
 
         # Create a worker function that does the scanning
         def do_scan():
@@ -300,6 +504,25 @@ class GameManager(QObject):
         # Cache the main Steam installation path to avoid repeated lookups
         steam_install_path = find_steam_install()
 
+        # Build a GLOBAL ACF cache across ALL Steam libraries so that a game
+        # installed in one library (e.g. external drive) whose ACF manifest sits
+        # in another library (e.g. internal) can still be resolved correctly.
+        # This is the common case for DLC-only installs: the DLC files land on
+        # the external drive but appmanifest_XXXX.acf stays on the internal one.
+        global_acf_cache = {}
+        for lib in steam_libraries:
+            sp = os.path.join(lib, "steamapps")
+            if os.path.exists(sp):
+                partial = self._build_acf_cache(sp)
+                # Merge — first library wins on collision (preserves earlier match)
+                for k, v in partial.items():
+                    if k not in global_acf_cache:
+                        global_acf_cache[k] = v
+        logger.debug(f"Built global ACF cache with {len(global_acf_cache)} entries across {len(steam_libraries)} library(ies)")
+
+        # Thread-safe local list to collect scanned games
+        scanned_games = []
+
         for library_path in steam_libraries:
             if self._scan_cancelled:
                 logger.info("Scan cancelled before scanning remaining libraries")
@@ -307,10 +530,10 @@ class GameManager(QObject):
             logger.info(f"Scanning library: {library_path}")
             scanned_libraries += 1
 
-            games_found += self._scan_library(library_path, steam_install_path)
+            games_found += self._scan_library(library_path, steam_install_path, scanned_games, global_acf_cache=global_acf_cache)
 
         accela_games_found = sum(
-            1 for game in self.games if game.get("is_accela_install")
+            1 for game in scanned_games if game.get("is_accela_install")
         )
         logger.info(
             "Scan complete. Scanned %s library location(s), found %s installed Steam "
@@ -320,8 +543,15 @@ class GameManager(QObject):
             accela_games_found,
         )
         # Sort games after scanning
-        self.games = self._get_sorted_games(self.games)
+        self.games = self._get_sorted_games(scanned_games)
+        self.filtered_games.clear()
         self._apply_filters()
+
+        # Rebuild O(1) appid lookup dict after scan
+        self._games_by_appid = {
+            g["appid"]: g for g in self.games if g.get("appid") not in ("0", "N/A", "unknown", None)
+        }
+        logger.debug(f"Rebuilt _games_by_appid with {len(self._games_by_appid)} entries")
 
         # Fix SLSsteam config indentation if needed (before syncing)
         self._fix_slssteam_config()
@@ -332,22 +562,22 @@ class GameManager(QObject):
         # Sync missing apptokens from manifests
         self._sync_app_tokens_from_manifests()
 
-        # Emit signals on main thread using QTimer.singleShot
-        def update_ui():
-            self.library_updated.emit()
-            self.scan_complete.emit(games_found)
-
-        QTimer.singleShot(0, update_ui)
-
-        # Start async update checking for all collected games (called directly, not in QTimer)
-        # This ensures it always runs even if the UI signals are delayed
-        if games_found > 0:
-            logger.info("Starting async update check for collected games")
-            self.check_game_updates_async()
+        # Emit signals on the main thread via QMetaObject.invokeMethod.
+        # QTimer.singleShot called from a background thread does NOT schedule
+        # on the main event loop — it silently fires on the worker thread's
+        # (non-existent) loop. invokeMethod with QueuedConnection is the correct
+        # cross-thread signal dispatch mechanism.
+        from PyQt6.QtCore import QMetaObject, Qt as _Qt
+        QMetaObject.invokeMethod(
+            self,
+            "_emit_scan_signals",
+            _Qt.ConnectionType.QueuedConnection,
+            Q_ARG(int, games_found),
+        )
 
         return games_found
 
-    def _scan_library(self, library_path, steam_install_path):
+    def _scan_library(self, library_path, steam_install_path, scanned_games, global_acf_cache=None):
         """Scan a single Steam library for games."""
         games_found = 0
         steamapps_path = os.path.join(library_path, "steamapps")
@@ -360,7 +590,12 @@ class GameManager(QObject):
             logger.warning(f"Common directory not found at: {common_path}")
             return 0
 
-        seen_paths = {game.get("install_path") for game in self.games}
+        # Use the pre-built global ACF cache (covers all libraries) if available,
+        # otherwise fall back to building a local cache for just this library.
+        acf_cache = global_acf_cache if global_acf_cache is not None else self._build_acf_cache(steamapps_path)
+        logger.debug(f"Using ACF cache with {len(acf_cache)} entries for {library_path}")
+
+        seen_paths = {game.get("install_path") for game in scanned_games}
 
         # Scan all installed Steam game directories in this library.
         try:
@@ -395,9 +630,10 @@ class GameManager(QObject):
                             library_path,
                             steam_install_path,
                             marker_path=marker_path,
+                            acf_cache=acf_cache,
                         )
                         if game_data:
-                            self.games.append(game_data)
+                            scanned_games.append(game_data)
                             seen_paths.add(game_path)
                             games_found += 1
                             logger.debug(
@@ -413,6 +649,36 @@ class GameManager(QObject):
             logger.error(f"Error scanning {common_path}: {e}")
 
         return games_found
+
+    @staticmethod
+    def _build_acf_cache(steamapps_path):
+        """
+        Scan steamapps/ once and build a dict mapping installdir (lowercased) to
+        (manifest_path, appid). This replaces the per-game ACF scan loop and
+        reduces total file reads from O(N×M) to O(M).
+        """
+        cache = {}  # { installdir_lower: (manifest_path, appid) }
+        try:
+            with os.scandir(steamapps_path) as entries:
+                for entry in entries:
+                    try:
+                        if not (entry.name.startswith("appmanifest_") and entry.name.endswith(".acf")):
+                            continue
+                        manifest_path = entry.path
+                        appid = entry.name.replace("appmanifest_", "").replace(".acf", "")
+                        with open(manifest_path, "r", encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                        match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                        if match:
+                            installdir = match.group(1)
+                            # Store both case-sensitive and lower-cased keys
+                            cache[installdir] = (manifest_path, appid)
+                            cache[installdir.lower()] = (manifest_path, appid)
+                    except (OSError, IOError, PermissionError):
+                        continue
+        except OSError as e:
+            logger.debug(f"Error building ACF cache for {steamapps_path}: {e}")
+        return cache
 
     @staticmethod
     def _has_game_content(game_path):
@@ -480,7 +746,8 @@ class GameManager(QObject):
             logger.debug("SLSsteam config.yaml not found, skipping sync")
             return
 
-        # Add each game's AppID to AdditionalApps
+        # Add each game's AppID to AdditionalApps (or DLC AppIDs if dlc_only_mode is enabled)
+        from utils.dlc_helpers import sync_dlc_only_sls_config
         added_count = 0
         for game in self.games:
             if not game.get("is_accela_install"):
@@ -488,7 +755,7 @@ class GameManager(QObject):
             appid = game.get("appid")
             game_name = game.get("game_name", "")
             if appid and appid not in ("0", "N/A", "unknown"):
-                if add_additional_app(config_path, appid, game_name):
+                if sync_dlc_only_sls_config(config_path, str(appid), game_name):
                     added_count += 1
 
         if added_count > 0:
@@ -509,9 +776,9 @@ class GameManager(QObject):
             logger.debug("SLSsteam config.yaml not found, skipping token sync")
             return
 
-        manifests_dir = Path(get_base_path()) / "morrenus_manifests"
+        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
         if not manifests_dir.exists():
-            logger.debug("morrenus_manifests directory not found")
+            logger.debug("hubcap_manifests directory not found")
             return
 
         # Get existing tokens from config
@@ -592,6 +859,7 @@ class GameManager(QObject):
         library_path,
         steam_path=None,
         marker_path=None,
+        acf_cache=None,
     ):
         """
         Collect game data from installation directory.
@@ -605,7 +873,28 @@ class GameManager(QObject):
             is_accela_install = bool(marker_path)
 
             # Try to read appmanifest to get AppID and other metadata
-            appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name)
+            appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name, acf_cache=acf_cache)
+
+            # Try to load metadata.json if ACF is missing/invalid, only when experimental mode is enabled
+            try:
+                from utils.settings import get_settings
+                settings = get_settings()
+                experimental_mode = settings.value("experimental_acf_independent", False, type=bool)
+            except Exception:
+                experimental_mode = False
+
+            meta_data = None
+            if experimental_mode:
+                try:
+                    from utils.assella_metadata import load_accela_metadata
+                    meta_data = load_accela_metadata(game_path)
+                except Exception as e:
+                    logger.debug(f"Failed to load ACCELA metadata fallback for {game_name}: {e}")
+
+            if not appid and meta_data:
+                appid = meta_data.get("appid")
+                if appid:
+                    logger.info(f"Resolved AppID {appid} from ACCELA metadata fallback for '{game_name}'")
 
             # Warn if AppID could not be determined
             if not appid:
@@ -632,6 +921,30 @@ class GameManager(QObject):
                 "appmanifest_path": appmanifest_path or "",
             }
 
+            # Detect DLC-only installations by comparing the saved main depot against base game depots
+            if is_accela_install and appid and appid not in ("0", "N/A", "unknown"):
+                depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                if depot_file.exists():
+                    try:
+                        content = depot_file.read_text().strip()
+                        parts = content.split(":", 2)
+                        if parts and parts[0].strip():
+                            main_depot_id = parts[0].strip()
+                            from managers.db_manager import DatabaseManager
+                            db = DatabaseManager()
+                            app_info = db.get_app_info(appid)
+                            if app_info and app_info.get("depots"):
+                                if main_depot_id not in app_info["depots"]:
+                                    # It's not in the base game depots -> it's a DLC
+                                    game_data["is_dlc_only"] = True
+                                    dlc_info = db.get_app_info(main_depot_id)
+                                    if dlc_info and dlc_info.get("name"):
+                                        game_data["game_name"] = f"{dlc_info['name']} [DLC]"
+                                    else:
+                                        game_data["game_name"] = f"{game_name} [DLC]"
+                    except Exception as e:
+                        logger.error(f"Error checking DLC-only status for {appid}: {e}")
+
             # Load persisted wrapper metadata (selected DLC IDs) for uninstall cleanup.
             if is_accela_install:
                 persisted_selected_dlcs = load_selected_dlcs(game_path)
@@ -656,7 +969,7 @@ class GameManager(QObject):
                                 f"Migrated and persisted {len(inferred_selected_dlcs)} DLC ID(s) for AppID {appid}"
                             )
 
-            # Get file size - try ACF first, fall back to manual calculation
+            # Get file size - try ACF first, then metadata.json, fall back to manual calculation
             size_on_disk = 0
             acf_size_available = False
 
@@ -668,7 +981,21 @@ class GameManager(QObject):
                 if acf_size_available:
                     size_on_disk = game_data["size_on_disk"]
 
-            # Only calculate size manually if ACF doesn't have a valid SizeOnDisk
+            # Fall back to metadata.json fields if ACF is not available
+            if not acf_size_available and meta_data:
+                if "game_name" in meta_data and not game_data.get("game_name"):
+                    game_data["game_name"] = meta_data["game_name"]
+                if "buildid" in meta_data:
+                    game_data["buildid"] = meta_data["buildid"]
+                if "last_updated" in meta_data:
+                    game_data["last_updated"] = meta_data["last_updated"]
+                if meta_data.get("size_on_disk", 0) > 0:
+                    size_on_disk = int(meta_data["size_on_disk"])
+                    acf_size_available = True
+                    game_data["size_on_disk"] = size_on_disk
+                    logger.debug(f"Using ACCELA metadata SizeOnDisk for {game_name}: {size_on_disk} bytes")
+
+            # Only calculate size manually if ACF/metadata doesn't have a valid SizeOnDisk
             if not acf_size_available:
                 logger.debug(
                     f"ACF SizeOnDisk not available, calculating size manually for {game_name}"
@@ -695,10 +1022,18 @@ class GameManager(QObject):
             # Update the size in game_data
             game_data["size_on_disk"] = size_on_disk
 
-            # Set default update status to "checking" - will be checked asynchronously
-            # Only if appid is valid
+            # Set update status — restore from disk cache if available
             if appid and appid not in ("0", "N/A", "unknown"):
-                game_data["update_status"] = UPDATE_STATUS["CHECKING"]
+                cached_status = get_update_cache().get_status(appid)
+                if cached_status is not None:
+                    # We have a fresh (non-expired) cached status — use it directly
+                    game_data["update_status"] = cached_status
+                    logger.debug(
+                        f"Restored cached update status for {game_name} ({appid}): {cached_status}"
+                    )
+                else:
+                    # No usable cache — needs a live check
+                    game_data["update_status"] = UPDATE_STATUS["CHECKING"]
             else:
                 game_data["update_status"] = UPDATE_STATUS["CANNOT_DETERMINE"]
 
@@ -710,15 +1045,30 @@ class GameManager(QObject):
             )
             return None
 
-    def _parse_acf_for_appid(self, library_path, game_name):
-        """Parse ACF files to find the AppID for a given game name."""
+    def _parse_acf_for_appid(self, library_path, game_name, acf_cache=None):
+        """
+        Find the AppID and manifest path for a given game install directory name.
+
+        When acf_cache is provided (built once per library by _build_acf_cache),
+        this is an O(1) dict lookup. Without a cache it falls back to the original
+        O(M) directory scan so callers outside the main scan loop still work.
+        """
+        # Fast path: use the pre-built cache (O(1) lookup)
+        if acf_cache is not None:
+            result = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
+            if result:
+                appmanifest_path, appid = result
+                logger.debug(f"ACF cache hit for '{game_name}': AppID={appid}")
+                return appmanifest_path, appid
+            logger.debug(f"ACF cache miss for '{game_name}' — no matching manifest found")
+            return None, None
+
+        # Slow path fallback: scan directory (used when called without a cache)
         appmanifest_path = None
         appid = None
-
-        # Look for appmanifest files in steamapps
         steamapps_path = os.path.join(library_path, "steamapps")
         if os.path.exists(steamapps_path):
-            logger.debug(f"Looking for ACF match for game: '{game_name}'")
+            logger.debug(f"Looking for ACF match for game (no cache): '{game_name}'")
             try:
                 with os.scandir(steamapps_path) as entries:
                     for entry in entries:
@@ -731,43 +1081,18 @@ class GameManager(QObject):
                             ):
                                 continue
                             test_manifest_path = entry.path
-
-                            # Parse ACF to check if this is the right game
                             try:
-                                with open(
-                                    test_manifest_path, "r", encoding="utf-8"
-                                ) as f:
+                                with open(test_manifest_path, "r", encoding="utf-8") as f:
                                     content = f.read()
-                                    # Extract installdir using regex
-                                    match = re.search(
-                                        r'"installdir"\s+"([^"]+)"', content
-                                    )
-                                    if match:
-                                        installdir = match.group(1)
-                                        logger.debug(
-                                            f"  Checking {entry.name}: installdir='{installdir}'"
-                                        )
-
-                                        # Check if this manifest matches the current game
-                                        if installdir == game_name or (
-                                            installdir.lower() == game_name.lower()
-                                        ):
-                                            appmanifest_path = test_manifest_path
-                                            # Extract appid from filename
-                                            appid = entry.name.replace(
-                                                "appmanifest_", ""
-                                            ).replace(".acf", "")
-                                            logger.debug(
-                                                f"  ✓ Match found! AppID: {appid}"
-                                            )
-                                            logger.debug(
-                                                f"Successfully determined AppID for '{game_name}': {appid}"
-                                            )
-                                            break  # Found the right manifest, stop looking
+                                match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                                if match:
+                                    installdir = match.group(1)
+                                    if installdir == game_name or installdir.lower() == game_name.lower():
+                                        appmanifest_path = test_manifest_path
+                                        appid = entry.name.replace("appmanifest_", "").replace(".acf", "")
+                                        logger.debug(f"  ✓ Match found! AppID: {appid}")
+                                        break
                             except (OSError, IOError, PermissionError):
-                                logger.debug(
-                                    f"  Error reading {entry.name}: file may be in use or inaccessible"
-                                )
                                 continue
                         except (OSError, FileNotFoundError, PermissionError):
                             continue
@@ -820,6 +1145,7 @@ class GameManager(QObject):
         logger.info("Clearing entire game library")
         self.games.clear()
         self.filtered_games.clear()
+        self._games_by_appid.clear()
         self.selected_game = None
         self.library_updated.emit()
 
@@ -845,6 +1171,12 @@ class GameManager(QObject):
         """Clean up GameManager resources"""
         logger.info("Cleaning up GameManager")
 
+        # Flush any unsaved cache entries to disk before exit
+        try:
+            get_update_cache().save()
+        except Exception as e:
+            logger.warning(f"Failed to save update status cache on cleanup: {e}")
+
         # Stop any running manifest check task
         self.cancel_update_checks()
 
@@ -859,6 +1191,7 @@ class GameManager(QObject):
 
         self.games.clear()
         self.filtered_games.clear()
+        self._games_by_appid.clear()
         self.selected_game = None
         self._games_to_check = []
 
@@ -891,11 +1224,20 @@ class GameManager(QObject):
 
         import os
         import platform
-
         from core.steam_helpers import find_steam_install, get_steam_libraries
 
-        confirm_msg = f"Are you sure you want to uninstall '{game_name}'?\n\n"
         is_accela_install = game_data.get("is_accela_install", False)
+
+        is_dlc_only = False
+        if appid and appid not in ("0", "N/A", "unknown"):
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
+
+        if is_dlc_only:
+            from utils.dlc_helpers import get_dlc_uninstall_message
+            return get_dlc_uninstall_message(game_data)
+
+        confirm_msg = f"Are you sure you want to uninstall '{game_name}'?\n\n"
 
         # Warn if appid is unknown
         if not appid or appid in ("0", "N/A", "unknown"):
@@ -1001,6 +1343,99 @@ class GameManager(QObject):
         confirm_msg += "\nThis action cannot be undone!"
         return confirm_msg
 
+    def _delete_single_dlc_depot(self, install_path, base_appid, dlc_appid, manifest_id):
+        """Uses DepotDownloader to get files list for DLC depot and deletes only those files."""
+        import subprocess
+        import tempfile
+        from utils.paths import Paths
+        from utils.helpers import get_dotnet_path, get_dotnet_env
+        
+        depotdownloader_path = Paths.deps("depot-downloader/DepotDownloader.dll")
+        if not depotdownloader_path.exists():
+            logger.warning("DepotDownloader.dll not found, cannot delete DLC files")
+            return
+            
+        dotnet = get_dotnet_path()
+        if not dotnet:
+            logger.warning(".NET runtime not found, cannot delete DLC files")
+            return
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cmd = [
+                str(dotnet),
+                str(depotdownloader_path),
+                "-app", str(base_appid),
+                "-depot", str(dlc_appid),
+                "-manifest", str(manifest_id),
+                "-manifest-only",
+                "-dir", temp_dir
+            ]
+            try:
+                env = get_dotnet_env()
+                subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+                txt_path = Path(temp_dir) / f"manifest_{dlc_appid}_{manifest_id}.txt"
+                if txt_path.exists():
+                    start_parsing = False
+                    files_deleted = 0
+                    dirs_to_check = set()
+                    
+                    with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            line_stripped = line.strip()
+                            if not line_stripped:
+                                continue
+                            if "Size Chunks File SHA" in line_stripped:
+                                start_parsing = True
+                                continue
+                            if not start_parsing:
+                                continue
+                            
+                            parts = line_stripped.split(None, 4)
+                            if len(parts) >= 5:
+                                name = parts[4].strip()
+                                file_path = Path(install_path) / name
+                                if file_path.exists() and file_path.is_file():
+                                    try:
+                                        file_path.unlink()
+                                        files_deleted += 1
+                                        dirs_to_check.add(file_path.parent)
+                                    except OSError as e:
+                                        logger.warning(f"Failed to delete DLC file {file_path}: {e}")
+                                        
+                    logger.info(f"Deleted {files_deleted} DLC files for depot {dlc_appid}")
+                    
+                    # Clean up empty subdirectories
+                    sorted_dirs = sorted(list(dirs_to_check), key=lambda x: len(x.parts), reverse=True)
+                    for d in sorted_dirs:
+                        if d.exists() and d.is_dir() and not os.listdir(d):
+                            try:
+                                d.rmdir()
+                            except OSError:
+                                pass
+            except Exception as e:
+                logger.error(f"Failed to fetch manifest and delete files for DLC {dlc_appid}: {e}")
+
+    def _delete_dlc_depot_files(self, install_path, appid):
+        """Finds and deletes files for all DLC depots listed in appid.depot."""
+        from utils.helpers import get_base_path
+        depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+        if not depot_file.exists():
+            return
+
+        try:
+            lines = depot_file.read_text().splitlines()
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    dlc_appid = parts[0].strip()
+                    manifest_id = parts[1].strip()
+                    self._delete_single_dlc_depot(install_path, appid, dlc_appid, manifest_id)
+        except Exception as e:
+            logger.error(f"Failed to read/delete files from depot config: {e}")
+
     def uninstall_game(
         self,
         game_data,
@@ -1008,9 +1443,10 @@ class GameManager(QObject):
         remove_saves=False,
         remove_from_library=False,
         remove_shortcuts=False,
+        remove_sls=False,
     ):
         """
-        Uninstall a game by removing its folder, ACF file, and optionally compatdata/saves.
+        Uninstall a game by removing its folder (or DLC files if dlc_only), ACF file, and optionally compatdata/saves.
         Returns (success: bool, error_message: str)
         """
         game_name = game_data.get("game_name", "Unknown")
@@ -1022,21 +1458,64 @@ class GameManager(QObject):
         import platform
 
         try:
-            # Remove game folder
-            if install_path and os.path.exists(install_path):
-                import shutil
+            # Send uninstall API trigger & config cleanup if experimental mode is active on Linux
+            try:
+                from utils.settings import get_settings
+                settings = get_settings()
+                experimental_mode = settings.value("experimental_acf_independent", False, type=bool)
+            except Exception:
+                experimental_mode = False
 
-                shutil.rmtree(install_path)
-                logger.info(f"Removed game folder: {install_path}")
+            if experimental_mode and platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from utils.slssteam_integration import uninstall_via_sls
+                    uninstall_via_sls(str(appid))
+                except Exception as e:
+                    logger.error(f"Error sending SLSsteam uninstall API trigger: {e}")
 
-            # Remove ACF file
-            if library_path and appid != "N/A":
-                acf_path = os.path.join(
-                    library_path, "steamapps", f"appmanifest_{appid}.acf"
-                )
-                if os.path.exists(acf_path):
-                    os.remove(acf_path)
-                    logger.info(f"Removed ACF file: {acf_path}")
+            is_dlc_only = False
+            if appid and appid not in ("0", "N/A", "unknown"):
+                from utils.dlc_helpers import is_dlc_only_mode
+                is_dlc_only = is_dlc_only_mode(str(appid))
+
+            if is_dlc_only:
+                # 1. Delete only files belonging to the DLC depots
+                if install_path and os.path.exists(install_path):
+                    self._delete_dlc_depot_files(install_path, appid)
+                    # Clean up empty install folder if all DLC files were removed
+                    try:
+                        if os.path.isdir(install_path) and not os.listdir(install_path):
+                            import shutil
+                            shutil.rmtree(install_path)
+                            logger.info(f"Removed empty game folder after DLC uninstall: {install_path}")
+                    except Exception as _e:
+                        logger.warning(f"Could not remove empty folder {install_path}: {_e}")
+            else:
+                # Remove full game folder
+                if install_path and os.path.exists(install_path):
+                    import shutil
+                    shutil.rmtree(install_path)
+                    logger.info(f"Removed game folder: {install_path}")
+
+                # Remove ACF file (only in standard manual mode; native mode lets Steam delete it)
+                if not experimental_mode and library_path and appid != "N/A":
+                    acf_path = os.path.join(
+                        library_path, "steamapps", f"appmanifest_{appid}.acf"
+                    )
+                    if os.path.exists(acf_path):
+                        os.remove(acf_path)
+                        logger.info(f"Removed ACF file: {acf_path}")
+
+            # Clean up .DepotDownloader folder if remove_sls is True and the folder is not already removed
+            if remove_sls and install_path and os.path.exists(install_path):
+                dd_path = os.path.join(install_path, ".DepotDownloader")
+                if os.path.exists(dd_path):
+                    try:
+                        import shutil
+                        shutil.rmtree(dd_path)
+                        logger.info(f"Removed .DepotDownloader folder: {dd_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove .DepotDownloader folder: {e}")
 
             # Remove depot file
             if (
@@ -1054,27 +1533,54 @@ class GameManager(QObject):
                         f"Failed to remove depot file for appid {appid}: {e}"
                     )
 
-            # Remove platform-specific data
-            if platform.system() == "Linux":
+            # Remove platform-specific data (only for full uninstalls)
+            if platform.system() == "Linux" and not is_dlc_only:
                 self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
 
                 # Remove shortcuts only if explicitly requested
                 if remove_shortcuts:
                     self._remove_linux_shortcuts_and_icons(appid)
 
-                # Remove from SLSsteam config.yaml AdditionalApps list
-                if (
-                    remove_from_library
-                    and appid
-                    and appid not in ("0", "N/A", "unknown")
-                ):
-                    config_path = get_user_config_path()
-                    if config_path.exists():
+            # Clean up appid from SLSsteam config.yaml
+            if appid and appid not in ("0", "N/A", "unknown"):
+                config_path = get_user_config_path()
+                if config_path.exists():
+                    if is_dlc_only:
+                        # Remove all DLC entries matching the depots config
+                        depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                        if depot_file.exists():
+                            try:
+                                for line in depot_file.read_text().splitlines():
+                                    parts = line.split(":")
+                                    if parts and parts[0].strip():
+                                        remove_additional_app(config_path, str(parts[0].strip()))
+                            except Exception:
+                                pass
+                    else:
                         remove_additional_app(config_path, str(appid))
-            elif platform.system() == "Windows":
+                    logger.info(f"Removed appid entries from SLS config")
+            elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
-            # Remove from game manager
+            # Clear QSettings branch and manifest cache keys for this game
+            try:
+                settings = get_settings()
+                for key in (
+                    f"manifest_is_fresh/{appid}",
+                    f"fetched_manifest_id/{appid}",
+                    f"latest_steam_manifest_id/{appid}",
+                    f"installed_branch/{appid}",
+                    f"selected_branch/{appid}",
+                    f"installed_buildid/{appid}",
+                    f"pin_build/{appid}",
+                    f"exclude_from_update_all/{appid}",
+                    f"auto_update_manifest/{appid}",
+                ):
+                    settings.remove(key)
+            except Exception as _set_err:
+                logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
+
+            # Remove from game manager list
             self.remove_game(appid)
 
             return True, None
@@ -1411,7 +1917,7 @@ class GameManager(QObject):
         if not appid_str.isdigit():
             return []
 
-        manifests_dir = Path(get_base_path()) / "morrenus_manifests"
+        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
         manifest_zip = manifests_dir / f"accela_fetch_{appid_str}.zip"
         if not manifest_zip.exists():
             return []
