@@ -14,18 +14,36 @@ This file defines essential guidelines, build rules, versioning conventions, and
 
 ## 2. Release & Versioning Guidelines
 
-### A. Tag Naming Conventions
-- GitHub release tags should ideally be prefixed with `v` (e.g. `v2.5.5` or `v2.5.5-beta`).
-- If a release tag is created without the `v` prefix (e.g., `2.5.5`), the built-in updater handles both `v<ver>` and `<ver>` fallbacks dynamically.
-- Version string in `src/res/version` should reflect the semantic version (e.g., `2.5.5`).
+### A. Tag Naming & Branching Conventions
+- Pushes and releases should target the **`beta` / pre-release branch** unless the user explicitly requests main/stable.
+- With every release, automatically increment the semantic version to the next version tag following the last release (e.g. `v2.5.7` following `v2.5.6`).
+- Ensure the local version (`src/res/version`) matches the new version tag pushed to GitHub.
+- GitHub release tags must be prefixed with `v` (e.g., `v2.5.7`).
 
-### B. Build Output Names & Locations
-- **Local Dev Build**: `~/.local/share/ACCELA/ASSella.AppImage.dev`
-- **Release AppImage Name**: `ASSella.AppImage`
-- **Build Command**:
+### B. AppImage Binaries
+- The final production AppImage file is named exactly **`ASSella.AppImage`**.
+- The local development AppImage is named `ASSella.AppImage.dev`.
+- Rebuild command:
   ```bash
-  ARCH=x86_64 ./appimagetool --no-appstream squashfs-root ASSella.AppImage.dev
+  ARCH=x86_64 ./appimagetool --no-appstream squashfs-root ASSella.AppImage
   ```
+
+### C. Source Code Release Packaging
+- With every release, compile a companion source code archive (e.g. `ASSella-<version>-linux-source.tar.gz`) containing:
+  ```text
+  ASSella-<version>-linux-source/
+  ├── install.sh
+  ├── uninstall.sh
+  └── bin/
+      ├── src/           # Python codebase (excluding __pycache__)
+      ├── run.sh         # Venv python launcher wrapper
+      ├── requirements.txt
+      └── icon.png
+  ```
+
+### D. Changelog Guidelines
+- Changelogs must **never repeat** items from past releases.
+- List only the new features, tweaks, and bug fixes added since the immediately preceding release.
 
 ---
 
