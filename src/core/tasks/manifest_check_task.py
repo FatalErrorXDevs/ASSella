@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import traceback
 from pathlib import Path
 
@@ -97,22 +98,44 @@ class ManifestCheckTask(QObject):
             additional_appids = set()
             for game in valid_games:
                 appid = game.get("appid")
+                
+                # Check for DLC-only mode state
+                is_dlc_mode = False
+                try:
+                    from utils.settings import get_settings
+                    _s = get_settings()
+                    is_dlc_mode = _s.value(f"dlc_only_mode/{appid}", False, type=bool)
+                except Exception:
+                    pass
+
                 depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
                 if depot_file.exists():
                     try:
                         content = depot_file.read_text().strip()
-                        parts = content.split(":", 2)
-                        
-                        if parts and parts[0].strip():
-                            main_depot_id = parts[0].strip()
-                            additional_appids.add(main_depot_id)
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if not line or ":" not in line:
+                                continue
+                            parts = line.split(":", 2)
+                            depot_id = parts[0].strip()
+                            additional_appids.add(depot_id)
                             
-                        if len(parts) >= 3 and parts[2].strip():
-                            access_tokens[appid] = parts[2].strip()
-                            if 'main_depot_id' in locals():
-                                access_tokens[main_depot_id] = parts[2].strip()
+                            if len(parts) >= 3 and parts[2].strip():
+                                token = parts[2].strip()
+                                access_tokens[appid] = token
+                                access_tokens[depot_id] = token
                     except OSError:
                         pass
+
+                if is_dlc_mode:
+                    # Use dlc_helpers to reliably collect all DLC appids from the .depot file.
+                    # This is more robust than parsing the LUA file, which may not always exist.
+                    try:
+                        from utils.dlc_helpers import get_dlc_only_info
+                        for dlc_entry in get_dlc_only_info(appid):
+                            additional_appids.add(dlc_entry["dlc_appid"])
+                    except Exception as e:
+                        logger.error(f"Error collecting DLC appids for {appid}: {e}")
 
             # Use batched API call for all valid games and any DLC depot IDs
             appid_list = list({game.get("appid") for game in valid_games if game.get("appid")} | additional_appids)
@@ -213,22 +236,10 @@ class ManifestCheckTask(QObject):
             logger.info(f"[UpdateCheck] Cannot determine status: Invalid/missing AppID '{appid}' in game_data")
             return "cannot_determine"
 
-        # DLC-Only mode: check only the user-selected depots, not the whole game
-        try:
-            from utils.settings import get_settings
-            import json as _json
-            _s = get_settings()
-            if _s.value(f"dlc_only_mode/{appid}", False, type=bool):
-                val = _s.value(f"depot_selection/{appid}", "", type=str)
-                if val:
-                    saved_selection = _json.loads(val)
-                    selected_depot_ids = saved_selection.get("selected", [])
-                    if selected_depot_ids:
-                        return ManifestCheckTask._check_dlc_only_update(
-                            appid, selected_depot_ids, batched_results, game_data
-                        )
-        except Exception as _e:
-            logger.debug(f"DLC-only mode check failed for {appid}: {_e}")
+        # DLC-Only mode: the normal .depot file comparison below handles this correctly.
+        # It reads all DLC depot IDs from {appid}.depot and looks each one up across ALL
+        # entries in batched_results (including DLC appids fetched via additional_appids
+        # in run()), so no special branch is needed here.
 
         # Read saved manifest ID from depot file
         depots_dir = Path(get_base_path()) / "depots"
@@ -317,31 +328,45 @@ class ManifestCheckTask(QObject):
                     depots = steam_client_data.get("depots", {})
 
                     # 2. Try in DLC depots
-                    if saved_depot_id not in depots and saved_depot_id in batched_results:
-                        dlc_data = batched_results[saved_depot_id]
-                        dlc_depots = dlc_data.get("depots", {})
-                        if saved_depot_id in dlc_depots:
-                            depots = dlc_depots
+                    if saved_depot_id not in depots:
+                        for app_info in batched_results.values():
+                            if isinstance(app_info, dict):
+                                dlc_depots = app_info.get("depots", {})
+                                if saved_depot_id in dlc_depots:
+                                    depots = dlc_depots
+                                    break
 
-                    if not depots or saved_depot_id not in depots:
-                        reason_msg = f"Depot {saved_depot_id} not found in Steam depots payload (available depots in API: {list(depots.keys()) if depots else 'None'})"
+                    current_manifest_id = None
+                    if depots and saved_depot_id in depots:
+                        depot_info = depots[saved_depot_id]
+                        if isinstance(depot_info, dict):
+                            branch_manifests = depot_info.get("manifests", {})
+                            if isinstance(branch_manifests, dict) and selected_branch in branch_manifests:
+                                branch_manifest_entry = branch_manifests[selected_branch]
+                                if isinstance(branch_manifest_entry, dict):
+                                    current_manifest_id = str(branch_manifest_entry.get("gid", ""))
+                            if not current_manifest_id:
+                                current_manifest_id = str(depot_info.get("manifest_id") or "")
+
+                    # 3. Fallback: Parse from cached Hubcap LUA file
+                    if not current_manifest_id:
+                        lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
+                        if lua_file.exists():
+                            try:
+                                lua_text = lua_file.read_text()
+                                pattern = r"setManifestid\(\s*" + re.escape(saved_depot_id) + r'\s*,\s*"([^"]+)"'
+                                m = re.search(pattern, lua_text)
+                                if m:
+                                    current_manifest_id = m.group(1).strip()
+                                    logger.debug(f"[DLC Update Check] Resolved latest manifest for depot {saved_depot_id} from cached LUA: {current_manifest_id}")
+                            except Exception as e:
+                                logger.error(f"Error parsing cached LUA for depot {saved_depot_id} manifest: {e}")
+
+                    if not current_manifest_id:
+                        reason_msg = f"Depot {saved_depot_id} not found in Steam depots payload or cached LUA file"
                         reasons.append(reason_msg)
                         logger.debug(f"[UpdateCheck {appid}] {reason_msg}")
                         continue
-
-                    depot_info = depots[saved_depot_id]
-                    # Check if target branch specifies a manifest GID for this depot
-                    branch_manifest_id = None
-                    if isinstance(depot_info, dict):
-                        branch_manifests = depot_info.get("manifests", {})
-                        if isinstance(branch_manifests, dict) and selected_branch in branch_manifests:
-                            branch_manifest_entry = branch_manifests[selected_branch]
-                            if isinstance(branch_manifest_entry, dict):
-                                branch_manifest_id = str(branch_manifest_entry.get("gid", ""))
-                        if not branch_manifest_id:
-                            branch_manifest_id = str(depot_info.get("manifest_id") or "")
-
-                    current_manifest_id = branch_manifest_id
 
                     if current_manifest_id:
                         all_cannot_determine = False
@@ -406,10 +431,26 @@ class ManifestCheckTask(QObject):
         if depot_id in base_depots:
             return base_depots[depot_id].get("manifest_id")
 
-        # 2. Try in batched_results[depot_id] directly
-        dlc_depots = batched_results.get(depot_id, {}).get("depots", {})
-        if depot_id in dlc_depots:
-            return dlc_depots[depot_id].get("manifest_id")
+        # 2. Try in all loaded appids in batched_results
+        for app_info in batched_results.values():
+            if isinstance(app_info, dict):
+                dlc_depots = app_info.get("depots", {})
+                if depot_id in dlc_depots:
+                    return dlc_depots[depot_id].get("manifest_id")
+
+        # 3. Fallback: Parse from cached Hubcap LUA file
+        lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
+        if lua_file.exists():
+            try:
+                lua_text = lua_file.read_text()
+                pattern = r"setManifestid\(\s*" + re.escape(depot_id) + r'\s*,\s*"([^"]+)"'
+                m = re.search(pattern, lua_text)
+                if m:
+                    latest_manifest = m.group(1).strip()
+                    logger.debug(f"[DLC Update Check] Resolved latest manifest for depot {depot_id} from cached LUA: {latest_manifest}")
+                    return latest_manifest
+            except Exception as e:
+                logger.error(f"Error parsing cached LUA for depot {depot_id} manifest: {e}")
 
         return None
 

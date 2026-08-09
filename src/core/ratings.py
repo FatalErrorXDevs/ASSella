@@ -156,14 +156,7 @@ def sync_denuvo_cache_and_config(main_window=None, force: bool = False) -> dict:
             error_msg = str(e)
             logger.warning(f"Denuvo API request failed: {e}")
 
-    from utils.yaml_config_manager import (
-        get_user_config_path,
-        clean_denuvo_games_section,
-    )
 
-    config_path = get_user_config_path()
-    if config_path and config_path.exists():
-        clean_denuvo_games_section(config_path)
 
     count = sum(1 for s in games_map.values() if s in ("uncracked", "hypervisor"))
     try:
@@ -408,7 +401,7 @@ def _schedule_debounced_refresh() -> None:
                 _refresh_timer.timeout.connect(_do_ratings_refresh)
             _refresh_timer.start(_REFRESH_DEBOUNCE_MS)  # restart window each time
 
-    QTimer.singleShot(0, app, _on_main_thread)
+    QTimer.singleShot(0, _on_main_thread)
 
 
 def _do_ratings_refresh() -> None:

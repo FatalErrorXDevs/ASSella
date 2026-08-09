@@ -47,8 +47,8 @@ class FileSelectionDialog(QDialog):
                 font-size: 9.5pt;
             }}
             QLineEdit {{
-                background-color: rgba(255, 255, 255, 10);
-                border: 1px solid rgba(255, 255, 255, 20);
+                background-color: rgba(255, 255, 255, 0.039);
+                border: 1px solid rgba(255, 255, 255, 0.078);
                 border-radius: 4px;
                 padding: 4px 8px;
                 color: #FFFFFF;
@@ -59,27 +59,27 @@ class FileSelectionDialog(QDialog):
             }}
             QTreeView {{
                 background-color: rgba(255, 255, 255, 5);
-                border: 1px solid rgba(255, 255, 255, 15);
+                border: 1px solid rgba(255, 255, 255, 0.059);
                 border-radius: 6px;
                 color: #FFFFFF;
             }}
             QTreeView::item:hover {{
-                background-color: rgba(255, 255, 255, 10);
+                background-color: rgba(255, 255, 255, 0.039);
             }}
             QTreeView::item:selected {{
-                background-color: rgba(255, 255, 255, 15);
+                background-color: rgba(255, 255, 255, 0.059);
                 color: #FFFFFF;
             }}
             QPushButton {{
-                background-color: rgba(255, 255, 255, 10);
-                border: 1px solid rgba(255, 255, 255, 20);
+                background-color: rgba(255, 255, 255, 0.039);
+                border: 1px solid rgba(255, 255, 255, 0.078);
                 border-radius: 4px;
                 padding: 5px 12px;
                 color: #FFFFFF;
                 font-size: 9pt;
             }}
             QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 15);
+                background-color: rgba(255, 255, 255, 0.059);
                 border-color: {self.accent_color};
             }}
             QPushButton:pressed {{

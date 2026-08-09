@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -731,8 +731,157 @@ def create_slider_setting(
     return layout, slider, value_label, reset_button
 
 
-class CheckboxSetting(QCheckBox):
-    """A native QCheckBox with settings initialization support."""
+class Material3Switch(QWidget):
+    """
+    A 100% specification-compliant Material 3 Switch component.
+    Features smooth thumb sliding animation, morphing thumb diameter, and checkmark icon.
+    """
+    toggled = pyqtSignal(bool)
+    stateChanged = pyqtSignal(int)
+
+    def __init__(self, checked: bool = False, accent_color: str = "#7ab3ff", parent=None):
+        super().__init__(parent)
+        self.setFixedSize(46, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._checked = checked
+        self._locked = False
+        self.accent_color = QColor(accent_color)
+        self._thumb_pos = 1.0 if checked else 0.0
+
+        from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
+        self._anim = QPropertyAnimation(self, b"thumb_pos", self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def set_accent_color(self, hex_color: str):
+        self.accent_color = QColor(hex_color)
+        self.update()
+
+    def setLocked(self, locked: bool):
+        if self._locked != locked:
+            self._locked = locked
+            if locked:
+                self.setCursor(Qt.CursorShape.ForbiddenCursor)
+            else:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.update()
+
+    def isLocked(self) -> bool:
+        return self._locked
+
+    def get_thumb_pos(self) -> float:
+        return self._thumb_pos
+
+    def set_thumb_pos(self, pos: float):
+        self._thumb_pos = pos
+        self.update()
+
+    from PyQt6.QtCore import pyqtProperty
+    thumb_pos = pyqtProperty(float, get_thumb_pos, set_thumb_pos)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, checked: bool):
+        if self._checked != checked:
+            self._checked = checked
+            self._anim.stop()
+            self._anim.setStartValue(self._thumb_pos)
+            self._anim.setEndValue(1.0 if checked else 0.0)
+            self._anim.start()
+            self.toggled.emit(checked)
+            self.stateChanged.emit(2 if checked else 0)
+
+    def mousePressEvent(self, event):
+        if self._locked:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setChecked(not self._checked)
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        from PyQt6.QtGui import QPainter, QBrush, QPen, QPainterPath
+        from PyQt6.QtCore import QRectF
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        W = 44.0
+        H = 24.0
+        x_off = (self.width() - W) / 2.0
+        y_off = (self.height() - H) / 2.0
+        rect = QRectF(x_off, y_off, W, H)
+
+        t = self._thumb_pos  # 0.0 (off) to 1.0 (on)
+
+        # 1. Base Track & Thumb Colors
+        if t > 0.01:
+            track_bg = QColor(
+                int(0x1e * (1 - t) + self.accent_color.red() * t),
+                int(0x1e * (1 - t) + self.accent_color.green() * t),
+                int(0x1e * (1 - t) + self.accent_color.blue() * t),
+                int(100 * (1 - t) + 255 * t)
+            )
+        else:
+            track_bg = QColor(0x1e, 0x1e, 0x22, 200)
+
+        if t > 0.5:
+            from utils.color_utils import get_best_foreground_color
+            fg_hex = get_best_foreground_color(self.accent_color.name())
+            thumb_color = QColor(fg_hex)
+        else:
+            thumb_color = QColor(180, 184, 196)
+
+        check_icon_color = self.accent_color
+
+        # If locked, run track, thumb, and checkmark colors through get_grayscale_color (saturation = 0, full opacity)
+        if self._locked:
+            from utils.color_utils import get_grayscale_color
+            track_bg = QColor(get_grayscale_color(track_bg.name()))
+            thumb_color = QColor(get_grayscale_color(thumb_color.name()))
+            check_icon_color = QColor(get_grayscale_color(self.accent_color.name()))
+
+        # 2. Paint Track
+        painter.setBrush(QBrush(track_bg))
+        if t > 0.01 and t < 0.99:
+            border_col = QColor(142, 144, 153, int(255 * (1 - t)))
+            painter.setPen(QPen(border_col, 2))
+        elif t <= 0.01:
+            painter.setPen(QPen(QColor(142, 144, 153), 2))
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, 12, 12)
+        painter.drawPath(path)
+
+        # 3. Paint Thumb Circle (interpolates position & size)
+        thumb_diameter = 12.0 + 6.0 * t
+        thumb_x = (x_off + 6.0) + (20.0 - 6.0) * t
+        thumb_y = y_off + (H - thumb_diameter) / 2.0
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(thumb_color))
+        painter.drawEllipse(QRectF(thumb_x, thumb_y, thumb_diameter, thumb_diameter))
+
+        # 4. Checkmark Icon inside thumb when checked (t > 0.8)
+        if t > 0.8:
+            check_pen = QPen(check_icon_color, 2)
+            check_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(check_pen)
+
+            tc_x = thumb_x + thumb_diameter / 2.0
+            tc_y = thumb_y + thumb_diameter / 2.0
+            check_path = QPainterPath()
+            check_path.moveTo(tc_x - 3.5, tc_y)
+            check_path.lineTo(tc_x - 1, tc_y + 2.5)
+            check_path.lineTo(tc_x + 3.5, tc_y - 2.5)
+            painter.drawPath(check_path)
+
+
+class CheckboxSetting(QWidget):
+    """A Material 3 Switch setting row with label + description on the left and switch control on the far right."""
+    stateChanged = pyqtSignal(int)
+    toggled = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -741,31 +890,102 @@ class CheckboxSetting(QCheckBox):
         default_value: bool,
         parent_widget: Optional[QWidget] = None,
         tooltip: Optional[str] = None,
+        show_description: bool = True,
     ):
-        super().__init__(text)
-        self.checkbox = self  # For compatibility with settings.checkbox access patterns
-        
+        super().__init__(None)  # Pass None to super() so Qt doesn't position at top-left (0,0) before layout placement!
+        self.setting_key = setting_key
+        self.default_value = default_value
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+
+        # Left Text Block (Label stacked above Description)
+        text_box = QVBoxLayout()
+        text_box.setContentsMargins(0, 0, 0, 0)
+        text_box.setSpacing(2)
+
+        self.label = QLabel(text)
+        self.label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        self.label.setWordWrap(True)
+        text_box.addWidget(self.label)
+
+        ac = "#7ab3ff"
+        if parent_widget and hasattr(parent_widget, "accent_color"):
+            ac = parent_widget.accent_color
+
+        self.checkbox = Material3Switch(checked=False, accent_color=ac)
+
         # Initialize checked state from settings when parent_widget provided
         if parent_widget and hasattr(parent_widget, "settings"):
             current_value = parent_widget.settings.value(
                 setting_key, default_value, type=bool
             )
-            self.setChecked(current_value)
+            self.checkbox.setChecked(current_value)
 
-        self.explanation_label = None
+        self.checkbox.stateChanged.connect(self.stateChanged.emit)
+        self.checkbox.toggled.connect(self.toggled.emit)
+
+        self._original_tooltip = tooltip
+        self.desc_label = None
         if tooltip:
+            if show_description:
+                self.desc_label = QLabel(tooltip)
+                self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+                self.desc_label.setWordWrap(True)
+                text_box.addWidget(self.desc_label)
             self.setToolTip(tooltip)
 
-    def isChecked(self) -> bool:  # noqa: N802
-        return super().isChecked()
+        layout.addLayout(text_box, 1)
+        layout.addWidget(self.checkbox)
 
-    def setChecked(self, value: bool) -> None:  # noqa: N802
-        super().setChecked(value)
+    def isChecked(self) -> bool:
+        return self.checkbox.isChecked()
 
-    def setToolTip(self, text: Optional[str]):  # noqa: N802
-        super().setToolTip(text)
-        if self.explanation_label:
-            self.explanation_label.setText(text if text is not None else "")
+    def setChecked(self, value: bool) -> None:
+        self.checkbox.setChecked(value)
+
+    def setLocked(self, locked: bool, lock_reason: Optional[str] = None):
+        self._locked = locked
+        self.checkbox.setLocked(locked)
+        if locked:
+            self.label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+            if lock_reason:
+                self.setToolTip(lock_reason)
+                if self.desc_label:
+                    self.desc_label.setText(lock_reason)
+                    self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+        else:
+            self.label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+            if hasattr(self, "_original_tooltip") and self._original_tooltip:
+                self.setToolTip(self._original_tooltip)
+                if self.desc_label:
+                    self.desc_label.setText(self._original_tooltip)
+                    self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+
+    def isLocked(self) -> bool:
+        return getattr(self, "_locked", False)
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        self.checkbox.setEnabled(enabled)
+        if enabled:
+            self.label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+            if self.desc_label:
+                self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+            self.checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.label.setStyleSheet("color: rgba(255, 255, 255, 0.38); font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+            if self.desc_label:
+                self.desc_label.setStyleSheet("color: rgba(255, 255, 255, 0.25); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+            self.checkbox.setCursor(Qt.CursorShape.ForbiddenCursor)
+
+    def setToolTip(self, text: Optional[str]):
+        super().setToolTip(text or "")
+        self.label.setToolTip(text or "")
+        self.checkbox.setToolTip(text or "")
+        if self.desc_label and text:
+            self.desc_label.setText(text)
 
 
 def create_checkbox_setting(
@@ -774,9 +994,10 @@ def create_checkbox_setting(
     default_value: bool,
     parent_widget: Optional[QWidget] = None,
     tooltip: Optional[str] = None,
+    show_description: bool = True,
 ) -> CheckboxSetting:
     """Helper function to create a checkbox setting."""
-    return CheckboxSetting(text, setting_key, default_value, parent_widget, tooltip)
+    return CheckboxSetting(text, setting_key, default_value, parent_widget, tooltip, show_description=show_description)
 
 
 def create_text_setting(

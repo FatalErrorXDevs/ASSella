@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFontDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -71,36 +73,42 @@ class MorrenusStatsWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 5, 0, 5)
 
-        # Row 1: Username
+        # Row 1: Username & Legible Usage Label
         row1 = QHBoxLayout()
-        row1.setSpacing(10)
         self.username_label = QLabel("User: --")
-        self.username_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.username_label.setStyleSheet("font-weight: bold; color: #FFFFFF;")
+        
+        self.usage_label = QLabel("Daily Usage: --")
+        self.usage_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9pt;")
+        
         row1.addWidget(self.username_label)
+        row1.addStretch()
+        row1.addWidget(self.usage_label)
         main_layout.addLayout(row1)
 
-        # Progress Bar
+        # Progress Bar (Clean M3 style)
         self.daily_usage_bar = QProgressBar()
         self.daily_usage_bar.setRange(0, 100)
         self.daily_usage_bar.setValue(0)
-        self.daily_usage_bar.setFormat("Daily: --")
-        self.daily_usage_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.daily_usage_bar.setTextVisible(False)  # Keep the bar clean and thin!
+        self.daily_usage_bar.setFixedHeight(8)
 
         accent_color = self.settings.value("accent_color", "#C06C84")
+        from utils.color_utils import get_dark_container_color
+        track_bg = get_dark_container_color(accent_color)
+
         self.daily_usage_bar.setStyleSheet(
             f"""
             QProgressBar {{
-                border: 1px solid #444;
-                border-radius: 0px;
-                text-align: center;
-                color: #fff;
-                background-color: #222;
-                height: 20px;
+                background-color: {track_bg};
+                border: none;
+                border-radius: 4px;
             }}
             QProgressBar::chunk {{
                 background-color: {accent_color};
+                border-radius: 4px;
             }}
-        """
+            """
         )
         main_layout.addWidget(self.daily_usage_bar)
 
@@ -159,7 +167,7 @@ class MorrenusStatsWidget(QWidget):
         """Update UI to show error state."""
         self.username_label.setText("User: Error")
         self.total_calls_label.setText("Total: --")
-        self.daily_usage_bar.setFormat("Daily: Error")
+        self.usage_label.setText("Daily Usage: Error")
         self.daily_usage_bar.setValue(0)
         self.expiration_label.setText("Expires: --")
         self.status_label.setText("Status: Error")
@@ -176,7 +184,7 @@ class MorrenusStatsWidget(QWidget):
 
         self.daily_usage_bar.setRange(0, daily_limit)
         self.daily_usage_bar.setValue(daily_usage)
-        self.daily_usage_bar.setFormat(f"Daily: {daily_usage}/{daily_limit}")
+        self.usage_label.setText(f"Daily Usage: {daily_usage} / {daily_limit}")
 
         self._update_expiration_label(stats.get("api_key_expires_at", ""))
 
@@ -306,18 +314,119 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
+        # Apply premium Material You / M3 styles for QComboBoxes in settings
+        ac = self.accent_color
+        from utils.color_utils import get_dark_container_color
+        sel_bg_hex = get_dark_container_color(ac)
+        
+        self.setStyleSheet(f"""
+            QComboBox {{
+                background-color: rgba(255, 255, 255, 0.08) !important;
+                border: 1px solid rgba(255, 255, 255, 0.22) !important;
+                border-radius: 8px !important;
+                color: #FFFFFF !important;
+                padding: 6px 30px 6px 12px !important;
+                font-size: 9.5pt !important;
+                font-weight: 500 !important;
+                min-height: 22px !important;
+            }}
+            QComboBox:hover {{
+                background-color: rgba(255, 255, 255, 0.14) !important;
+                border-color: rgba(255, 255, 255, 0.38) !important;
+            }}
+            QComboBox:focus {{
+                border: 2px solid {self.accent_color} !important;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border: none;
+                background: transparent;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid rgba(255, 255, 255, 0.85);
+                width: 0;
+                height: 0;
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #1b1b1f;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 8px;
+                selection-background-color: {sel_bg_hex};
+                selection-color: #FFFFFF;
+                outline: 0px;
+                padding: 4px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 28px;
+                padding: 4px 12px;
+                color: #E0E0E0;
+            }}
+            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
+                background-color: {sel_bg_hex} !important;
+                color: #FFFFFF !important;
+            }}
+            QLineEdit {{
+                background-color: rgba(255, 255, 255, 0.07) !important;
+                border: 1px solid rgba(255, 255, 255, 0.2) !important;
+                border-radius: 8px !important;
+                color: #FFFFFF !important;
+                padding: 7px 12px !important;
+                font-size: 9.5pt !important;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {self.accent_color} !important;
+            }}
+            QTextEdit {{
+                background-color: rgba(255, 255, 255, 0.07) !important;
+                border: 1px solid rgba(255, 255, 255, 0.2) !important;
+                border-radius: 8px !important;
+                color: #FFFFFF !important;
+                padding: 8px !important;
+                font-size: 9.5pt !important;
+            }}
+            QTextEdit:focus {{
+                border: 2px solid {self.accent_color} !important;
+            }}
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.09) !important;
+                border: 1px solid rgba(255, 255, 255, 0.2) !important;
+                border-radius: 8px !important;
+                color: #FFFFFF !important;
+                padding: 7px 16px !important;
+                font-size: 9.5pt !important;
+                font-weight: 500 !important;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.18) !important;
+                border-color: {self.accent_color} !important;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.08) !important;
+                border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                color: rgba(255, 255, 255, 0.38) !important;
+            }}
+        """)
+
         self.main_layout = QVBoxLayout(self)
 
         self._create_tab_widget()
-        self._setup_tabs()
         self.main_layout.addWidget(self.tab_widget)
+
+        self._setup_tabs()
 
         self._create_dialog_buttons()
 
     def _create_tab_widget(self) -> None:
-        """Create and style the tab widget."""
+        """Create and style the tab widget with scroll buttons and clean spacing."""
         self.tab_widget = QTabWidget()
-        bg_color = self.settings.value("background_color", "#1E1E1E")
+        self.tab_widget.setUsesScrollButtons(True)
+        bg_color = self.settings.value("background_color", "#141416")
         self.tab_widget.setStyleSheet(
             f"""
             QTabWidget::pane {{
@@ -325,19 +434,53 @@ class SettingsDialog(QDialog):
             }}
             QTabBar::tab {{
                 background: {bg_color};
-                color: #888888;
-                padding: 8px 16px;
+                color: rgba(255, 255, 255, 0.6);
+                padding: 8px 14px;
                 border: none;
+                font-weight: bold;
+                font-size: 9.5pt;
             }}
             QTabBar::tab:selected {{
                 color: {self.accent_color};
                 border-bottom: 2px solid {self.accent_color};
             }}
-            QTabBar::tab:!selected {{
-                color: #888888;
+            QTabBar::tab:hover {{
+                color: #FFFFFF;
+            }}
+            QTabBar QToolButton {{
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 4px;
             }}
         """
         )
+
+    def _create_card_frame(self, title_text: str = "") -> Tuple[QFrame, QVBoxLayout]:
+        """Helper to create a compact Material 3 card container."""
+        card = QFrame()
+        card.setObjectName("SectionCard")
+        card.setStyleSheet("""
+            QFrame#SectionCard {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QFrame#SectionCard > QLabel {
+                border: none !important;
+                background: transparent !important;
+                padding: 0px !important;
+            }
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(6)
+
+        if title_text:
+            title_lbl = QLabel(title_text)
+            title_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold; color: {self.accent_color}; margin-bottom: 2px; border: none; background: transparent;")
+            card_layout.addWidget(title_lbl)
+
+        return card, card_layout
 
     def _setup_tabs(self) -> None:
         """Initialize and add all settings tabs."""
@@ -353,16 +496,35 @@ class SettingsDialog(QDialog):
         # Initialize button state after all tabs have been populated
         self._update_achievements_button_state()
 
-        # Apply initial state: if Let SLS handle ACF is already enabled, disable Prompt Steam Restart
+        # Sanity check: Check SLS requirements to enable/disable the experimental_acf_independent_checkbox
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            from ui.dialogs.settings_sls import get_sls_paths
+            config_path = get_user_config_path()
+            sls_paths = get_sls_paths()
+            
+            sls_detected = config_path.exists() and sls_paths.get("detected", False)
+            
+            if self.experimental_acf_independent_checkbox is not None:
+                if not sls_detected:
+                    self.experimental_acf_independent_checkbox.setChecked(False)
+                    self.experimental_acf_independent_checkbox.setEnabled(False)
+                    tooltip_msg = "Disabled: SLSsteam config.yaml or SLSsteam installation not detected."
+                    if not config_path.exists():
+                        tooltip_msg = "Disabled: SLSsteam config.yaml not found."
+                    elif not sls_paths.get("detected", False):
+                        tooltip_msg = "Disabled: SLSsteam installation not detected."
+                    self.experimental_acf_independent_checkbox.setToolTip(tooltip_msg)
+                else:
+                    self.experimental_acf_independent_checkbox.setEnabled(True)
+        except Exception as e:
+            logger.warning(f"Error checking SLS requirements: {e}")
+
+        # Apply initial state: if Let SLS handle ACF is already enabled, apply side effects (disables Prompt Steam Restart, library_mode, config management)
         try:
             if (self.experimental_acf_independent_checkbox is not None
-                    and self.experimental_acf_independent_checkbox.isChecked()
-                    and self.prompt_steam_restart_checkbox is not None):
-                self.prompt_steam_restart_checkbox.setChecked(False)
-                self.prompt_steam_restart_checkbox.setEnabled(False)
-                self.prompt_steam_restart_checkbox.setToolTip(
-                    "Steam restart is not needed when 'Let SLS handle ACF' is active."
-                )
+                    and self.experimental_acf_independent_checkbox.isChecked()):
+                self._on_experimental_acf_toggled(True)
         except Exception:
             pass
 
@@ -381,41 +543,49 @@ class SettingsDialog(QDialog):
         help_url: Optional[str] = None,
         help_text: Optional[str] = None,
     ) -> Tuple[QVBoxLayout, QLineEdit]:
-        """Create an API key input field with password toggle and help link."""
+        """Create an API key input field with Get API Key, Show, and Paste buttons in a row below."""
         layout = QVBoxLayout()
-        layout.setSpacing(5)
+        layout.setSpacing(6)
 
-        layout.addWidget(QLabel(label))
-
-        input_layout = QHBoxLayout()
-        input_layout.setSpacing(5)
+        lbl = QLabel(label)
+        lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        layout.addWidget(lbl)
 
         api_key_input = QLineEdit()
         api_key_input.setPlaceholderText(placeholder)
         api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         current_key = self.settings.value(setting_key, "", type=str)
         api_key_input.setText(current_key)
+        layout.addWidget(api_key_input)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        if help_url:
+            get_key_btn = QPushButton("Get API Key")
+            get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(help_url)))
+            btn_row.addWidget(get_key_btn)
 
         toggle_btn = QPushButton("Show")
+        toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         toggle_btn.clicked.connect(
             lambda: SettingsDialog._toggle_api_key_visibility(api_key_input, toggle_btn)
         )
+        btn_row.addWidget(toggle_btn)
 
-        input_layout.addWidget(api_key_input)
-        input_layout.addWidget(toggle_btn)
-        layout.addLayout(input_layout)
+        paste_btn = QPushButton("Paste")
+        paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        def _on_paste():
+            from PyQt6.QtWidgets import QApplication
+            clip_text = QApplication.clipboard().text()
+            if clip_text:
+                api_key_input.setText(clip_text.strip())
+        paste_btn.clicked.connect(_on_paste)
+        btn_row.addWidget(paste_btn)
 
-        accent_color = self.settings.value("accent_color", "#C06C84")
-        if help_url:
-            help_label = QLabel(
-                f'<a href="{help_url}" style="color: {accent_color};">Get API key</a>'
-            )
-            help_label.setOpenExternalLinks(True)
-            layout.addWidget(help_label)
-        elif help_text:
-            help_label = QLabel(help_text)
-            help_label.setStyleSheet("color: #888888; font-size: 11px;")
-            layout.addWidget(help_label)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
         return layout, api_key_input
 
@@ -435,11 +605,13 @@ class SettingsDialog(QDialog):
         """Create the ASSella settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
-        group = QGroupBox("ASSella Core Settings")
-        group_layout = QVBoxLayout()
+        # Section 1 Card: ASSella Settings
+        assella_card, assella_lay = self._create_card_frame("ASSella Settings")
 
+        # 1. Smart Selection
         self.smart_depot_selection_checkbox = create_checkbox_setting(
             "Smart Selection",
             "smart_depot_selection",
@@ -447,21 +619,9 @@ class SettingsDialog(QDialog):
             self,
             "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
         )
-        group_layout.addWidget(self.smart_depot_selection_checkbox)
+        assella_lay.addWidget(self.smart_depot_selection_checkbox)
 
-        self.autofetch_manifests_checkbox = create_checkbox_setting(
-            "Auto-fetch update manifests on boot (EOL - Soon Removed)",
-            "autofetch_manifests_on_boot",
-            False,
-            self,
-            "[End of Life - Soon Removed] Pre-download manifest zip files in the background on startup for all games needing updates.",
-        )
-        group_layout.addWidget(self.autofetch_manifests_checkbox)
-        _eol_desc = QLabel("⚠ End of Life — Will be removed in a future update. Pre-downloads manifest files on startup.")
-        _eol_desc.setWordWrap(True)
-        _eol_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 4px;")
-        group_layout.addWidget(_eol_desc)
-
+        # 2. Enable LanCache Detection
         self.use_lancache_checkbox = create_checkbox_setting(
             "Enable LanCache Detection",
             "use_lancache",
@@ -469,11 +629,23 @@ class SettingsDialog(QDialog):
             self,
             "Direct DepotDownloader downloads through a local LanCache server if detected on the local network (speeds up LAN downloads).",
         )
-        group_layout.addWidget(self.use_lancache_checkbox)
+        assella_lay.addWidget(self.use_lancache_checkbox)
 
-        # Update Check Interval Slider in Material You style
+        # 3. ISP Bypass (Hubcap API)
+        self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
+            "ISP Bypass (Hubcap API)",
+            "isp_bypass_hubcap",
+            False,
+            self,
+            "If Hubcap API is blocked by your ISP, uses Cloudflare/Google DNS (1.1.1.1/8.8.8.8) to bypass.",
+        )
+        assella_lay.addWidget(self.isp_bypass_hubcap_checkbox)
+
+        # 4. Update Check Interval Slider
         slider_layout = QHBoxLayout()
+        slider_layout.setContentsMargins(2, 2, 2, 2)
         slider_label = QLabel("Update Check Interval:")
+        slider_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
         slider_label.setToolTip("Set how often to check for game updates. Move to the leftmost position (0) to disable.")
         
         from PyQt6.QtWidgets import QSlider
@@ -482,35 +654,34 @@ class SettingsDialog(QDialog):
         self.update_interval_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.update_interval_slider.setTickInterval(1)
         
-        # Material You styling
-        self.update_interval_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
+        self.update_interval_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
                 border: none;
                 height: 6px;
                 background: rgba(255, 255, 255, 0.1);
                 border-radius: 3px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::sub-page:horizontal {
+                background: %s;
                 border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::handle:horizontal {
+                background: %s;
                 border: none;
                 width: 16px;
                 height: 16px;
                 margin: -5px 0;
                 border-radius: 8px;
-            }}
-            QSlider::handle:horizontal:hover {{
+            }
+            QSlider::handle:horizontal:hover {
                 background: white;
-            }}
-        """)
+            }
+        """ % (self.accent_color, self.accent_color))
         
         self.update_interval_value_label = QLabel("Disabled")
-        self.update_interval_value_label.setFixedWidth(80)
+        self.update_interval_value_label.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9pt; font-weight: bold; border: none; background: transparent;")
+        self.update_interval_value_label.setFixedWidth(75)
         
-        # Load saved value (default is 0)
         current_minutes = self.settings.value("update_check_interval_minutes", 0, type=int)
         slider_val = min(20, max(0, current_minutes // 5))
         self.update_interval_slider.setValue(slider_val)
@@ -527,88 +698,60 @@ class SettingsDialog(QDialog):
         slider_layout.addWidget(slider_label)
         slider_layout.addWidget(self.update_interval_slider, 1)
         slider_layout.addWidget(self.update_interval_value_label)
-        group_layout.addLayout(slider_layout)
+        assella_lay.addLayout(slider_layout)
 
-        group.setLayout(group_layout)
-        layout.addWidget(group)
-        
-        # Rollback / Manifest Backups Group
-        rollback_group = QGroupBox("Manifest Rollback Settings")
-        rollback_layout = QVBoxLayout()
-        
-        self.save_old_manifests_checkbox = QCheckBox("Keep old manifests (Rollback)")
-        self.save_old_manifests_checkbox.setToolTip("Save older manifest versions to allow rolling back to previous builds.")
-        # Robustly parse bool from QSettings — type=bool can silently fail on
-        # Linux when the stored value is the string "true"/"false".
-        _som_raw = self.settings.value("save_old_manifests", True)
-        if isinstance(_som_raw, str):
-            _som_val = _som_raw.lower() in ("true", "1", "yes")
-        else:
-            _som_val = bool(_som_raw)
-        self.save_old_manifests_checkbox.setChecked(_som_val)
-        rollback_layout.addWidget(self.save_old_manifests_checkbox)
-        
-        limit_layout = QHBoxLayout()
-        rollback_limit_label = QLabel("Max to keep:")
-        rollback_limit_label.setToolTip("Maximum number of older manifests to keep per game.")
-        self.max_old_manifests_spinbox = QSpinBox()
-        self.max_old_manifests_spinbox.setRange(1, 100)
-        try:
-            current_rollback_max = int(self.settings.value("max_old_manifests", 3))
-        except (ValueError, TypeError):
-            current_rollback_max = 3
-        self.max_old_manifests_spinbox.setValue(current_rollback_max)
-        
-        limit_layout.addWidget(rollback_limit_label)
-        limit_layout.addWidget(self.max_old_manifests_spinbox)
-        limit_layout.addStretch()
-        rollback_layout.addLayout(limit_layout)
-        
-        rollback_group.setLayout(rollback_layout)
-        # layout.addWidget(rollback_group)
+        layout.addWidget(assella_card)
 
-        # Experimental Group
-        experimental_group = QGroupBox("Experimental")
-        experimental_layout = QVBoxLayout()
-
-        self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
-            "ISP Bypass (Hubcap API)",
-            "isp_bypass_hubcap",
-            False,
-            self,
-            "If Hubcap API is blocked by your ISP, uses Cloudflare/Google DNS (1.1.1.1/8.8.8.8) to bypass. If DNS bypass fails, falls back to Tor (slower connection). Note: This only affects Hubcap API requests, not game file downloads.",
-        )
-        self.isp_bypass_hubcap_checkbox.stateChanged.connect(self._on_isp_bypass_toggled)
-        experimental_layout.addWidget(self.isp_bypass_hubcap_checkbox)
-        _isp_desc = QLabel("Routes Hubcap API through Cloudflare/Google DNS (1.1.1.1 / 8.8.8.8). Falls back to Tor if blocked. Does not affect game file downloads.")
-        _isp_desc.setWordWrap(True)
-        _isp_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 6px;")
-        experimental_layout.addWidget(_isp_desc)
+        # Section 2 Card: Experimental
+        exp_card, exp_lay = self._create_card_frame("Experimental")
 
         self.experimental_acf_independent_checkbox = create_checkbox_setting(
             "Let SLS handle ACF (Experimental)",
             "experimental_acf_independent",
             False,
             self,
-            "Delegates .acf file creation and updates directly to Steam via SLSsteam API instead of writing them manually. Fixes 'Content Encrypted' errors, play instantly without Steam restarts, and clean native uninstallation.",
+            "Delegates .acf file creation and updates directly to Steam via SLSsteam API.",
         )
         self.experimental_acf_independent_checkbox.stateChanged.connect(self._on_experimental_acf_toggled)
-        experimental_layout.addWidget(self.experimental_acf_independent_checkbox)
+        
+        acf_box = QVBoxLayout()
+        acf_box.setContentsMargins(0, 0, 0, 0)
+        acf_box.setSpacing(2)
+        acf_box.addWidget(self.experimental_acf_independent_checkbox)
+        
         _acf_desc = QLabel("Native SLS .acf generation via SLSsteam API. Fixes 'Content Encrypted' errors, removes need for Steam restart, and enables clean native uninstall.")
         _acf_desc.setWordWrap(True)
-        _acf_desc.setStyleSheet("color: #888; font-size: 11px; margin-left: 22px; margin-bottom: 6px;")
-        experimental_layout.addWidget(_acf_desc)
+        _acf_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; margin-left: 6px; margin-right: 6px;")
+        acf_box.addWidget(_acf_desc)
+        exp_lay.addLayout(acf_box)
 
-        experimental_group.setLayout(experimental_layout)
-        layout.addWidget(experimental_group)
-
+        layout.addWidget(exp_card)
         layout.addStretch()
 
         # ── Uninstall (Linux only) ────────────────────────────────────────
         if sys.platform != "win32":
             uninstall_btn = QPushButton("Uninstall ASSella")
             uninstall_btn.setToolTip("Remove ASSella and optionally restore the original ACCELA.")
-            uninstall_btn.setStyleSheet("color: #cc4444;")
+            
+            accent_color = self.settings.value("accent_color", "#C06C84")
+            from utils.color_utils import get_semantic_colors
+            sem_colors = get_semantic_colors(accent_color)
+            err_color = sem_colors["error"]
+            
+            uninstall_btn.setStyleSheet(f"""
+                QPushButton {{
+                    color: {err_color} !important;
+                    background: transparent;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background: rgba(235, 87, 87, 0.12);
+                    border-color: {err_color};
+                }}
+            """)
             uninstall_btn.clicked.connect(self.uninstall_assela)
             layout.addWidget(uninstall_btn)
 
@@ -618,11 +761,11 @@ class SettingsDialog(QDialog):
         """Create the Downloads settings tab with primary settings."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
-        # Download Settings Group
-        dl_group = QGroupBox("Download Settings")
-        dl_layout = QVBoxLayout()
+        # Download Settings Card
+        dl_card, dl_layout = self._create_card_frame("Download Settings")
 
         library_tooltip = "Detect Steam libraries and let you choose where to install games."
         if sys.platform == "linux":
@@ -646,25 +789,42 @@ class SettingsDialog(QDialog):
         )
         dl_layout.addWidget(self.check_updates_on_boot_checkbox)
 
-        dl_layout.addSpacing(10)
+        dl_layout.addSpacing(8)
 
-        # Inputs Grid for Download Settings (Download Location, Max Downloads, Update Check Interval)
-        dl_grid = QGridLayout()
-        dl_grid.setSpacing(10)
-        dl_grid.setColumnStretch(0, 0)
-        dl_grid.setColumnStretch(1, 1)
+        # Inputs Grid for Download Settings (Download Location, Max Downloads)
+        loc_row = QHBoxLayout()
+        loc_row.setContentsMargins(2, 2, 2, 2)
+        loc_row.setSpacing(10)
 
         dl_dir_label = QLabel("Default Download Location:")
+        dl_dir_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
         dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game.")
-        
+        loc_row.addWidget(dl_dir_label, 1)
+
         self.dl_location_combo = QComboBox()
+        self.dl_location_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dl_location_combo.addItem("Ask Every Time", "")
-        
+
+        def _fmt_path(p: str) -> str:
+            if not p or p == "Ask Every Time":
+                return "Ask Every Time"
+            norm = os.path.normpath(p)
+            parts = [x for x in norm.split(os.sep) if x]
+            if len(parts) >= 2:
+                short = f".{parts[-2]}/{parts[-1]}"
+            elif parts:
+                short = f".{parts[-1]}"
+            else:
+                short = norm
+            if len(short) > 22:
+                short = short[:19] + "..."
+            return short
+
         # Load detected Steam libraries
         from core import steam_helpers
         detected_libs = steam_helpers.get_steam_libraries()
         for lib in detected_libs:
-            self.dl_location_combo.addItem(lib, lib)
+            self.dl_location_combo.addItem(_fmt_path(lib), lib)
             
         self.dl_location_combo.addItem("Custom Folder...", "custom")
         
@@ -677,8 +837,7 @@ class SettingsDialog(QDialog):
             if idx >= 0:
                 self.dl_location_combo.setCurrentIndex(idx)
         else:
-            # Custom folder path
-            self.dl_location_combo.insertItem(1, current_val, current_val)
+            self.dl_location_combo.insertItem(1, _fmt_path(current_val), current_val)
             self.dl_location_combo.setCurrentIndex(1)
             
         def on_dl_location_changed(index):
@@ -690,118 +849,79 @@ class SettingsDialog(QDialog):
                     if existing_idx >= 0:
                         self.dl_location_combo.setCurrentIndex(existing_idx)
                     else:
-                        # Insert custom path before the "Custom Folder..." item
                         insert_pos = self.dl_location_combo.count() - 1
-                        self.dl_location_combo.insertItem(insert_pos, path, path)
+                        self.dl_location_combo.insertItem(insert_pos, _fmt_path(path), path)
                         self.dl_location_combo.setCurrentIndex(insert_pos)
                 else:
-                    # Cancelled, revert to first item
                     self.dl_location_combo.setCurrentIndex(0)
                     
         self.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
+        loc_row.addWidget(self.dl_location_combo)
+        dl_layout.addLayout(loc_row)
 
-        dl_grid.addWidget(dl_dir_label, 0, 0)
-        dl_grid.addWidget(self.dl_location_combo, 0, 1)
+        slider_layout = QHBoxLayout()
+        slider_layout.setContentsMargins(2, 2, 2, 2)
+        slider_layout.setSpacing(10)
 
         max_dl_label = QLabel("Concurrent Downloads:")
+        max_dl_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
         max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network usage.")
-        
-        from PyQt6.QtWidgets import QSlider
+        slider_layout.addWidget(max_dl_label)
+
         self.max_downloads_slider = QSlider(Qt.Orientation.Horizontal)
         self.max_downloads_slider.setRange(1, 30)
         self.max_downloads_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.max_downloads_slider.setTickInterval(1)
-        self.max_downloads_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
+        self.max_downloads_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
                 border: none;
                 height: 6px;
                 background: rgba(255, 255, 255, 0.1);
                 border-radius: 3px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::sub-page:horizontal {
+                background: %s;
                 border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::handle:horizontal {
+                background: %s;
                 border: none;
                 width: 16px;
                 height: 16px;
                 margin: -5px 0;
                 border-radius: 8px;
-            }}
-            QSlider::handle:horizontal:hover {{
+            }
+            QSlider::handle:horizontal:hover {
                 background: white;
-            }}
-        """)
+            }
+        """ % (self.accent_color, self.accent_color))
         
         current_max = self.settings.value("max_downloads", 8, type=int)
-        if current_max < 1 or current_max > 30:
-            current_max = 8
         self.max_downloads_slider.setValue(current_max)
         
         self.max_downloads_val_lbl = QLabel(str(current_max))
+        self.max_downloads_val_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9pt; font-weight: bold; border: none; background: transparent;")
         self.max_downloads_val_lbl.setFixedWidth(30)
         self.max_downloads_slider.valueChanged.connect(lambda val: self.max_downloads_val_lbl.setText(str(val)))
         
-        slider_layout = QHBoxLayout()
         slider_layout.addWidget(self.max_downloads_slider, 1)
         slider_layout.addWidget(self.max_downloads_val_lbl)
         
-        dl_grid.addWidget(max_dl_label, 1, 0)
-        dl_grid.addLayout(slider_layout, 1, 1)
-
-        dl_layout.addLayout(dl_grid)
-        dl_group.setLayout(dl_layout)
-        layout.addWidget(dl_group)
-
-        # Post-Processing Group (Primary)
-        pp_group = QGroupBox("Post-Processing")
-        pp_layout = QVBoxLayout()
-
-        pp_grid = QGridLayout()
-        pp_grid.setSpacing(10)
-        pp_grid.setColumnStretch(0, 0)
-        pp_grid.setColumnStretch(1, 1)
-
-        drm_label = QLabel("Steamless DRM Remover:")
-        drm_label.setToolTip("Select the method to automatically remove Steam DRM from game executables.")
-        
-        self.steamless_remover_combo = QComboBox()
-        self.steamless_remover_combo.addItem("Disabled", "disabled")
-        self.steamless_remover_combo.addItem("Steamless AIO (Built-in)", "aio")
-        self.steamless_remover_combo.addItem("Steamless CLI (WINE/Proton)", "cli")
-        
-        # Load saved DRM Remover mode
-        use_aio = self.settings.value("use_steamless_aio", True, type=bool)
-        use_cli = self.settings.value("use_steamless", False, type=bool)
-        
-        if use_aio:
-            self.steamless_remover_combo.setCurrentIndex(1)
-        elif use_cli:
-            self.steamless_remover_combo.setCurrentIndex(2)
-        else:
-            self.steamless_remover_combo.setCurrentIndex(0)
-            
-        pp_grid.addWidget(drm_label, 0, 0)
-        pp_grid.addWidget(self.steamless_remover_combo, 0, 1)
-        pp_layout.addLayout(pp_grid)
-
-        pp_group.setLayout(pp_layout)
-        layout.addWidget(pp_group)
-
+        dl_layout.addLayout(slider_layout)
+        layout.addWidget(dl_card)
         layout.addStretch()
+
         self.tab_widget.addTab(tab, "Downloads")
 
     def _create_advanced_tab(self) -> None:
         """Create the Advanced settings tab with niche/specialized settings."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
-        # Advanced Downloads Group
-        adv_group = QGroupBox("Advanced Download Settings")
-        adv_layout = QVBoxLayout()
+        # Advanced Downloads Card
+        adv_card, adv_layout = self._create_card_frame("Advanced Download Settings")
 
         self.auto_skip_single_choice_checkbox = create_checkbox_setting(
             "Skip single-choice selection",
@@ -809,6 +929,7 @@ class SettingsDialog(QDialog):
             False,
             self,
             "Automatically skip selection when only one option exists.",
+            show_description=False,
         )
         adv_layout.addWidget(self.auto_skip_single_choice_checkbox)
 
@@ -818,35 +939,34 @@ class SettingsDialog(QDialog):
             True,
             self,
             "Hide macOS platform depots to reduce clutter.",
+            show_description=False,
         )
         adv_layout.addWidget(self.hide_macos_depots_checkbox)
 
-        # Soundtrack filtering
         self.filter_soundtracks_checkbox = create_checkbox_setting(
             "Filter Soundtracks and OSTs from Depots",
             "filter_soundtracks",
             True,
             self,
             "Filter out soundtrack and OST depots when downloading game files.",
+            show_description=False,
         )
         adv_layout.addWidget(self.filter_soundtracks_checkbox)
 
-        # Search blacklist filtering
         self.filter_search_blacklist_checkbox = create_checkbox_setting(
             "Filter Blacklisted Keywords in Search",
             "filter_search_blacklist",
             False,
             self,
             "Hide soundtracks, artbooks, tools, and demos from manifest search results.",
+            show_description=False,
         )
         adv_layout.addWidget(self.filter_search_blacklist_checkbox)
 
-        adv_group.setLayout(adv_layout)
-        layout.addWidget(adv_group)
+        layout.addWidget(adv_card)
 
-        # Workshop Downloader Settings Group
-        ws_group = QGroupBox("Advanced Workshop Settings")
-        ws_layout = QVBoxLayout()
+        # Workshop Downloader Settings Card
+        ws_card, ws_layout = self._create_card_frame("Advanced Workshop Settings")
 
         self.workshop_steam_checkbox = create_checkbox_setting(
             "Enable Steam Integration for Workshop Downloads",
@@ -854,45 +974,48 @@ class SettingsDialog(QDialog):
             True,
             self,
             "Directs workshop downloads to your detected Steam library directories.",
+            show_description=False,
         )
         ws_layout.addWidget(self.workshop_steam_checkbox)
 
         # Workshop grid layout for clean alignment
         ws_grid = QGridLayout()
-        ws_grid.setSpacing(10)
+        ws_grid.setContentsMargins(4, 4, 4, 4)
+        ws_grid.setSpacing(12)
         ws_grid.setColumnStretch(0, 0)
         ws_grid.setColumnStretch(1, 1)
 
         ws_max_dl_label = QLabel("Max Concurrent Workshop Downloads:")
+        ws_max_dl_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
         
         from PyQt6.QtWidgets import QSlider
         self.workshop_max_dl_slider = QSlider(Qt.Orientation.Horizontal)
         self.workshop_max_dl_slider.setRange(1, 30)
         self.workshop_max_dl_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.workshop_max_dl_slider.setTickInterval(1)
-        self.workshop_max_dl_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
+        self.workshop_max_dl_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
                 border: none;
                 height: 6px;
                 background: rgba(255, 255, 255, 0.1);
                 border-radius: 3px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::sub-page:horizontal {
+                background: %s;
                 border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                background: {self.accent_color};
+            }
+            QSlider::handle:horizontal {
+                background: %s;
                 border: none;
                 width: 16px;
                 height: 16px;
                 margin: -5px 0;
                 border-radius: 8px;
-            }}
-            QSlider::handle:horizontal:hover {{
+            }
+            QSlider::handle:horizontal:hover {
                 background: white;
-            }}
-        """)
+            }
+        """ % (self.accent_color, self.accent_color))
         
         current_ws_max = self.settings.value("workshop_max_downloads", 8, type=int)
         if current_ws_max < 1 or current_ws_max > 30:
@@ -900,6 +1023,7 @@ class SettingsDialog(QDialog):
         self.workshop_max_dl_slider.setValue(current_ws_max)
         
         self.workshop_max_dl_val_lbl = QLabel(str(current_ws_max))
+        self.workshop_max_dl_val_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9pt; font-weight: bold; border: none; background: transparent;")
         self.workshop_max_dl_val_lbl.setFixedWidth(30)
         self.workshop_max_dl_slider.valueChanged.connect(lambda val: self.workshop_max_dl_val_lbl.setText(str(val)))
         
@@ -911,6 +1035,7 @@ class SettingsDialog(QDialog):
         ws_grid.addLayout(ws_slider_layout, 0, 1)
 
         ws_cell_id_label = QLabel("Cell ID:")
+        ws_cell_id_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
         self.workshop_cell_id_input = QLineEdit()
         self.workshop_cell_id_input.setPlaceholderText("Optional")
         self.workshop_cell_id_input.setText(self.settings.value("workshop_cell_id", "", type=str))
@@ -919,25 +1044,33 @@ class SettingsDialog(QDialog):
         ws_grid.addWidget(self.workshop_cell_id_input, 1, 1)
 
         ws_layout.addLayout(ws_grid)
-        ws_group.setLayout(ws_layout)
-        layout.addWidget(ws_group)
+        layout.addWidget(ws_card)
 
-        # Achievements Group
-        pp_group = QGroupBox("Advanced Post-Processing")
-        pp_layout = QVBoxLayout()
+        # Achievements Card
+        pp_card, pp_layout = self._create_card_frame("Advanced Post-Processing")
         self.achievements_checkbox = create_checkbox_setting(
             "Generate Achievements (Recommended Off)",
             "generate_achievements",
             False,
             self,
-            "After 07/11/2026 update of SLSsteam, achievements are generated by SLS by default.",
+            "Automatically generate achievement configuration files during post-processing.",
+            show_description=False,
         )
-        self.achievements_checkbox.stateChanged.connect(self._update_achievements_button_state)
         pp_layout.addWidget(self.achievements_checkbox)
-        pp_group.setLayout(pp_layout)
-        layout.addWidget(pp_group)
 
+        self.auto_apply_goldberg_checkbox = create_checkbox_setting(
+            "Auto-apply Goldberg on Install (Experimental)",
+            "auto_apply_goldberg",
+            False,
+            self,
+            "Automatically apply Goldberg Steam Emulator after game download finishes.",
+            show_description=False,
+        )
+        pp_layout.addWidget(self.auto_apply_goldberg_checkbox)
+
+        layout.addWidget(pp_card)
         layout.addStretch()
+
         self.tab_widget.addTab(tab, "Advanced")
 
     def goldberg_checked_warning(self) -> None:
@@ -1013,12 +1146,12 @@ class SettingsDialog(QDialog):
         """Create the Morrenus API settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
-        # API Keys Group
-        key_group = QGroupBox("API Keys")
-        key_layout = QVBoxLayout()
-        key_layout.setSpacing(10)
+        # API Keys Card
+        key_card, key_layout = self._create_card_frame("API Keys")
+        key_layout.setSpacing(12)
 
         morrenus_layout, self.api_key_input = self._create_api_key_setting(
             "Hubcap API Key:",
@@ -1027,58 +1160,15 @@ class SettingsDialog(QDialog):
             help_url="https://hubcapmanifest.com/",
         )
         key_layout.addLayout(morrenus_layout)
+        layout.addWidget(key_card)
 
-        key_group.setLayout(key_layout)
-        layout.addWidget(key_group)
-
-        # Proxy Settings Group
-        proxy_group = QGroupBox("Wirecutter Proxy (ISP Bypass)")
-        proxy_layout = QVBoxLayout()
-        proxy_layout.setSpacing(10)
-
-        self.use_wirecutter_checkbox = create_checkbox_setting(
-            "Use Wirecutter Proxy",
-            "use_wirecutter",
-            False,
-            self,
-            "Bypass ISP blocks by proxying Hubcap API requests through a Cloudflare Worker."
-        )
-        proxy_layout.addWidget(self.use_wirecutter_checkbox)
-
-        # Proxy URL input
-        url_layout = QHBoxLayout()
-        url_layout.setSpacing(5)
-        url_layout.addWidget(QLabel("Proxy URL:"))
-        self.wirecutter_url_input = QLineEdit()
-        self.wirecutter_url_input.setPlaceholderText("https://your-worker.workers.dev")
-        self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
-        current_url = self.settings.value("wirecutter_url", "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev", type=str)
-        self.wirecutter_url_input.setText(current_url)
-        url_layout.addWidget(self.wirecutter_url_input)
-
-        self.show_url_btn = QPushButton("Show")
-        self.show_url_btn.clicked.connect(self._toggle_proxy_url_visibility)
-        url_layout.addWidget(self.show_url_btn)
-
-        proxy_layout.addLayout(url_layout)
-
-        # Connect checkbox to toggle URL editability
-        self.wirecutter_url_input.setEnabled(self.use_wirecutter_checkbox.isChecked())
-        self.use_wirecutter_checkbox.checkbox.toggled.connect(self.wirecutter_url_input.setEnabled)
-
-        proxy_group.setLayout(proxy_layout)
-        # layout.addWidget(proxy_group)
-
-        # Stats Group
-        stats_group = QGroupBox("Hubcap Stats")
-        stats_layout = QVBoxLayout()
-        stats_layout.setContentsMargins(5, 10, 5, 10)
+        # Stats Card
+        stats_card, stats_layout = self._create_card_frame("Hubcap Stats")
+        stats_layout.setContentsMargins(12, 12, 12, 12)
 
         self.morrenus_stats_widget = MorrenusStatsWidget()
         stats_layout.addWidget(self.morrenus_stats_widget)
-
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        layout.addWidget(stats_card)
 
         layout.addStretch()
 
@@ -1120,11 +1210,11 @@ class SettingsDialog(QDialog):
         """Create the Tools settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
-        # Tools Group
-        tools_group = QGroupBox("Tools")
-        tools_layout = QVBoxLayout()
+        # Tools Card
+        tools_card, tools_layout = self._create_card_frame("Tools")
 
         self.configure_achievements_btn = SettingsDialog._add_tool_button(
             tools_layout,
@@ -1135,33 +1225,22 @@ class SettingsDialog(QDialog):
 
         SettingsDialog._add_tool_button(
             tools_layout,
-            "Python Steamless",
+            "Steamless (Python)",
             "Run Steamless-AIO manually on a game .exe.",
             self.run_steamless_aio_manually,
         )
 
         SettingsDialog._add_tool_button(
             tools_layout,
-            "Legacy Steamless",
+            "Steamless (Legacy)",
             "Run Steamless manually on a game .exe.",
             self.run_steamless_manually,
         )
+        layout.addWidget(tools_card)
 
-        self.download_slssteam_button = QPushButton("Open SLSsteam installer")
-        self.download_slssteam_button.setToolTip(
-            "Open the recommended SLSsteam installer page (GitHub)."
-        )
-        self.download_slssteam_button.clicked.connect(self.download_slssteam)
-
-        tools_group.setLayout(tools_layout)
-        layout.addWidget(tools_group)
-
-
-
-        # Windows Registry Group
+        # Windows Registry Card
         if sys.platform == "win32":
-            reg_group = QGroupBox("Windows Registry")
-            reg_layout = QVBoxLayout()
+            reg_card, reg_layout = self._create_card_frame("Windows Registry")
 
             SettingsDialog._add_tool_button(
                 reg_layout,
@@ -1177,17 +1256,14 @@ class SettingsDialog(QDialog):
                 SettingsDialog.remove_registry_entries,
             )
 
-            reg_group.setLayout(reg_layout)
-            layout.addWidget(reg_group)
+            layout.addWidget(reg_card)
 
-        layout.addStretch()
-
-        # ── Logging Configuration ─────────────────────────────────────────
-        log_group = QGroupBox("Logging Configuration")
-        log_layout = QVBoxLayout()
+        # Logging Configuration Card
+        log_card, log_layout = self._create_card_frame("Logging Configuration")
 
         level_row = QHBoxLayout()
         level_label = QLabel("Log Level:")
+        level_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
         level_label.setToolTip(
             "Minimum severity of messages to log.\n"
             "Select NONE to disable all logging (improves performance)."
@@ -1204,6 +1280,7 @@ class SettingsDialog(QDialog):
 
         cat_row = QHBoxLayout()
         cat_label = QLabel("Log Filter:")
+        cat_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
         cat_label.setToolTip("Restrict logs to a specific module group.")
         self.log_category_combo = QComboBox()
         self.log_category_combo.addItems([
@@ -1226,9 +1303,7 @@ class SettingsDialog(QDialog):
         _log_note.setStyleSheet("color: #888888; font-size: 11px;")
         _log_note.setWordWrap(True)
         log_layout.addWidget(_log_note)
-
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+        layout.addWidget(log_card)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Tools")
@@ -1329,21 +1404,49 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPushButton:
-        """Helper to add a tool button with explanation text."""
-        btn = QPushButton(text)
-        btn.setToolTip(tooltip)
-        btn.clicked.connect(slot)
-        layout.addWidget(btn)
-        SettingsDialog._add_tool_explanation(layout, tooltip)
-        return btn
+        """Helper to add a left-aligned tool button with an always-visible description label stacked below."""
+        row_box = QVBoxLayout()
+        row_box.setContentsMargins(0, 2, 0, 6)
+        row_box.setSpacing(4)
 
-    @staticmethod
-    def _add_tool_explanation(layout: QVBoxLayout, text: str) -> None:
-        """Helper to add explanation label."""
-        lbl = QLabel(text)
-        lbl.setStyleSheet("color: #888888; font-size: 11px;")
-        lbl.setWordWrap(True)
-        layout.addWidget(lbl)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                color: #FFFFFF;
+                padding: 7px 16px;
+                font-size: 9.5pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.32);
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.06) !important;
+                border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                color: rgba(255, 255, 255, 0.38) !important;
+            }
+        """)
+        btn.clicked.connect(slot)
+        btn_row.addWidget(btn)
+        btn_row.addStretch()
+        row_box.addLayout(btn_row)
+
+        if tooltip:
+            desc_lbl = QLabel(tooltip)
+            desc_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+            desc_lbl.setWordWrap(True)
+            row_box.addWidget(desc_lbl)
+
+        layout.addLayout(row_box)
+        return btn
 
 
 
@@ -1351,26 +1454,29 @@ class SettingsDialog(QDialog):
         """Create the Theme settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
 
         desc_lbl = QLabel("Customize the visual appearance, accent colors, and font settings of ASSella.")
-        desc_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px; margin-bottom: 5px;")
+        desc_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
         layout.addWidget(desc_lbl)
 
-        # Colors & Font combined in a neat group
-        theme_group = QGroupBox("Theme")
+        # Colors & Font Card
+        theme_card, theme_card_lay = self._create_card_frame("Theme")
         theme_layout = QGridLayout()
-        theme_layout.setContentsMargins(15, 15, 15, 15)
+        theme_layout.setContentsMargins(4, 4, 4, 4)
         theme_layout.setSpacing(10)
 
         # Accent color swatch row
-        theme_layout.addWidget(QLabel("Accent Color:"), 0, 0)
+        lbl_acc = QLabel("Accent Color:")
+        lbl_acc.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        theme_layout.addWidget(lbl_acc, 0, 0)
+
         self.accent_color_button = QPushButton()
         self.accent_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.accent_color_button.setFixedSize(60, 24)
         self.accent_color_button.setStyleSheet(
-            f"background-color: {self._user_accent_color}; border: 1px solid #444; border-radius: 4px;"
+            f"background-color: {self._user_accent_color}; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 4px;"
         )
         self.accent_reset_button = QPushButton("Reset")
         self.accent_reset_button.setFixedWidth(70)
@@ -1378,12 +1484,15 @@ class SettingsDialog(QDialog):
         theme_layout.addWidget(self.accent_reset_button, 0, 2)
 
         # Background color swatch row
-        theme_layout.addWidget(QLabel("Background Color:"), 1, 0)
+        lbl_bg = QLabel("Background Color:")
+        lbl_bg.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        theme_layout.addWidget(lbl_bg, 1, 0)
+
         self.bg_color_button = QPushButton()
         self.bg_color_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.bg_color_button.setFixedSize(60, 24)
         self.bg_color_button.setStyleSheet(
-            f"background-color: {self._user_background_color}; border: 1px solid #444; border-radius: 4px;"
+            f"background-color: {self._user_background_color}; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 4px;"
         )
         self.bg_reset_button = QPushButton("Reset")
         self.bg_reset_button.setFixedWidth(70)
@@ -1398,12 +1507,17 @@ class SettingsDialog(QDialog):
         self.font_button.setMinimumWidth(150)
         self.font_reset_button.setFixedWidth(70)
 
-        theme_layout.addWidget(QLabel("System Font:"), 2, 0)
+        lbl_font = QLabel("System Font:")
+        lbl_font.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        theme_layout.addWidget(lbl_font, 2, 0)
         theme_layout.addWidget(self.font_button, 2, 1)
         theme_layout.addWidget(self.font_reset_button, 2, 2)
 
         # Material presets row
-        theme_layout.addWidget(QLabel("Material Presets:"), 3, 0)
+        lbl_preset = QLabel("Material Presets:")
+        lbl_preset.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        theme_layout.addWidget(lbl_preset, 3, 0)
+
         self.preset_combo = QComboBox()
         self.preset_combo.addItem("Custom (Select Color)", "custom")
         self.preset_combo.addItem("Ocean Breeze (Monet Blue)", "ocean")
@@ -1424,41 +1538,51 @@ class SettingsDialog(QDialog):
         self.bg_color_button.clicked.connect(self.choose_bg_color)
         self.bg_reset_button.clicked.connect(self.reset_bg_color)
 
-        theme_group.setLayout(theme_layout)
-        layout.addWidget(theme_group)
+        theme_card_lay.addLayout(theme_layout)
+        layout.addWidget(theme_card)
 
-        # Interface Options Group
-        disp_group = QGroupBox("Interface Options")
-        disp_layout = QVBoxLayout()
-        disp_layout.setContentsMargins(15, 15, 15, 15)
-        disp_layout.setSpacing(10)
+        # Interface Options Card
+        disp_card, disp_layout = self._create_card_frame("Interface Options")
 
-        self.titlebar_position_checkbox = QCheckBox("Move Titlebar to Window Top")
         is_top = self.settings.value("titlebar_position", "bottom", type=str) == "top"
-        self.titlebar_position_checkbox.setChecked(is_top)
-        self.titlebar_position_checkbox.setToolTip("Places the navigation bar / titlebar at the top of the window instead of the bottom.")
-        self.titlebar_position_checkbox.stateChanged.connect(self.on_titlebar_position_changed)
+        self.titlebar_position_checkbox = create_checkbox_setting(
+            "Move Titlebar to Window Top",
+            "titlebar_position_top",
+            is_top,
+            self,
+            "Places the navigation bar / titlebar at the top of the window instead of the bottom.",
+            show_description=False,
+        )
+        def _on_top_toggled(checked: bool):
+            val = "top" if checked else "bottom"
+            self.settings.setValue("titlebar_position", val)
+            self.on_titlebar_position_changed(2 if checked else 0)
+
+        self.titlebar_position_checkbox.toggled.connect(_on_top_toggled)
         disp_layout.addWidget(self.titlebar_position_checkbox)
 
-
-
-        self.remember_origins_checkbox = QCheckBox("Remember your origins")
-        is_origins = self.settings.value("remember_origins", False, type=bool)
-        self.remember_origins_checkbox.setChecked(is_origins)
-        self.remember_origins_checkbox.setToolTip("Subtly displays the Wired layout background.")
-        self.remember_origins_checkbox.stateChanged.connect(self._on_origins_toggled)
+        self.remember_origins_checkbox = create_checkbox_setting(
+            "Remember your origins",
+            "remember_origins",
+            False,
+            self,
+            "Subtly displays the Wired layout background.",
+            show_description=False,
+        )
+        self.remember_origins_checkbox.toggled.connect(self._on_origins_toggled)
         disp_layout.addWidget(self.remember_origins_checkbox)
 
-        self.simplify_denuvo_status_checkbox = QCheckBox("Show hypervisor and uncracked as Not Cracked")
-        is_simplify = self.settings.value("simplify_denuvo_status", False, type=bool)
-        self.simplify_denuvo_status_checkbox.setChecked(is_simplify)
-        self.simplify_denuvo_status_checkbox.setToolTip("Displays both Denuvo Hypervisor and Denuvo Uncracked games as simply Denuvo Uncracked.")
+        self.simplify_denuvo_status_checkbox = create_checkbox_setting(
+            "Show hypervisor and uncracked as Not Cracked",
+            "simplify_denuvo_status",
+            False,
+            self,
+            "Displays both Denuvo Hypervisor and Denuvo Uncracked games as simply Denuvo Uncracked.",
+            show_description=False,
+        )
         disp_layout.addWidget(self.simplify_denuvo_status_checkbox)
 
-
-        disp_group.setLayout(disp_layout)
-        layout.addWidget(disp_group)
-
+        layout.addWidget(disp_card)
         layout.addStretch(1)
 
         self.tab_widget.addTab(tab, "Theme")
@@ -1883,10 +2007,7 @@ class SettingsDialog(QDialog):
             "smart_depot_selection",
             self.smart_depot_selection_checkbox.isChecked(),
         )
-        self.settings.setValue(
-            "autofetch_manifests_on_boot",
-            self.autofetch_manifests_checkbox.isChecked(),
-        )
+
         self.settings.setValue(
             "use_lancache",
             self.use_lancache_checkbox.isChecked(),
@@ -1903,6 +2024,10 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "generate_achievements", self.achievements_checkbox.isChecked()
         )
+        if self.auto_apply_goldberg_checkbox is not None:
+            self.settings.setValue(
+                "auto_apply_goldberg", self.auto_apply_goldberg_checkbox.isChecked()
+            )
 
         if self.workshop_steam_checkbox is not None:
             self.settings.setValue(
@@ -2052,17 +2177,62 @@ class SettingsDialog(QDialog):
 
     def _on_experimental_acf_toggled(self, state):
         is_checked = (state == Qt.CheckState.Checked.value or state == True or state == 2)
+        
+        # 1. prompt_steam_restart_checkbox
         if hasattr(self, "prompt_steam_restart_checkbox") and self.prompt_steam_restart_checkbox is not None:
             if is_checked:
                 if not hasattr(self, "_saved_prompt_restart_pref"):
                     self._saved_prompt_restart_pref = self.prompt_steam_restart_checkbox.isChecked()
                 self.prompt_steam_restart_checkbox.setChecked(False)
-                self.prompt_steam_restart_checkbox.setEnabled(False)
-                self.prompt_steam_restart_checkbox.setToolTip("Steam restart is not needed when 'Let SLS handle ACF' is active.")
+                self.prompt_steam_restart_checkbox.setLocked(True, "Disabled while 'Let SLS handle ACF' is active.")
             else:
-                self.prompt_steam_restart_checkbox.setEnabled(True)
+                self.prompt_steam_restart_checkbox.setLocked(False)
                 if hasattr(self, "_saved_prompt_restart_pref"):
                     self.prompt_steam_restart_checkbox.setChecked(self._saved_prompt_restart_pref)
+
+        # 2. library_mode_checkbox (Limit Downloads to Steam Libraries)
+        if hasattr(self, "library_mode_checkbox") and self.library_mode_checkbox is not None:
+            if is_checked:
+                if not hasattr(self, "_saved_library_mode_pref"):
+                    self._saved_library_mode_pref = self.library_mode_checkbox.isChecked()
+                self.library_mode_checkbox.setChecked(True)
+                self.library_mode_checkbox.setLocked(True, "Must be enabled when 'Let SLS handle ACF' is active.")
+            else:
+                self.library_mode_checkbox.setLocked(False)
+                if hasattr(self, "_saved_library_mode_pref"):
+                    self.library_mode_checkbox.setChecked(self._saved_library_mode_pref)
+
+        # 3. sls_config_management_checkbox (SLS Config Management)
+        if hasattr(self, "sls_config_management_checkbox") and self.sls_config_management_checkbox is not None:
+            if is_checked:
+                if not hasattr(self, "_saved_sls_config_mgmt_pref"):
+                    self._saved_sls_config_mgmt_pref = self.sls_config_management_checkbox.isChecked()
+                self.sls_config_management_checkbox.setChecked(True)
+                self.sls_config_management_checkbox.setLocked(True, "Must be enabled when 'Let SLS handle ACF' is active.")
+            else:
+                is_sls_detected = False
+                try:
+                    from ui.dialogs.settings_sls import get_sls_paths
+                    is_sls_detected = get_sls_paths()["detected"]
+                except Exception:
+                    pass
+                if sys.platform == "linux" and is_sls_detected:
+                    self.sls_config_management_checkbox.setChecked(True)
+                    self.sls_config_management_checkbox.setLocked(True, "Enabled because SLSsteam installation was detected.")
+                else:
+                    self.sls_config_management_checkbox.setLocked(False)
+                    if hasattr(self, "_saved_sls_config_mgmt_pref"):
+                        self.sls_config_management_checkbox.setChecked(self._saved_sls_config_mgmt_pref)
+
+        # 4. Write API: yes to config.yaml if checked
+        if is_checked:
+            try:
+                from utils.yaml_config_manager import get_user_config_path, update_yaml_boolean_value
+                config_path = get_user_config_path()
+                if config_path.exists():
+                    update_yaml_boolean_value(config_path, "API", True)
+            except Exception as e:
+                logger.warning(f"Failed to update API value to yes in config.yaml: {e}")
 
 
 
@@ -2389,37 +2559,8 @@ class SettingsDialog(QDialog):
 
     def _update_asshead_status_ui(self) -> None:
         """Updates the status display for ASShead."""
-        import utils.assfixer
-        status = utils.assfixer.boot_status
-        issues = utils.assfixer.boot_issues
-
-        if status == "optimal":
-            self.asshead_status_label.setText("Status: Config Optimal. All settings are clean and matches upstream.")
-            self.asshead_status_label.setStyleSheet("color: #44bb44;")
-        elif status == "needs_fix":
-            issues_summary = "\n".join(f"• {issue}" for issue in issues[:3])
-            if len(issues) > 3:
-                issues_summary += f"\n• ...and {len(issues) - 3} more issues."
-            self.asshead_status_label.setText(f"Status: Updates/Repairs needed.\n{issues_summary}")
-            self.asshead_status_label.setStyleSheet("color: #ffaa00;")
-        elif status == "no_config":
-            self.asshead_status_label.setText("Status: No config found. SLSsteam config.yaml does not exist.")
-            self.asshead_status_label.setStyleSheet("color: #cc4444;")
-        elif status == "checking":
-            self.asshead_status_label.setText("Status: Checking configuration status...")
-            self.asshead_status_label.setStyleSheet("color: #888888;")
-        elif status == "failed":
-            self.asshead_status_label.setText(f"Status: Failed to check upstream template.\nError: {issues[0] if issues else 'Unknown'}")
-            self.asshead_status_label.setStyleSheet("color: #cc4444;")
-        else:
-            self.asshead_status_label.setText("Status: Not checked.")
-            self.asshead_status_label.setStyleSheet("color: #888888;")
-
-        # Enable/disable restore backup button based on backup existence
-        from utils.assfixer import get_latest_backup_path, DEFAULT_CONFIG_PATH
-        if hasattr(self, "restore_backup_btn") and self.restore_backup_btn:
-            has_bak = get_latest_backup_path(DEFAULT_CONFIG_PATH) is not None
-            self.restore_backup_btn.setEnabled(has_bak)
+        if not hasattr(self, "asshead_status_label") or not self.asshead_status_label:
+            return
 
     def open_sls_config(self) -> None:
         """Open the SLSsteam config.yaml file."""

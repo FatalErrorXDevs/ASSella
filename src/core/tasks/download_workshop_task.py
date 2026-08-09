@@ -20,7 +20,7 @@ class DownloadWorkshopTask(QObject):
     progress = pyqtSignal(str)
     progress_percentage = pyqtSignal(int)
     completed = pyqtSignal()
-    error = pyqtSignal()
+    error = pyqtSignal(tuple)
 
     def __init__(self):
         super().__init__()
@@ -164,7 +164,7 @@ class DownloadWorkshopTask(QObject):
         dotnet_exe = get_dotnet_path()
         if not dotnet_exe:
             self.log("  ✗ dotnet runtime not found. Please install .NET 9 runtime.")
-            self.error.emit()
+            self.error.emit((RuntimeError, ".NET 9 runtime not found", None))
             return
 
         for idx, wid in enumerate(wids):
@@ -259,7 +259,7 @@ class DownloadWorkshopTask(QObject):
 
         if not self._is_running:
             self.log("\n  ✗ Download task cancelled by user.")
-            self.error.emit()
+            self.error.emit((RuntimeError, "Download task cancelled by user", None))
             return
 
         self.log(f"\n{'─' * 52}\n  All tasks finished.")

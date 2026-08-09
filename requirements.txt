@@ -1,0 +1,11 @@
+PyQt6>=6.4.0
+psutil>=5.9.0
+requests>=2.31.0
+zstandard>=0.21.0
+gevent>=23.9.0
+gevent-eventemitter>=2.1
+just_playback>=0.1.8
+tinytag>=2.2.1
+beautifulsoup4>=4.12.0
+git+https://github.com/solsticegamestudios/steam.git@1373e885f26bb636225443787f54d4082283e5f3
+git+https://github.com/solsticegamestudios/vdf.git@fb88ea7e38a85476743f5601b0c80d5715034623

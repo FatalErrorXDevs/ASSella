@@ -233,7 +233,7 @@ class CreditsDialog(QDialog):
             ("Morrenus",  "Steamless AIO / API"),
             ("gogovang",  "Workshop / General"),
             ("AceSLS",    "SLSteam API"),
-            ("YesYes",    "yes/yes"),
+            ("YesYes",    "EOS Proxy"),
         ]
 
         for cname, crole in contributors:

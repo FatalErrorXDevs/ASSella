@@ -38,7 +38,7 @@ class DownloadDepotsTask(QObject):
     progress_percentage = pyqtSignal(int)
     speed_update = pyqtSignal(str)
     completed = pyqtSignal()
-    error = pyqtSignal()
+    error = pyqtSignal(tuple)
 
     def __init__(self):
         super().__init__()
@@ -230,14 +230,14 @@ class DownloadDepotsTask(QObject):
             )
             self.progress.emit(error_msg)
             logger.critical(f"'{binary}' not found.")
-            self.error.emit()
+            self.error.emit((FileNotFoundError, f"'{binary}' not found", None))
             raise
 
         except (OSError, subprocess.SubprocessError) as e:
             self.progress.emit(f"An unexpected error occurred during download: {e}")
             logger.error(f"Download subprocess failed: {e}", exc_info=True)
             self.process = None
-            self.error.emit()
+            self.error.emit((type(e), str(e), None))
             raise
     def _read_process_output(self):
         """Reads process output in chunks, splitting on \\r and \\n for progress updates."""

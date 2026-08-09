@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,24 @@ SLSSTEAM_API_PIPE = "/tmp/SLSsteam.API"
 MAX_CONFIG_WAIT_SECONDS = 10
 MAX_ACF_VERIFY_SECONDS = 10
 
+# ---------------------------------------------------------------------------
+# Shutdown coordination
+# ---------------------------------------------------------------------------
+# Set this event to signal all background workers to exit immediately.
+# Call register_shutdown() from the application's teardown path.
+_shutdown_flag = threading.Event()
+
+# Registry of per-install cancel events: appid -> threading.Event
+# Lets uninstall_via_sls cancel a live retry worker for the same appid.
+_retry_cancel_flags: dict = {}
+_retry_lock = threading.Lock()
+
+
+def register_shutdown() -> None:
+    """Signal all SLS background workers to stop. Call this on app exit."""
+    _shutdown_flag.set()
+    logger.info("SLSsteam integration: shutdown signalled — all retry workers will stop")
+
 
 def _experimental_mode_enabled() -> bool:
     try:
@@ -46,14 +65,18 @@ def _experimental_mode_enabled() -> bool:
 
 
 def _is_slssteam_available() -> bool:
-    """Check if SLSsteam API pipe exists and Steam is running."""
+    """Check if SLSsteam API pipe exists (proxy for Steam + SLSsteam running)."""
     if sys.platform != "linux":
         return False
     return os.path.exists(SLSSTEAM_API_PIPE)
 
 
 def _slssteam_api_send(command: str) -> bool:
-    """Send a raw command to SLSsteam via the named pipe."""
+    """Send a raw command to SLSsteam via the named pipe.
+
+    Returns True on success.  Returns False (never raises) on any failure —
+    including the pipe being gone because Steam/SLSsteam closed mid-write.
+    """
     if not _is_slssteam_available():
         return False
     try:
@@ -62,13 +85,26 @@ def _slssteam_api_send(command: str) -> bool:
             f.flush()
         logger.info(f"SLSsteam API command sent: {command}")
         return True
-    except OSError:
-        logger.warning(f"SLSsteam API pipe write failed for: {command}")
+    except OSError as e:
+        # ENXIO / EPIPE = pipe exists on disk but reader (SLSsteam) has gone away.
+        # Log at warning level so it's visible but doesn't crash anything.
+        logger.warning(
+            f"SLSsteam API pipe write failed for '{command}': {e} "
+            "(Steam/SLSsteam may have closed — command will be retried or skipped)"
+        )
         return False
 
 
-def _poll_sls_log_for(pattern: str, timeout_seconds: int = MAX_CONFIG_WAIT_SECONDS, start_offset: int = 0) -> bool:
-    """Poll SLSsteam log for a regex pattern in NEW content only. Returns True if found."""
+def _poll_sls_log_for(
+    pattern: str,
+    timeout_seconds: int = MAX_CONFIG_WAIT_SECONDS,
+    start_offset: int = 0,
+) -> bool:
+    """Poll SLSsteam log for a regex pattern in NEW content only.
+
+    Returns True if found before deadline.
+    Exits early if the global shutdown flag is set.
+    """
     if not SLSSTEAM_LOG_PATH.exists():
         return False
 
@@ -76,6 +112,9 @@ def _poll_sls_log_for(pattern: str, timeout_seconds: int = MAX_CONFIG_WAIT_SECON
     deadline = time.time() + timeout_seconds
 
     while time.time() < deadline:
+        if _shutdown_flag.is_set():
+            logger.debug("_poll_sls_log_for: shutdown flag set — aborting poll")
+            return False
         try:
             current_size = SLSSTEAM_LOG_PATH.stat().st_size
             if current_size > start_offset:
@@ -117,8 +156,12 @@ def _remove_appid_from_config(appid: str) -> bool:
 
 def _wait_for_sls_license(appid: str, log_offset: int) -> bool:
     """Wait for SLSsteam to fully process config change AND unlock the license.
-    Must poll for AppLicensesChanged or Unlocked log lines, then wait briefly for
-    SLSsteam to propagate the license in Steam memory before API install is sent.
+
+    Polls ~/.SLSsteam.log for AppLicensesChanged or Unlocked lines, then
+    sleeps 1.5 s to let SLSsteam propagate the license into Steam's memory
+    before the pipe command is sent.
+
+    Returns True if the license event was confirmed in the log.
     """
     pattern = rf"(?:AppLicensesChanged callback invoked for {re.escape(str(appid))}|Unlocked {re.escape(str(appid))})"
     found = _poll_sls_log_for(
@@ -127,8 +170,11 @@ def _wait_for_sls_license(appid: str, log_offset: int) -> bool:
         start_offset=log_offset,
     )
     if found:
-        logger.info(f"SLSsteam license for {appid} confirmed via log — sleeping 1.5s for memory propagation")
-        time.sleep(1.5)
+        logger.info(
+            f"SLSsteam license for {appid} confirmed via log — sleeping 1.5s for memory propagation"
+        )
+        # Interruptible sleep: wake early on shutdown
+        _shutdown_flag.wait(timeout=1.5)
     else:
         logger.info(f"SLSsteam license for {appid} not confirmed via log — proceeding anyway")
     return found
@@ -173,33 +219,87 @@ def _verify_acf_created(appid: str, timeout: Optional[float] = None) -> bool:
     return False
 
 
-def _silent_background_retry_pipe(appid: str, library_index: int, max_retries: int = 12) -> None:
-    """Silent background worker thread to retry install pipe command if Steam was delayed."""
-    import threading
+def _silent_background_retry_pipe(
+    appid: str,
+    library_index: int,
+    max_retries: int = 12,
+) -> None:
+    """Start a daemon thread that retries the install pipe command if Steam was slow.
+
+    The worker stops as soon as any of the following is true:
+      • The ACF file appears on disk (success — no more retries needed).
+      • The per-install cancel event is set (uninstall_via_sls was called for this appid).
+      • The global shutdown flag is set (application is closing).
+      • SLSsteam pipe disappears (Steam closed mid-retry).
+      • max_retries iterations are exhausted.
+
+    Each retry waits 5 s between attempts (interruptible by the events above).
+    """
+    cancel_event = threading.Event()
+    with _retry_lock:
+        # Cancel any previous retry worker for this appid before starting a new one
+        old_event = _retry_cancel_flags.get(appid)
+        if old_event:
+            old_event.set()
+        _retry_cancel_flags[appid] = cancel_event
 
     def _retry_worker():
-        for i in range(max_retries):
-            time.sleep(5)
-            if _verify_acf_created(appid, timeout=1.0):
-                logger.info(f"Silent retry confirmed ACF manifest created for AppID {appid} on retry {i + 1}")
-                return
-            logger.info(f"Silent background retry ({i + 1}/{max_retries}) sending install|{appid}|{library_index}...")
-            _slssteam_api_send(f"install|{appid}|{library_index}")
+        try:
+            for i in range(max_retries):
+                # Interruptible 5-second wait — wakes on cancel or shutdown
+                cancelled = cancel_event.wait(timeout=5)
+                if cancelled or _shutdown_flag.is_set():
+                    logger.info(
+                        f"SLS retry worker for {appid}: "
+                        f"{'cancelled (uninstall called)' if cancelled else 'app shutdown'} — stopping"
+                    )
+                    return
 
-    t = threading.Thread(target=_retry_worker, daemon=True)
+                if _verify_acf_created(appid, timeout=1.0):
+                    logger.info(
+                        f"Silent retry: ACF confirmed for AppID {appid} on attempt {i + 1} — done"
+                    )
+                    return
+
+                if not _is_slssteam_available():
+                    logger.info(
+                        f"SLS retry worker for {appid}: SLSsteam pipe gone (Steam closed) — stopping"
+                    )
+                    return
+
+                logger.info(
+                    f"Silent background retry ({i + 1}/{max_retries}): "
+                    f"sending install|{appid}|{library_index}..."
+                )
+                _slssteam_api_send(f"install|{appid}|{library_index}")
+
+            logger.warning(
+                f"SLS retry worker for {appid}: exhausted {max_retries} retries without ACF confirmation"
+            )
+        finally:
+            # Clean up the registry entry so it doesn't leak
+            with _retry_lock:
+                if _retry_cancel_flags.get(appid) is cancel_event:
+                    del _retry_cancel_flags[appid]
+
+    t = threading.Thread(target=_retry_worker, daemon=True, name=f"SLSRetry-{appid}")
     t.start()
 
 
 def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> bool:
-    """
-    Register a game with Steam via SLSsteam.
+    """Register a game with Steam via SLSsteam.
 
     Writes appid to SLS config, waits for SLS to process,
     then sends install API command to Steam.
 
-    Returns True if the API call was sent successfully.
-    Does NOT fail if Steam is unavailable — config write alone is sufficient
-    for Steam to register the game on next launch.
+    Returns True if the operation completed (even partially — config write alone
+    is sufficient for Steam to register the game on next launch).
+    Never raises — all failure paths are logged and handled gracefully.
+
+    Fallback behaviour when Steam/SLSsteam is unavailable:
+      • AppID is still written to config.yaml so Steam processes it on next launch.
+      • Pipe failures are caught and logged — no crash, no exception propagated.
+      • metadata.json written by the caller is the authoritative library source.
     """
     if not _experimental_mode_enabled():
         logger.debug("SLSsteam experimental mode disabled — skipping install")
@@ -208,25 +308,38 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
     if not appid or appid in ("0", "N/A", "unknown"):
         return False
 
-    # 1. Write to config in-place
-    written = _write_appid_to_config(appid, game_name)
+    if _shutdown_flag.is_set():
+        logger.debug(f"install_via_sls: shutdown in progress — skipping for {appid}")
+        return False
+
+    # 1. Write to config in-place (always, even if Steam is closed)
+    try:
+        written = _write_appid_to_config(appid, game_name)
+    except Exception as e:
+        logger.error(f"install_via_sls: failed to write {appid} to SLS config: {e}")
+        written = False
+
     if not written:
         logger.info(f"AppID {appid} already in SLS config or write failed")
     else:
         logger.info(f"Wrote AppID {appid} to SLS config")
 
-    # 2. Check if SLSsteam is available
+    # 2. If SLSsteam/Steam is not available, stop here — config write is sufficient
     if not _is_slssteam_available():
         logger.info(
-            f"SLSsteam/Steam not available — AppID {appid} in config. "
-            "Steam will register on next launch."
+            f"SLSsteam/Steam not available — AppID {appid} recorded in config.yaml. "
+            "Steam will register the game on next launch."
         )
-        return True  # Config write alone is valid
+        return True  # Graceful: config write alone is valid
 
-    # 3. Wait for SLS to unlock license — only if newly written to config
+    # 3. Wait for SLS to unlock license — only if we freshly wrote this appid
     if written:
         log_offset = _get_sls_log_size()
         _wait_for_sls_license(appid, log_offset)
+
+    if _shutdown_flag.is_set():
+        logger.debug(f"install_via_sls: shutdown during license wait — skipping pipe for {appid}")
+        return True  # Config was written; that's enough
 
     # 4. Resolve the Steam library index for this install path
     library_index = 0
@@ -239,29 +352,38 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
         except Exception as e:
             logger.warning(f"Could not resolve library index, defaulting to 0: {e}")
 
-    # 5. Send install to Steam
+    # 5. Send install to Steam (failure is non-fatal)
     sent = _slssteam_api_send(f"install|{appid}|{library_index}")
     if not sent:
-        logger.warning(f"Failed to send install command for {appid}")
-        return True  # Config is still written
+        logger.warning(
+            f"install_via_sls: pipe send failed for {appid} — "
+            "config is written, Steam will handle it on next launch"
+        )
+        return True  # Config is still written; not a hard failure
 
-    # 6. Verify ACF (non-blocking). If delayed, launch silent background retry
+    # 6. Verify ACF creation. If delayed, launch cancellable background retry worker
     acf_created = _verify_acf_created(appid)
     if not acf_created:
-        logger.info(f"ACF creation delayed for {appid} — launching silent background retry worker...")
+        logger.info(
+            f"ACF creation delayed for {appid} — "
+            "launching cancellable background retry worker..."
+        )
         _silent_background_retry_pipe(appid, library_index)
 
     return True
 
 
 def uninstall_via_sls(appid: str) -> bool:
-    """
-    Unregister a game from Steam via SLSsteam.
+    """Unregister a game from Steam via SLSsteam.
 
     Sends uninstall API command to Steam to delete the ACF,
     then removes the appid from SLS config.
 
-    Returns True if both operations were attempted.
+    Also cancels any live install-retry worker for this appid so a
+    rapid install→uninstall sequence doesn't leave orphaned pipe commands.
+
+    Returns True if both operations were attempted without error.
+    Never raises — all failures are logged.
     """
     if not _experimental_mode_enabled():
         logger.debug("SLSsteam experimental mode disabled — skipping uninstall")
@@ -270,22 +392,37 @@ def uninstall_via_sls(appid: str) -> bool:
     if not appid or appid in ("0", "N/A", "unknown"):
         return False
 
+    # Cancel any live retry worker for this appid immediately
+    with _retry_lock:
+        cancel_event = _retry_cancel_flags.get(appid)
+    if cancel_event:
+        cancel_event.set()
+        logger.info(f"uninstall_via_sls: cancelled live retry worker for {appid}")
+
     success = True
 
-    # 1. Send uninstall to Steam first (before file deletion)
+    # 1. Send uninstall to Steam first (before file deletion so Steam sees the event)
     if _is_slssteam_available():
         sent = _slssteam_api_send(f"uninstall|{appid}")
         if not sent:
-            logger.warning(f"Failed to send SLS uninstall for {appid}")
+            logger.warning(
+                f"uninstall_via_sls: pipe send failed for {appid} — "
+                "ACF may need manual cleanup if Steam was running"
+            )
             success = False
     else:
         logger.info(
-            f"SLSsteam not available — AppID {appid} still in config. "
-            "Will unregister on next launch after manual config removal."
+            f"SLSsteam not available — {appid} removed from config.yaml. "
+            "Steam will unregister on next launch."
         )
 
-    # 2. Remove from config regardless
-    removed = _remove_appid_from_config(appid)
+    # 2. Remove from config regardless of pipe result
+    try:
+        removed = _remove_appid_from_config(appid)
+    except Exception as e:
+        logger.error(f"uninstall_via_sls: failed to remove {appid} from SLS config: {e}")
+        removed = False
+
     if not removed:
         logger.debug(f"AppID {appid} not found in SLS config (already removed?)")
     else:
@@ -295,9 +432,10 @@ def uninstall_via_sls(appid: str) -> bool:
 
 
 def patch_acf_via_sls(appid: str, library_path: str = "") -> bool:
-    """
-    Re-install an existing game via SLSsteam to fix a missing or stale ACF.
+    """Re-install an existing game via SLSsteam to fix a missing or stale ACF.
+
     Used by the 'Fix Manifest' feature in the library UI.
+    Returns False (does not raise) if SLSsteam is unavailable.
     """
     if not _experimental_mode_enabled():
         return False
@@ -306,7 +444,10 @@ def patch_acf_via_sls(appid: str, library_path: str = "") -> bool:
         return False
 
     if not _is_slssteam_available():
-        logger.warning(f"Cannot patch ACF for {appid} — SLSsteam not available")
+        logger.warning(
+            f"patch_acf_via_sls: SLSsteam not available for {appid} — "
+            "ensure Steam and SLSsteam are running, then try again"
+        )
         return False
 
     library_index = 0

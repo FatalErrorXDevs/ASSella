@@ -6,18 +6,20 @@ import subprocess
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QMessageBox,
-    QProgressDialog
+    QProgressDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView
 )
 
 from utils.image_fetcher import ImageFetcher
@@ -70,6 +72,33 @@ def _depot_is_macos(depot_data: dict) -> bool:
     return False
 
 
+def format_size(size_bytes):
+    if not size_bytes:
+        return "0.00 B"
+    try:
+        bytes_val = int(size_bytes)
+        if bytes_val <= 0:
+            return "0.00 B"
+        for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
+            if bytes_val < 1024.0:
+                return f"{bytes_val:.2f} {unit}"
+            bytes_val /= 1024.0
+        return f"{bytes_val:.2f} PiB"
+    except Exception:
+        return "Unknown"
+
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text, sort_value):
+        super().__init__(text)
+        self.sort_value = sort_value
+
+    def __lt__(self, other):
+        if isinstance(other, NumericTableWidgetItem):
+            return self.sort_value < other.sort_value
+        return super().__lt__(other)
+
+
 class DepotSelectionDialog(QDialog):
     def __init__(self, app_id, game_name, depots, header_url, parent=None, selected_depots=None):
         super().__init__(parent)
@@ -80,7 +109,7 @@ class DepotSelectionDialog(QDialog):
         self.header_url = header_url
         self.selected_depots = selected_depots
         self.selected_files = []
-        self.resize(485, 520)
+        self.resize(650, 520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 10)
         layout.setSpacing(10)
@@ -92,13 +121,55 @@ class DepotSelectionDialog(QDialog):
             from utils.settings import get_settings
             settings = get_settings()
             self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
+            self.accent_color = settings.value("accent_color", "#C06C84", type=str)
         except Exception:
             self._hide_macos = True
+            self.accent_color = "#C06C84"
 
-        self.header_label = QLabel("Loading header image...")
-        self.header_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.header_label.setFixedHeight(108)
-        layout.addWidget(self.header_label)
+        # Dynamically generate solid dark container color for selection background
+        from utils.color_utils import get_dark_container_color
+        sel_bg_hex = get_dark_container_color(self.accent_color)
+
+        # Parse hex to RGB
+        hex_c = self.accent_color.lstrip('#')
+        try:
+            accent_r = int(hex_c[0:2], 16)
+            accent_g = int(hex_c[2:4], 16)
+            accent_b = int(hex_c[4:6], 16)
+        except Exception:
+            accent_r, accent_g, accent_b = 192, 108, 132
+
+        # Header Layout
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(15, 10, 15, 10)
+        header_layout.setSpacing(15)
+
+        # Thumbnail Label
+        self.header_label = QLabel()
+        self.header_label.setFixedSize(120, 56)
+        self.header_label.setScaledContents(True)
+        self.header_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.04); border-radius: 6px;")
+        header_layout.addWidget(self.header_label)
+
+        # Title / Info Layout
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+
+        self.title_label = QLabel(self.game_name)
+        self.title_label.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF;")
+
+        self.subtitle_label = QLabel("Select depots and configurations to download")
+        self.subtitle_label.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.588);")
+
+        title_layout.addWidget(self.title_label)
+        title_layout.addWidget(self.subtitle_label)
+
+        header_layout.addLayout(title_layout)
+        header_layout.addStretch()
+
+        layout.addLayout(header_layout)
+        layout.addSpacing(5)
+
         self._fetch_header_image(app_id)
 
         # Load DLC-only mode state
@@ -114,8 +185,69 @@ class DepotSelectionDialog(QDialog):
         content_widget = QVBoxLayout()
         content_widget.setContentsMargins(10, 0, 10, 0)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.table_widget = QTableWidget()
+        self.table_widget.setColumnCount(3)
+        self.table_widget.setHorizontalHeaderLabels(["ID", "Configuration", "Size"])
+        self.table_widget.verticalHeader().setVisible(False)
+        self.table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table_widget.setShowGrid(False)
+        self.table_widget.setAlternatingRowColors(True)
+
+        self.table_widget.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.047);
+                border-radius: 8px;
+                gridline-color: transparent;
+                outline: 0;
+                color: #FFFFFF;
+            }}
+            QTableWidget::item {{
+                padding: 6px 10px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+            }}
+            QTableWidget::item:hover {{
+                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.047);
+            }}
+            QTableWidget::item:selected {{
+                background-color: {sel_bg_hex} !important;
+                color: #FFFFFF !important;
+            }}
+            QHeaderView::section {{
+                background-color: rgba(255, 255, 255, 0.031);
+                color: rgba(255, 255, 255, 0.235);
+                padding: 6px 10px;
+                border: none;
+                font-size: 8.5pt;
+                font-weight: bold;
+                text-transform: uppercase;
+            }}
+            QTableWidget::indicator, QTableView::indicator {{
+                width: 14px;
+                height: 14px;
+                background: transparent;
+                border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.47);
+                border-radius: 4px;
+            }}
+            QTableWidget::indicator:unchecked, QTableView::indicator:unchecked {{
+                background-color: transparent;
+            }}
+            QTableWidget::indicator:checked, QTableView::indicator:checked {{
+                background-color: {self.accent_color};
+                border: 1.5px solid {self.accent_color};
+            }}
+            QTableWidget::indicator:hover, QTableView::indicator:hover {{
+                border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 1.0);
+                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.078);
+            }}
+        """)
+
+        header = self.table_widget.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table_widget.setColumnWidth(0, 110)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
         def get_sort_key(depot_item):
             _depot_id, data = depot_item
@@ -174,6 +306,10 @@ class DepotSelectionDialog(QDialog):
         logger.debug("--- Depot Sort Finished ---")
 
         is_first_depot = True
+        row_idx = 0
+
+        # Set maximum possible row count, we will resize it dynamically
+        self.table_widget.setRowCount(len(sorted_depots))
 
         for depot_id, depot_data in sorted_depots:
             # Filter out macOS depots if setting is enabled
@@ -203,47 +339,84 @@ class DepotSelectionDialog(QDialog):
 
             if is_first_depot:
                 if is_generic_fallback:
-                    final_desc = f"{tags} {self.game_name}".strip()
+                    final_desc = f"{self.game_name}".strip()
                 else:
-                    final_desc = original_desc
+                    final_desc = base_desc
 
                 is_first_depot = False
             else:
                 if is_generic_fallback:
-                    final_desc = tags
+                    final_desc = ""
                 else:
-                    final_desc = original_desc
+                    final_desc = base_desc
 
+            # Clean DLC tags from final_desc
+            final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
+
+            # Generate dynamic OS tags
+            oslist = (depot_data.get("oslist") or "").lower()
+            os_tag = ""
+            if oslist == "windows":
+                os_tag = "[Windows]"
+            elif oslist == "linux":
+                os_tag = "[Linux]"
+            elif oslist in ("macos", "macosx"):
+                os_tag = "[macOS]"
+            elif "windows" in oslist and "linux" in oslist:
+                os_tag = "[Windows, Linux]"
+            elif "all" in oslist:
+                os_tag = "[All]"
+
+            display_tags = tags if tags else os_tag
+            if display_tags:
+                config_text = f"{display_tags}  {final_desc}"
+            else:
+                config_text = final_desc
+
+            size_str = ""
             if depot_data.get("size"):
                 try:
-                    size_gb = int(depot_data["size"]) / (1024**3)
-                    final_desc += f" <{size_gb:.2f} GB>"
+                    size_bytes = int(depot_data["size"])
+                    size_str = format_size(size_bytes)
                 except (ValueError, TypeError):
-                    pass
+                    size_str = "0.00 B"
 
-            item_text = f"{depot_id} - {final_desc}"
-
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, depot_id)
-            # Store the depot_data reference for platform selection
-            item.setData(Qt.ItemDataRole.UserRole + 1, depot_id)
-
+            # Use NumericTableWidgetItem for proper numeric sorting
+            id_val = int(depot_id) if depot_id.isdigit() else 0
+            id_item = NumericTableWidgetItem(depot_id, id_val)
+            id_item.setData(Qt.ItemDataRole.UserRole, depot_id)
+            id_item.setData(Qt.ItemDataRole.UserRole + 1, depot_id)
+ 
             if self.selected_depots is not None:
                 is_checked = depot_id in self.selected_depots
-                item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+                id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
             else:
-                item.setCheckState(Qt.CheckState.Unchecked)
-
-            # Removes ItemIsUserCheckable flag to disable internal checkbox handling, handled manually in self.on_depot_item_clicked
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
-            self.list_widget.addItem(item)
-
+                id_item.setCheckState(Qt.CheckState.Unchecked)
+ 
+            # Removes ItemIsUserCheckable flag to disable internal checkbox handling, handled manually in cell click
+            id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+             
+            config_item = QTableWidgetItem(config_text)
+            config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+             
+            raw_size = int(depot_data.get("size") or 0)
+            size_item = NumericTableWidgetItem(size_str, raw_size)
+            size_item.setFlags(size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+ 
+            self.table_widget.setItem(row_idx, 0, id_item)
+            self.table_widget.setItem(row_idx, 1, config_item)
+            self.table_widget.setItem(row_idx, 2, size_item)
+            row_idx += 1
+ 
+        self.table_widget.setRowCount(row_idx)
+        self.table_widget.setSortingEnabled(True)
+ 
         # Makes list widget update stylesheets for the items
         QApplication.processEvents()
-
-        content_widget.addWidget(self.list_widget)
-
-        self.list_widget.itemClicked.connect(self.on_depot_item_clicked)
+ 
+        content_widget.addWidget(self.table_widget)
+ 
+        self.table_widget.cellClicked.connect(self.on_depot_cell_clicked)
 
         # Platform + Select/Deselect buttons in a single row
         button_layout = QHBoxLayout()
@@ -311,53 +484,49 @@ class DepotSelectionDialog(QDialog):
 
         layout.addLayout(content_widget)
 
-    def on_depot_item_clicked(self, item):
-        modifiers = QApplication.keyboardModifiers()
-        current_row = self.list_widget.row(item)
+    def on_depot_cell_clicked(self, row, col):
+        id_item = self.table_widget.item(row, 0)
+        if id_item is None:
+            return
 
-        current_state = item.checkState()
+        modifiers = QApplication.keyboardModifiers()
+        current_state = id_item.checkState()
         new_state = (
             Qt.CheckState.Unchecked
             if current_state == Qt.CheckState.Checked
             else Qt.CheckState.Checked
         )
 
+        # Toggle the checkbox in the first column
+        id_item.setCheckState(new_state)
+
         if modifiers == Qt.KeyboardModifier.ShiftModifier:
             if self.anchor_row == -1:
-                item.setCheckState(new_state)
-                self.anchor_row = current_row
+                self.anchor_row = row
             else:
-                try:
-                    anchor_item = self.list_widget.item(self.anchor_row)
-                    if anchor_item is None:
-                        raise RuntimeError("Anchor item is None")
-                    target_state = anchor_item.checkState()
-                except Exception as e:
-                    logger.warning(f"Could not find anchor item for shift-click: {e}")
-                    target_state = new_state
+                anchor_item = self.table_widget.item(self.anchor_row, 0)
+                target_state = anchor_item.checkState() if anchor_item else new_state
 
-                start_row = min(self.anchor_row, current_row)
-                end_row = max(self.anchor_row, current_row)
+                start_row = min(self.anchor_row, row)
+                end_row = max(self.anchor_row, row)
 
-                self.list_widget.blockSignals(True)
-                for i in range(start_row, end_row + 1):
-                    row_item = self.list_widget.item(i)
-                    if row_item is not None:
-                        row_item.setCheckState(target_state)
-                self.list_widget.blockSignals(False)
-
+                self.table_widget.blockSignals(True)
+                for r in range(start_row, end_row + 1):
+                    r_item = self.table_widget.item(r, 0)
+                    if r_item is not None:
+                        r_item.setCheckState(target_state)
+                self.table_widget.blockSignals(False)
         else:
-            item.setCheckState(new_state)
-            self.anchor_row = current_row
+            self.anchor_row = row
 
     def _toggle_all_checkboxes(self, check=True):
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked
-        self.list_widget.blockSignals(True)
-        for i in range(self.list_widget.count()):
-            row_item = self.list_widget.item(i)
-            if row_item is not None:
-                row_item.setCheckState(state)
-        self.list_widget.blockSignals(False)
+        self.table_widget.blockSignals(True)
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is not None:
+                id_item.setCheckState(state)
+        self.table_widget.blockSignals(False)
 
         self.anchor_row = -1
 
@@ -374,18 +543,18 @@ class DepotSelectionDialog(QDialog):
                 has_explicit_platform_depot = True
                 break
 
-        self.list_widget.blockSignals(True)
-        for i in range(self.list_widget.count()):
-            row_item = self.list_widget.item(i)
-            if row_item is None:
+        self.table_widget.blockSignals(True)
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is None:
                 continue
-            depot_id = row_item.data(Qt.ItemDataRole.UserRole)
+            depot_id = id_item.data(Qt.ItemDataRole.UserRole)
             depot_data = self.depots.get(depot_id, {})
             if has_explicit_platform_depot and _depot_matches_platform(depot_data, platform):
-                row_item.setCheckState(Qt.CheckState.Checked)
+                id_item.setCheckState(Qt.CheckState.Checked)
             else:
-                row_item.setCheckState(Qt.CheckState.Unchecked)
-        self.list_widget.blockSignals(False)
+                id_item.setCheckState(Qt.CheckState.Unchecked)
+        self.table_widget.blockSignals(False)
         self.anchor_row = -1
 
     def _fetch_header_image(self, app_id):
@@ -456,18 +625,22 @@ class DepotSelectionDialog(QDialog):
             self._show_no_image()
 
     def _apply_header_pixmap(self, pixmap: QPixmap) -> None:
-        # Scale to full dialog width (485px), height auto (Steam header is ~2.14:1 ratio = ~227px height)
-        scaled = pixmap.scaledToWidth(
-            self.width(), Qt.TransformationMode.SmoothTransformation
+        scaled = pixmap.scaled(
+            120, 56, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation
         )
         self.header_label.setPixmap(scaled)
-        self.header_label.setFixedHeight(scaled.height())
-        self.header_label.setStyleSheet("")
+        self.header_label.setStyleSheet("border-radius: 6px;")
 
     def _show_no_image(self):
         """Show fallback text when image is not available."""
-        self.header_label.setText("Header image not available.")
-        self.header_label.setStyleSheet("")
+        self.header_label.setText("No Image")
+        self.header_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.header_label.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 0.039); "
+            "color: rgba(255, 255, 255, 0.314); "
+            "font-size: 8pt; "
+            "border-radius: 6px;"
+        )
 
     def _cleanup_fetcher(self, _data: bytes) -> None:
         if hasattr(self, "fetcher") and self.fetcher is not None:
@@ -481,12 +654,12 @@ class DepotSelectionDialog(QDialog):
 
     def get_selected_depots(self):
         selected = []
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item is None:
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is None:
                 continue
-            if item.checkState() == Qt.CheckState.Checked:
-                selected.append(item.data(Qt.ItemDataRole.UserRole))
+            if id_item.checkState() == Qt.CheckState.Checked:
+                selected.append(id_item.data(Qt.ItemDataRole.UserRole))
         return selected
 
     def get_selected_files(self):
@@ -496,32 +669,35 @@ class DepotSelectionDialog(QDialog):
     def _refresh_dlc_only_style(self) -> None:
         """Update the DLC Only button style to reflect its on/off state."""
         active = self._dlc_only_btn.isChecked()
+        from utils.color_utils import get_best_foreground_color
         if active:
-            # Inverted / lit-up: background = accent text colour, text = dark
-            self._dlc_only_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: #c8e6ff;"
-                "  color: #0a1a2e;"
-                "  border: 1px solid #4a90d9;"
-                "  border-radius: 4px;"
-                "  padding: 4px 10px;"
-                "  font-weight: bold;"
-                "}"
-            )
+            # Active state: Solid accent background with high-contrast text color
+            text_hex = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
+            self._dlc_only_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.accent_color} !important;
+                    color: {text_hex} !important;
+                    border: 1px solid {self.accent_color} !important;
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-weight: bold;
+                }}
+            """)
         else:
-            self._dlc_only_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: transparent;"
-                "  color: rgba(255,255,255,140);"
-                "  border: 1px solid rgba(255,255,255,40);"
-                "  border-radius: 4px;"
-                "  padding: 4px 10px;"
-                "}"
-                "QPushButton:hover {"
-                "  border-color: #4a90d9;"
-                "  color: #4a90d9;"
-                "}"
-            )
+            # Inverted / outline style: Transparent background, accent hover
+            self._dlc_only_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.6);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                }}
+                QPushButton:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+            """)
 
     def _on_dlc_only_toggled(self) -> None:
         """Toggle DLC Only mode and persist the setting."""
@@ -537,10 +713,10 @@ class DepotSelectionDialog(QDialog):
     def _on_select_files_clicked(self):
         # 1. Get chosen depots
         chosen_depots = []
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                depot_id = str(item.data(Qt.ItemDataRole.UserRole))
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is not None and id_item.checkState() == Qt.CheckState.Checked:
+                depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
                 chosen_depots.append(depot_id)
 
         if not chosen_depots:

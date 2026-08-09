@@ -124,7 +124,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
     global _shared_client
     try:
         client = get_shared_client()
-    except Exception as e:
+    except BaseException as e:
         logger.error(f"Failed to get or connect shared client: {e}")
         _shared_client = None
         return {}
@@ -258,7 +258,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             return api_data
         else:
             logger.warning("steam.client fetch returned no meaningful data.")
-    except Exception as e:
+    except BaseException as e:
         logger.error(
             f"An unexpected error occurred in _fetch_with_steam_client: {e}",
             exc_info=True,
@@ -284,7 +284,7 @@ def find_branch_for_buildid(appid: str, buildid: str) -> Optional[str]:
                 if isinstance(b_info, dict) and str(b_info.get("buildid")) == str(buildid):
                     logger.info(f"[SteamAPI] Steam PICS matched buildid {buildid} -> branch '{b_name}' for AppID {appid}")
                     return b_name
-    except Exception as e:
+    except BaseException as e:
         logger.debug(f"[SteamAPI] Failed to lookup branch for buildid {buildid}: {e}")
     return None
 
@@ -711,7 +711,7 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
 
         _branch_cache[appid] = branches
         return branches
-    except Exception as e:
+    except BaseException as e:
         logger.error(f"Failed to fetch branches for AppID {appid}: {e}")
         return {"public": {"buildid": ""}}
 

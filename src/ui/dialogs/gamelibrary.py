@@ -697,18 +697,18 @@ class GameLibraryDialog(QDialog):
             }}
             QListWidget::item {{ 
                 background-color: rgba(255, 255, 255, 0.03); 
-                border: 1px solid rgba(255, 255, 255, 0.08); 
-                border-radius: 12px;
-                margin: 6px 0px;
+                border: 1px solid transparent; 
+                border-radius: 10px;
+                margin: 2px 0px;
                 color: #FFFFFF;
             }}
             QListWidget::item:hover {{ 
-                background-color: rgba(255, 255, 255, 0.07); 
-                border-color: rgba(255, 255, 255, 0.16); 
+                background-color: rgba(255, 255, 255, 0.08); 
+                border: 1px solid rgba(255, 255, 255, 0.14); 
             }}
             QListWidget::item:selected {{ 
-                background-color: rgba(255, 255, 255, 0.12); 
-                border-color: {self.accent_color}; 
+                background-color: rgba(255, 255, 255, 0.14); 
+                border: 1px solid {self.accent_color}; 
             }}
             
             QLabel {{ color: rgba(255, 255, 255, 0.85); }}
@@ -741,27 +741,49 @@ class GameLibraryDialog(QDialog):
             self.selection_fab.move(x, y)
             self.selection_fab.raise_()
 
+            # Align the animated FAB menu container above the selection FAB
+            if hasattr(self, "fab_menu_container") and self.fab_menu_container:
+                self.fab_menu_container.adjustSize()
+                mx = x + self.selection_fab.width() - self.fab_menu_container.width()
+                my = y - self.fab_menu_container.height() - 10
+                self.fab_menu_container.move(mx, my)
+                self.fab_menu_container.raise_()
+
     def _show_fab_menu(self):
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtCore import QPoint
-        
-        menu = QMenu(self)
-        menu.setStyleSheet(self.styleSheet())
-        
-        act_update = menu.addAction("Update Selected")
-        act_uninstall = menu.addAction("Uninstall Selected")
-        
-        act_placeholder = menu.addAction("Placeholder Option")
-        act_placeholder.setEnabled(False)
-        
-        # Position menu above the FAB
-        pos = self.selection_fab.mapToGlobal(QPoint(0, -menu.sizeHint().height()))
-        selected = menu.exec(pos)
-        
-        if selected == act_update:
-            self._on_queue_selected()
-        elif selected == act_uninstall:
-            self._on_uninstall_selected()
+        is_visible = self.fab_menu_container.isVisible()
+        if not is_visible:
+            self.fab_menu_container.setVisible(True)
+            self._position_selection_fab()
+
+            # Material Design 3 menu entry fade-in animation
+            from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
+            from PyQt6.QtWidgets import QGraphicsOpacityEffect
+            op = QGraphicsOpacityEffect(self.fab_menu_container)
+            self.fab_menu_container.setGraphicsEffect(op)
+            self.anim = QPropertyAnimation(op, b"opacity")
+            self.anim.setDuration(150)
+            self.anim.setStartValue(0.0)
+            self.anim.setEndValue(1.0)
+            self.anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+            self.anim.start()
+
+            self.selection_fab.setText("✕  Close")
+        else:
+            self._close_fab_menu()
+
+    def _close_fab_menu(self):
+        if hasattr(self, "fab_menu_container") and self.fab_menu_container.isVisible():
+            self.fab_menu_container.setVisible(False)
+            count = len(self._selected_appids)
+            self.selection_fab.setText(f"Actions ({count})  ▼" if count else "Actions  ▼")
+
+    def _on_update_action_clicked(self):
+        self._close_fab_menu()
+        self._on_queue_selected()
+
+    def _on_uninstall_action_clicked(self):
+        self._close_fab_menu()
+        self._on_uninstall_selected()
 
     def _on_uninstall_selected(self) -> None:
         """Batch uninstall all selected games."""
@@ -1056,6 +1078,73 @@ class GameLibraryDialog(QDialog):
         shadow.setOffset(0, 4)
         self.selection_fab.setGraphicsEffect(shadow)
 
+        # Setup custom Material Floating Action Button Menu container
+        self.fab_menu_container = QWidget(self)
+        self.fab_menu_container.setVisible(False)
+        self.fab_menu_container.setStyleSheet("background: transparent;")
+        
+        menu_layout = QVBoxLayout(self.fab_menu_container)
+        menu_layout.setContentsMargins(0, 0, 0, 0)
+        menu_layout.setSpacing(8)
+        
+        # Action 1: Update Selected
+        row_update = QHBoxLayout()
+        row_update.setSpacing(8)
+        lbl_update = QLabel("Update Selected")
+        lbl_update.setStyleSheet("background-color: #1a1a20; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; padding: 4px 8px; color: #FFFFFF; font-size: 8.5pt;")
+        btn_update = QPushButton("↻")
+        btn_update.setFixedSize(32, 32)
+        btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_update.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                border: none;
+                border-radius: 16px;
+                font-size: 11pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+        """)
+        btn_update.clicked.connect(self._on_update_action_clicked)
+        row_update.addWidget(lbl_update)
+        row_update.addWidget(btn_update)
+        menu_layout.addLayout(row_update)
+        
+        # Action 2: Uninstall Selected
+        row_uninstall = QHBoxLayout()
+        row_uninstall.setSpacing(8)
+        lbl_uninstall = QLabel("Uninstall Selected")
+        lbl_uninstall.setStyleSheet("background-color: #1a1a20; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; padding: 4px 8px; color: #FFFFFF; font-size: 8.5pt;")
+        btn_uninstall = QPushButton("🗑")
+        btn_uninstall.setFixedSize(32, 32)
+        btn_uninstall.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        from utils.color_utils import get_semantic_colors
+        sem_colors = get_semantic_colors(self.accent_color)
+        err_color = sem_colors["error"]
+        
+        btn_uninstall.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {err_color};
+                color: #FFFFFF;
+                border: none;
+                border-radius: 16px;
+                font-size: 10pt;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: {err_color};
+            }}
+        """)
+        btn_uninstall.clicked.connect(self._on_uninstall_action_clicked)
+        row_uninstall.addWidget(lbl_uninstall)
+        row_uninstall.addWidget(btn_uninstall)
+        menu_layout.addLayout(row_uninstall)
+
         # --- Status Footer ---
         self.info_label = QLabel("Found 0 installed Steam games")
         layout.addWidget(self.info_label)
@@ -1247,15 +1336,19 @@ class GameLibraryDialog(QDialog):
             }}
             QListWidget::item {{
                 background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                border: 1px solid transparent;
                 border-radius: 8px;
-                margin: 4px 0px;
+                margin: 2px 0px;
                 padding: 10px;
                 color: #FFFFFF;
             }}
-            QListWidget::item:selected {{
+            QListWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.08);
-                border-color: {self.accent_color};
+                border: 1px solid rgba(255, 255, 255, 0.14);
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(255, 255, 255, 0.14);
+                border: 1px solid {self.accent_color};
             }}
             """
         )
@@ -2610,6 +2703,11 @@ class GameLibraryDialog(QDialog):
                         logger.info("User aborted task due to post-download manifest mismatch")
                         if hasattr(self, "_active_fetches"):
                             self._active_fetches.discard(appid)
+                        if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
+                            dialog.validate_btn.set_loading(False)
+                            dialog.validate_btn.setEnabled(True)
+                            if hasattr(dialog, "_update_validate_button_state"):
+                                dialog._update_validate_button_state()
                         return
 
         if parsed_data and parsed_data.get("depots"):

@@ -280,10 +280,16 @@ class TaskManager(QObject):
         )
         depots = game_data.get("depots") or {}
         if auto_skip_single_choice and len(depots) == 1:
-            selected_depots = list(depots.keys())
-            if self.game_data:
-                self.game_data["selected_depots_list"] = selected_depots
-            self._start_download_with_destination(selected_depots)
+            from ui.dialogs.fetchmanifest import SingleDepotTimerDialog
+            from PyQt6.QtWidgets import QDialog
+            dlg = SingleDepotTimerDialog(self.main_window, "Single Depot Option", "Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                selected_depots = list(depots.keys())
+                if self.game_data:
+                    self.game_data["selected_depots_list"] = selected_depots
+                self._start_download_with_destination(selected_depots)
+            else:
+                self.job_finished()
             return
 
         self.main_window.ui_state.depot_dialog = DepotSelectionDialog(
@@ -1025,26 +1031,45 @@ class TaskManager(QObject):
         except Exception as e:
             logger.error(f"Failed to write metadata JSON file: {e}")
 
-        # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively
+        # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively.
+        #    Exception: pinned/older builds must use the fallback ACF writer so the pinned buildid
+        #    is preserved — the SLS pipe triggers Steam to fetch the latest PICS data, which would
+        #    overwrite the pinned buildid and potentially queue an unwanted auto-update.
         try:
             from utils.slssteam_integration import install_via_sls, _experimental_mode_enabled
             if _experimental_mode_enabled():
-                logger.info("ACF-Independent Mode is active. Delegating manifest creation to Steam natively.")
-                job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
-                if job_type == "verify":
-                    logger.info("Skipping SLS install API call for verify job — ACF already exists.")
-                    return
+                is_pinned = False
                 if appid and appid not in ("0", "N/A", "unknown"):
-                    install_via_sls(
-                        appid=str(appid),
-                        game_name=self.game_data.get("game_name", ""),
-                        library_path=self.current_dest_path or "",
+                    try:
+                        from utils.settings import get_settings as _gs
+                        is_pinned = _gs().value(f"pin_build/{appid}", False, type=bool)
+                    except Exception:
+                        pass
+
+                if is_pinned:
+                    logger.info(
+                        f"ACF-Independent Mode active but build is pinned for {appid} — "
+                        "using fallback ACF writer to preserve pinned buildid"
                     )
-                return
+                    # Fall through to step 3 (write_acf_file with pinned buildid)
+                else:
+                    logger.info("ACF-Independent Mode is active. Delegating manifest creation to Steam natively.")
+                    job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
+                    if job_type == "verify":
+                        logger.info("Skipping SLS install API call for verify job — ACF already exists.")
+                        return
+                    if appid and appid not in ("0", "N/A", "unknown"):
+                        install_via_sls(
+                            appid=str(appid),
+                            game_name=self.game_data.get("game_name", ""),
+                            library_path=self.current_dest_path or "",
+                        )
+                    return
         except Exception as e:
             logger.error(f"Error in SLSsteam install flow for {appid}: {e}")
 
         # 3. Fallback: Write standard Steam .acf manifest file when experimental mode is disabled
+        #    or when the build is pinned (to lock the buildid/InstalledDepots).
         if appid:
             from utils.dlc_helpers import is_dlc_only_mode
             is_dlc_only = is_dlc_only_mode(str(appid))

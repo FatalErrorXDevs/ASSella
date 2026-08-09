@@ -3,7 +3,7 @@ import platform
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QIntValidator, QPalette, QDesktopServices, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
@@ -85,52 +85,57 @@ class SwitchToggle(QWidget):
 class CenteredComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        view = QListView(self)
-        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        view.setItemDelegate(QStyledItemDelegate(view))
-        view.setStyleSheet("""
-            QListView {
-                background-color: #16161a;
-                border: 1px solid rgba(255, 255, 255, 30);
-                border-radius: 4px;
-                padding: 6px;
+        from PyQt6.QtWidgets import QStyledItemDelegate
+        
+        class CenterDelegate(QStyledItemDelegate):
+            def initStyleOption(self, option, index):
+                super().initStyleOption(option, index)
+                option.displayAlignment = Qt.AlignmentFlag.AlignCenter
+
+        self.setItemDelegate(CenterDelegate(self))
+        
+        ac = getattr(parent, "accent_color", "#a1c9fd") if parent else "#a1c9fd"
+        from utils.color_utils import get_dark_container_color
+        sel_bg_hex = get_dark_container_color(ac)
+
+        self.setStyleSheet(f"""
+            QComboBox {{
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                color: #FFFFFF;
+                padding: 3px 24px 3px 10px;
+                font-size: 9.5pt;
+            }}
+            QComboBox:hover {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.15);
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #1b1b1f;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                selection-background-color: {sel_bg_hex};
+                selection-color: #FFFFFF;
                 outline: 0px;
-            }
-            QListView::item {
+                padding: 4px;
+            }}
+            QComboBox QAbstractItemView::item {{
                 min-height: 28px;
-                padding: 6px 12px;
+                padding: 4px 12px;
                 color: #E0E0E0;
-                border-radius: 3px;
-            }
-            QListView::item:hover {
-                background-color: rgba(192, 108, 132, 0.6);
-                color: #FFFFFF;
-            }
-            QListView::item:selected {
-                background-color: rgba(255, 255, 255, 0.15);
-                color: #FFFFFF;
-                font-weight: bold;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: rgba(0, 0, 0, 40);
-                width: 8px;
-                margin: 2px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.3);
-                min-height: 20px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(255, 255, 255, 0.5);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
+            }}
+            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
+                background-color: {sel_bg_hex} !important;
+                color: #FFFFFF !important;
+            }}
         """)
-        self.setView(view)
 
     def paintEvent(self, event):
         p = QStylePainter(self)
@@ -186,6 +191,85 @@ class HeroBanner(QWidget):
 #  Main dialog
 # ──────────────────────────────────────────────────────────
 
+class MaterialTile(QPushButton):
+    """A premium Material You quick-settings-like tile button."""
+    def __init__(self, title, subtext, parent=None, is_toggle=True, icon_char=None):
+        super().__init__(parent)
+        self.setCheckable(is_toggle)
+        self.setFixedHeight(44)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.title = title
+        self.subtext = subtext
+        self.icon_char = icon_char
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(4)
+        
+        # Optional leading icon
+        if icon_char:
+            self.icon_lbl = QLabel(icon_char)
+            self.icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self.icon_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; background: transparent;")
+            layout.addWidget(self.icon_lbl)
+            
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(1)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
+        
+        self.sub_lbl = QLabel(subtext)
+        self.sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
+        
+        text_layout.addWidget(self.title_lbl)
+        text_layout.addWidget(self.sub_lbl)
+        layout.addLayout(text_layout, 1)
+        
+    def update_state(self, checked, accent_color, active_sub="Active", inactive_sub="Inactive"):
+        from utils.color_utils import get_best_foreground_color
+        text_color = get_best_foreground_color(accent_color, dark_color="#121214", light_color="#FFFFFF")
+        
+        if checked:
+            self.setChecked(True)
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {accent_color};
+                    border: none;
+                    border-radius: 8px;
+                }}
+            """)
+            self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
+            self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
+            self.sub_lbl.setText(active_sub)
+            if hasattr(self, "icon_lbl"):
+                self.icon_lbl.setStyleSheet(f"font-size: 12pt; font-weight: bold; color: {text_color}; background: transparent;")
+        else:
+            self.setChecked(False)
+            self.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.05);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.10);
+                    border-color: rgba(255, 255, 255, 0.15);
+                }
+            """)
+            self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
+            self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
+            self.sub_lbl.setText(inactive_sub)
+            if hasattr(self, "icon_lbl"):
+                self.icon_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; color: rgba(255, 255, 255, 0.7); background: transparent;")
+
+
 class GameDetailsDialogV2(QDialog):
     branches_loaded = pyqtSignal(dict)
 
@@ -221,6 +305,8 @@ class GameDetailsDialogV2(QDialog):
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
 
+        self._scan_workshop_mods_async()
+
     def _on_main_progress_changed(self, value):
         try:
             main_win = self.parent_window.main_window if hasattr(self.parent_window, "main_window") else None
@@ -235,6 +321,8 @@ class GameDetailsDialogV2(QDialog):
     def _apply_stylesheet(self):
         ac = self.accent_color
         bg = self.background_color
+        from utils.color_utils import get_dark_container_color
+        sel_bg_hex = get_dark_container_color(ac)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {bg};
@@ -264,47 +352,48 @@ class GameDetailsDialogV2(QDialog):
             }}
             QPushButton:disabled {{
                 background-color: rgba(255, 255, 255, 0.02);
-                color: rgba(255, 255, 255, 25);
+                color: rgba(255, 255, 255, 0.098);
             }}
             QLineEdit {{
-                background-color: rgba(0, 0, 0, 50);
+                background-color: rgba(0, 0, 0, 0.196);
                 color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 15);
+                border: 1px solid rgba(255, 255, 255, 0.059);
                 border-radius: 4px;
                 padding: 4px 8px;
                 font-size: 9.5pt;
             }}
             QLineEdit:focus {{ border-color: {ac}; }}
             QLineEdit:disabled {{
-                color: rgba(255, 255, 255, 30);
+                color: rgba(255, 255, 255, 0.118);
                 border-color: rgba(255, 255, 255, 8);
             }}
             QComboBox {{
-                background-color: rgba(0, 0, 0, 50);
+                background-color: rgba(0, 0, 0, 0.196);
                 color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 15);
-                border-radius: 4px;
+                border: 1px solid rgba(255, 255, 255, 0.059);
+                border-radius: 6px;
                 padding: 3px 8px;
                 font-size: 9.5pt;
             }}
             QComboBox::drop-down {{ border: none; width: 18px; }}
             QComboBox QAbstractItemView {{
-                background-color: #1a1a20;
-                border: 1px solid rgba(255, 255, 255, 25);
-                selection-background-color: {ac};
+                background-color: #1b1b1f;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                selection-background-color: {sel_bg_hex};
                 selection-color: #FFFFFF;
                 font-size: 9.5pt;
                 outline: 0px;
-                padding: 2px;
+                padding: 4px;
             }}
             QComboBox QAbstractItemView::item {{
-                min-height: 24px;
-                padding: 4px 8px;
-                color: #FFFFFF;
+                min-height: 28px;
+                padding: 4px 12px;
+                color: #E0E0E0;
             }}
             QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-                background-color: {ac};
-                color: #FFFFFF;
+                background-color: {sel_bg_hex} !important;
+                color: #FFFFFF !important;
             }}
             QCheckBox {{
                 color: #FFFFFF;
@@ -313,9 +402,9 @@ class GameDetailsDialogV2(QDialog):
             }}
             QCheckBox::indicator {{
                 width: 14px; height: 14px;
-                border: 1px solid rgba(255, 255, 255, 20);
+                border: 1px solid rgba(255, 255, 255, 0.078);
                 border-radius: 3px;
-                background: rgba(0, 0, 0, 40);
+                background: rgba(0, 0, 0, 0.157);
             }}
             QCheckBox::indicator:checked {{
                 background-color: {ac};
@@ -324,18 +413,18 @@ class GameDetailsDialogV2(QDialog):
             QScrollArea {{ border: none; background: transparent; }}
             QScrollBar:vertical {{
                 border: none;
-                background: rgba(0, 0, 0, 15);
+                background: rgba(0, 0, 0, 0.059);
                 width: 4px;
                 margin: 0px;
                 border-radius: 2px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(255, 255, 255, 35);
+                background: rgba(255, 255, 255, 0.137);
                 min-height: 20px;
                 border-radius: 2px;
             }}
             QScrollBar::handle:vertical:hover {{
-                background: rgba(255, 255, 255, 65);
+                background: rgba(255, 255, 255, 0.255);
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
@@ -358,8 +447,8 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_frame = QFrame()
         tab_bar_frame.setStyleSheet(f"""
             QFrame {{
-                background-color: rgba(0, 0, 0, 20);
-                border-bottom: 1px solid rgba(255, 255, 255, 10);
+                background-color: rgba(0, 0, 0, 0.078);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.039);
             }}
         """)
         tab_bar_layout = QHBoxLayout(tab_bar_frame)
@@ -387,7 +476,7 @@ class GameDetailsDialogV2(QDialog):
             QPushButton {{
                 border: none; border-radius: 0;
                 padding: 0 10px; font-size: 9.5pt;
-                color: rgba(255, 255, 255, 60);
+                color: rgba(255, 255, 255, 0.6);
             }}
             QPushButton:hover {{ color: {self.accent_color}; }}
         """)
@@ -406,6 +495,7 @@ class GameDetailsDialogV2(QDialog):
         root.addWidget(self.stacked, 1)
 
         self._switch_tab(0)
+        self._init_slsonline_logic()
 
     def _switch_tab(self, index):
         self.stacked.setCurrentIndex(index)
@@ -428,7 +518,7 @@ class GameDetailsDialogV2(QDialog):
                     QPushButton {{
                         border: none; border-radius: 0;
                         padding: 0px 16px; font-size: 9.5pt;
-                        color: rgba(255, 255, 255, 50);
+                        color: rgba(255, 255, 255, 0.6);
                     }}
                     QPushButton:hover {{ color: {self.accent_color}; }}
                 """)
@@ -486,7 +576,7 @@ class GameDetailsDialogV2(QDialog):
 
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
         self.appid_lbl.setStyleSheet(
-            "font-size: 8.5pt; color: rgba(255, 255, 255, 180); background: transparent; font-weight: bold;")
+            "font-size: 8.5pt; color: rgba(255, 255, 255, 0.706); background: transparent; font-weight: bold;")
         left_col.addWidget(self.appid_lbl)
 
         row1_layout.addLayout(left_col, 1)
@@ -576,12 +666,9 @@ class GameDetailsDialogV2(QDialog):
         self._proton_badge_lbl.hide()
         self._ratings_row.addWidget(self._denuvo_badge_lbl)
         self._ratings_row.addWidget(self._proton_badge_lbl)
-        self._ratings_row.addStretch()
-        name_col.addLayout(self._ratings_row)
-
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
         self.appid_lbl.setStyleSheet(
-            "font-size: 8pt; color: rgba(255, 255, 255, 60); background: transparent;")
+            "font-size: 8pt; color: rgba(255, 255, 255, 0.235); background: transparent;")
         name_col.addWidget(self.appid_lbl)
         name_col.addStretch()
         banner_layout.addLayout(name_col)
@@ -596,7 +683,7 @@ class GameDetailsDialogV2(QDialog):
     def _thin_line(self):
         f = QFrame()
         f.setFrameShape(QFrame.Shape.HLine)
-        f.setStyleSheet("background: rgba(255, 255, 255, 8); border: none; max-height: 1px;")
+        f.setStyleSheet("background: rgba(255, 255, 255, 0.031); border: none; max-height: 1px;")
         return f
 
     def _section_title(self, text):
@@ -613,9 +700,6 @@ class GameDetailsDialogV2(QDialog):
             b.setToolTip(tooltip)
         return b
 
-    # ──────────────────────────────────────────
-    #  TAB 1 — Info
-    # ──────────────────────────────────────────
     def _init_info_tab(self):
         inner = QWidget()
         inner.setStyleSheet("background: transparent;")
@@ -629,110 +713,6 @@ class GameDetailsDialogV2(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.uninstall_scroll = scroll  # for auto-scroll when uninstall panel opens
 
-        # ── Status Pill / Banner ─────────────────────────────────
-        self.status_btn = QPushButton()
-        self.status_btn.setFixedHeight(26)
-        self.status_btn.clicked.connect(self._on_status_btn_clicked)
-        lay.addWidget(self.status_btn)
-        lay.addSpacing(12)
-
-        # ── Stats Grid (hidden in v2 hero — stats are inline) ───
-        if not self.USE_V2_HERO:
-            stats_widget = QWidget()
-            stats_grid = QGridLayout(stats_widget)
-            stats_grid.setContentsMargins(0, 0, 0, 0)
-            stats_grid.setSpacing(10)
-
-            size_lbl = QLabel("Install size:")
-            size_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            size_val = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
-            self.size_val_lbl = QLabel(size_val)
-            self.size_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
-
-            cached_lbl = QLabel("Manifest cached:")
-            cached_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            self.cached_val_lbl = QLabel(self._get_manifest_age())
-            self.cached_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
-
-            build_id_str = str(self.game_data.get("buildid") or "Unknown")
-            build_lbl = QLabel("Build ID:")
-            build_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            self.build_val_lbl = QLabel(build_id_str)
-            self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
-
-            lua_lbl = QLabel("LUA cached:")
-            lua_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            self.lua_val_lbl = QLabel(self._get_lua_age())
-            self.lua_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
-
-            stats_grid.addWidget(size_lbl, 0, 0)
-            stats_grid.addWidget(self.size_val_lbl, 0, 1)
-            stats_grid.addWidget(cached_lbl, 0, 2)
-            stats_grid.addWidget(self.cached_val_lbl, 0, 3)
-
-            stats_grid.addWidget(build_lbl, 1, 0)
-            stats_grid.addWidget(self.build_val_lbl, 1, 1)
-            stats_grid.addWidget(lua_lbl, 1, 2)
-            stats_grid.addWidget(self.lua_val_lbl, 1, 3)
-
-            open_folder_btn = QPushButton("Open Install Folder")
-            open_folder_btn.setFixedHeight(24)
-            open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_folder_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(255, 255, 255, 0.10);
-                    border: 1px solid rgba(255, 255, 255, 0.22);
-                    border-radius: 4px;
-                    color: #FFFFFF;
-                    font-weight: bold;
-                    font-size: 8.5pt;
-                    padding: 2px 8px;
-                }}
-                QPushButton:hover {{
-                    background: rgba(255, 255, 255, 0.22);
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-            """)
-            open_folder_btn.clicked.connect(
-                lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
-            stats_grid.addWidget(open_folder_btn, 2, 0, 1, 4)
-
-            from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-            self._is_dlc = is_dlc_only_mode(self.appid)
-
-            lay.addWidget(stats_widget)
-        else:
-            # v2 hero: stats moved into hero, just the open folder button
-            open_folder_btn = QPushButton("Open Install Folder")
-            open_folder_btn.setFixedHeight(24)
-            open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_folder_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(255, 255, 255, 0.10);
-                    border: 1px solid rgba(255, 255, 255, 0.22);
-                    border-radius: 4px;
-                    color: #FFFFFF;
-                    font-weight: bold;
-                    font-size: 8.5pt;
-                    padding: 2px 12px;
-                }}
-                QPushButton:hover {{
-                    background: rgba(255, 255, 255, 0.22);
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-            """)
-            open_folder_btn.clicked.connect(
-                lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
-            lay.addWidget(open_folder_btn)
-
-            from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-            self._is_dlc = is_dlc_only_mode(self.appid)
-        lay.addSpacing(12)
-        lay.addWidget(self._thin_line())
-        lay.addSpacing(10)
-
         # ── Actions (Select Branch, Build & Validate) ────────────
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)
@@ -743,21 +723,23 @@ class GameDetailsDialogV2(QDialog):
             self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str),
             type=str)
 
-        # Default the selected branch to whatever the user has installed
-        saved_b = installed_branch or self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
+        # Default the selected branch to whatever the user has chosen or installed
+        saved_b = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
+        if not saved_b:
+            saved_b = installed_branch or "public"
         self.settings.setValue(f"selected_branch/{self.appid}", saved_b)
 
         self.branch_combo = CenteredComboBox()
         self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
         self.branch_combo.setFixedHeight(26)
-        self.branch_combo.setFixedWidth(180)
+        self.branch_combo.setFixedWidth(200) # Comfortable dropdown width
         self.branch_combo.setMaxVisibleItems(5)
         actions_row.addWidget(self.branch_combo, 0)
 
         self.validate_btn = ProgressButton("Verify Files", self)
         self.validate_btn.setFixedHeight(26)
         self.validate_btn.setEnabled(True)
-        self.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 12); color: rgba(255, 255, 255, 75); border: none;")
+        self.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.047); color: rgba(255, 255, 255, 0.294); border: none;")
         actions_row.addWidget(self.validate_btn, 1)
 
         lay.addLayout(actions_row)
@@ -809,7 +791,7 @@ class GameDetailsDialogV2(QDialog):
 
         self.manual_depot_combo = CenteredComboBox()
         self.manual_depot_combo.setFixedHeight(26)
-        self.manual_depot_combo.setFixedWidth(100)
+        self.manual_depot_combo.setFixedWidth(110)
         self.manual_depot_combo.setMaxVisibleItems(5)
         depots_dict = {}
         try:
@@ -844,16 +826,18 @@ class GameDetailsDialogV2(QDialog):
             self.manual_depot_combo.addItem("No Depots", "")
         manual_row.addWidget(self.manual_depot_combo)
 
+        # Increased width to 120 so the active build ID is never cut off
         self.manual_build_input = QLineEdit()
         self.manual_build_input.setPlaceholderText("Build ID")
         self.manual_build_input.setFixedHeight(26)
-        self.manual_build_input.setFixedWidth(90)
+        self.manual_build_input.setFixedWidth(120)
         manual_row.addWidget(self.manual_build_input)
 
+        # Increased width to 180 to fit full Manifest IDs
         self.manual_manifest_input = QLineEdit()
         self.manual_manifest_input.setPlaceholderText("Manifest ID")
         self.manual_manifest_input.setFixedHeight(26)
-        self.manual_manifest_input.setFixedWidth(160)
+        self.manual_manifest_input.setFixedWidth(180)
         manual_row.addWidget(self.manual_manifest_input)
 
         self.manual_download_btn = QPushButton("Download")
@@ -871,14 +855,147 @@ class GameDetailsDialogV2(QDialog):
         self.manual_manifest_input.textChanged.connect(self._update_manual_download_btn_state)
         self._update_manual_download_btn_state()
 
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
+
+        # ── Material You Quick Settings (Top Section Single Row) ───
+        top_tiles_widget = QWidget()
+        top_tiles_layout = QHBoxLayout(top_tiles_widget)
+        top_tiles_layout.setContentsMargins(0, 0, 0, 0)
+        top_tiles_layout.setSpacing(6)
+
+        # 1. Status Check Tile (Up to Date / Update Available / Status Unknown)
+        self.status_tile = MaterialTile("STATUS UNKNOWN", "Click to check", self, is_toggle=False)
+        self.status_tile.clicked.connect(self._on_status_btn_clicked)
+        top_tiles_layout.addWidget(self.status_tile, 1)
+
+        # 2. Open Folder Tile (Renamed from "Open Install Folder")
+        self.folder_tile = MaterialTile("Open Folder", "Open directory", self, is_toggle=False)
+        self.folder_tile.update_state(False, self.accent_color, inactive_sub="Open directory")
+        self.folder_tile.clicked.connect(lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+        top_tiles_layout.addWidget(self.folder_tile, 1)
+
+        # 3. DLC Mode Tile
+        self.dlc_tile = MaterialTile("DLC Mode", "Inactive", self, is_toggle=True)
+        is_dlc = self.settings.value(f"dlc_only_mode/{self.appid}", False, type=bool) if self.settings else False
+        self.dlc_tile.update_state(is_dlc, self.accent_color)
+        self.dlc_tile.clicked.connect(lambda: self._on_dlc_only_toggled(self.dlc_tile.isChecked()))
+        top_tiles_layout.addWidget(self.dlc_tile, 1)
+
+        # 4. Pin Build Tile
+        self.pin_tile = MaterialTile("Pin Build", "Inactive", self, is_toggle=True)
+        is_pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
+        self.pin_tile.update_state(is_pinned, self.accent_color)
+        self.pin_tile.clicked.connect(lambda: self._on_pin_build_toggled(self.pin_tile.isChecked()))
+        top_tiles_layout.addWidget(self.pin_tile, 1)
+
+        # 5. Update-All Tile (Renamed from "Exclude Update-All", subtext "Include"/"Exclude")
+        is_exclude = self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
+        self.update_all_tile = MaterialTile("Update-All", "Include" if not is_exclude else "Exclude", self, is_toggle=True)
+        self.exclude_tile = self.update_all_tile
+        self.update_all_tile.setChecked(not is_exclude)
+        self.update_all_tile.update_state(not is_exclude, self.accent_color if not is_exclude else "#e05a47", active_sub="Include", inactive_sub="Exclude")
+
+        if is_pinned:
+            self.update_all_tile.setChecked(False)
+            self.update_all_tile.update_state(False, "#e05a47", active_sub="Include", inactive_sub="Exclude")
+            self.update_all_tile.setEnabled(False)
+            if self.settings:
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", True)
+
+        def _update_all_toggled(checked):
+            is_exc = not checked
+            self.update_all_tile.update_state(checked, self.accent_color if checked else "#e05a47", active_sub="Include", inactive_sub="Exclude")
+            if self.settings:
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", is_exc)
+        self.update_all_tile.clicked.connect(lambda: _update_all_toggled(self.update_all_tile.isChecked()))
+        top_tiles_layout.addWidget(self.update_all_tile, 1)
+
+        lay.addWidget(top_tiles_widget)
+        lay.addSpacing(8)
+
+        # ── Bottom Row Section (SLSonline & EOS Proxy) ───────────
+        bottom_tiles_widget = QWidget()
+        bottom_tiles_layout = QHBoxLayout(bottom_tiles_widget)
+        bottom_tiles_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_tiles_layout.setSpacing(10)
+
+        # SLSonline Split Button Container (Material 3 Specs)
+        sls_container = QFrame()
+        sls_container.setFixedHeight(44)
+        sls_container.setStyleSheet("""
+            QFrame {
+                background: transparent;
+                border: none;
+            }
+        """)
+        sls_container_layout = QHBoxLayout(sls_container)
+        sls_container_layout.setContentsMargins(0, 0, 0, 0)
+        sls_container_layout.setSpacing(0)
+
+        self.sls_tile = MaterialTile("SLSonline", "Inactive", self, is_toggle=True)
+        sls_container_layout.addWidget(self.sls_tile, 1)
+
+        self.sls_input_container = QFrame()
+        self.sls_input_container.setFixedWidth(95)
+        self.sls_input_container.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-left: none;
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }
+        """)
+        sls_input_lay = QHBoxLayout(self.sls_input_container)
+        sls_input_lay.setContentsMargins(6, 2, 6, 2)
+        sls_input_lay.setSpacing(4)
+
+        fl = QLabel("FID:")
+        fl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8pt; font-weight: bold;")
+        self.sls_input = QLineEdit()
+        self.sls_input.setPlaceholderText("480")
+        self.sls_input.setValidator(QIntValidator())
+        self.sls_input.setFixedHeight(22)
+        self.sls_input.setFixedWidth(52)
+        self.sls_input.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: bold;
+                padding: 0 4px;
+            }
+            QLineEdit:focus {
+                border-color: #FFFFFF;
+            }
+        """)
+        sls_input_lay.addWidget(fl)
+        sls_input_lay.addWidget(self.sls_input)
+        self.sls_input_container.setVisible(False)
+        sls_container_layout.addWidget(self.sls_input_container)
+
+        bottom_tiles_layout.addWidget(sls_container, 1)
+
+        # EOS Proxy Tile
+        self.eos_tile = MaterialTile("EOS Proxy", "Inactive", self, is_toggle=True)
+        self.eos_tile.setVisible(False)
+        bottom_tiles_layout.addWidget(self.eos_tile, 1)
+
+        lay.addWidget(bottom_tiles_widget)
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
+
+
+
         self.validate_btn.clicked.connect(self._on_validate_btn_clicked)
         self.branch_combo.currentIndexChanged.connect(self._on_branch_combo_changed)
 
-        # Fast-path: load branches synchronously from DB cache so the combo and
-        # validate button render correctly the moment the dialog opens.
-        # A silent background refresh is fired afterwards to keep the DB warm.
         self._load_branches_immediate()
-
         self._update_status_ui(self.game_data.get("update_status"))
 
         if self.parent_window.game_manager:
@@ -896,120 +1013,6 @@ class GameDetailsDialogV2(QDialog):
                     except Exception:
                         pass
             self.finished.connect(_cleanup_signals)
-
-        lay.addSpacing(12)
-        lay.addWidget(self._thin_line())
-        lay.addSpacing(10)
-
-        # ── Preferences ──────────────────────────────────────────
-        def _pref_row(label, toggle, tooltip=None):
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            lbl = QLabel(label)
-            lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
-            if tooltip:
-                lbl.setToolTip(tooltip)
-            row.addWidget(lbl, 1)
-            row.addWidget(toggle)
-            return row
-
-        self.pref1_toggle = SwitchToggle(active_color=self.accent_color)
-        self.pref1_toggle.setChecked(
-            self.settings.value(f"auto_update_manifest/{self.appid}", True, type=bool) if self.settings else True)
-        self.pref1_toggle.stateChanged.connect(
-            lambda s: self.settings.setValue(f"auto_update_manifest/{self.appid}", s) if self.settings else None)
-        lay.addLayout(_pref_row("Auto-update manifest", self.pref1_toggle))
-        lay.addSpacing(6)
-
-        self.pref2_toggle = SwitchToggle(active_color="#e05a47")
-        self.pref2_toggle.setChecked(
-            self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False)
-        self.pref2_toggle.stateChanged.connect(
-            lambda s: self.settings.setValue(f"exclude_from_update_all/{self.appid}", s) if self.settings else None)
-        lay.addLayout(_pref_row("Exclude from update-all", self.pref2_toggle))
-        lay.addSpacing(6)
-
-        self.pref3_toggle = SwitchToggle(active_color="#4a90d9")
-        self.pref3_toggle.setChecked(
-            self.settings.value(f"dlc_only_mode/{self.appid}", False, type=bool) if self.settings else False)
-        self.pref3_toggle.stateChanged.connect(self._on_dlc_only_toggled)
-        lay.addLayout(_pref_row("DLC Only Mode", self.pref3_toggle,
-            "Enable if you own the base game separately.\n"
-            "Update checks compare only your selected DLC depots."))
-        lay.addSpacing(6)
-
-        self.pref4_toggle = SwitchToggle(active_color=self.accent_color)
-        is_pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
-        self.pref4_toggle.setChecked(is_pinned)
-        self.pref4_toggle.stateChanged.connect(self._on_pin_build_toggled)
-        lay.addLayout(_pref_row("Pin Build", self.pref4_toggle,
-            "Lock the installed version in place to disable update prompts\n"
-            "and allow verification of this specific build version."))
-
-        # Initialize Exclude from Update-All state if pinned
-        if is_pinned:
-            self.pref2_toggle.setChecked(True)
-            self.pref2_toggle.setEnabled(False)
-
-        lay.addSpacing(12)
-        lay.addWidget(self._thin_line())
-        lay.addSpacing(10)
-
-        # ── SLSonline ────────────────────────────────────────────
-        sls_row = QHBoxLayout()
-        sls_row.setContentsMargins(0, 0, 0, 0)
-        sls_row.setSpacing(10)
-        el = QLabel("Enable SLSonline")
-        el.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
-        self.sls_toggle = SwitchToggle(active_color=self.accent_color)
-        sls_row.addWidget(el)
-        sls_row.addWidget(self.sls_toggle)
-        fl = QLabel("Fake App ID:")
-        fl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-        self.sls_input = QLineEdit()
-        self.sls_input.setPlaceholderText("480")
-        self.sls_input.setValidator(QIntValidator())
-        self.sls_input.setFixedHeight(22)
-        self.sls_input.setFixedWidth(80)
-        sls_row.addWidget(fl)
-        sls_row.addWidget(self.sls_input)
-        sls_row.addStretch()
-        lay.addLayout(sls_row)
-        lay.addSpacing(12)
-        lay.addWidget(self._thin_line())
-        lay.addSpacing(10)
-
-        # ── Installed Workshop Content ──────────────────────────────
-        try:
-            ws_mods = []
-            if self.appid and self.appid not in ("0", "N/A", "unknown"):
-                from core.steam_helpers import get_steam_libraries
-                for lib in get_steam_libraries():
-                    ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
-                    if ws_dir.exists():
-                        for item_dir in ws_dir.iterdir():
-                            if item_dir.is_dir() and item_dir.name.isdigit():
-                                size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
-                                ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
-
-            if ws_mods:
-                lay.addWidget(self._section_title(f"🧩 Installed Workshop Content ({len(ws_mods)})"))
-                ws_box = QFrame()
-                ws_box.setStyleSheet("background: rgba(255, 255, 255, 0.04); border-radius: 6px; padding: 6px;")
-                ws_lay = QVBoxLayout(ws_box)
-                ws_lay.setContentsMargins(8, 6, 8, 6)
-                ws_lay.setSpacing(4)
-                for mod in ws_mods[:10]:
-                    mb_size = mod['size'] / (1024 * 1024)
-                    mod_lbl = QLabel(f"• Workshop Item #{mod['wid']}  ({mb_size:.1f} MB)")
-                    mod_lbl.setStyleSheet("color: #7aa2f7; font-size: 9pt; font-weight: bold;")
-                    ws_lay.addWidget(mod_lbl)
-                lay.addWidget(ws_box)
-                lay.addSpacing(12)
-                lay.addWidget(self._thin_line())
-                lay.addSpacing(10)
-        except Exception as e:
-            logger.debug(f"Could not load workshop mods section: {e}")
 
         # Create container for Info tab to support floating footer
         info_tab_container = QWidget()
@@ -1038,47 +1041,69 @@ class GameDetailsDialogV2(QDialog):
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(10)
 
+        # Define warning/error red colors
+        from utils.color_utils import get_semantic_colors
+        from PyQt6.QtGui import QColor
+        sem_colors = get_semantic_colors(self.accent_color)
+        err_color = sem_colors["error"]
+        ec = QColor(err_color)
+
+        # Standard Uninstall (Red pastel theme)
+        err_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.12)"
+        err_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.22)"
+        err_hover = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.20)"
+
+        # Advanced Uninstall (Subtle dark red theme)
+        adv_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.05)"
+        adv_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.12)"
+        adv_hover = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.08)"
+        adv_checked_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.18)"
+        adv_checked_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.35)"
+
+        panel_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.04)"
+        panel_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.15)"
+
         # Left: Standard Uninstall Button
-        self._uninstall_pill = QPushButton("⚠  Uninstall")
+        self._uninstall_pill = QPushButton("Uninstall")
         self._uninstall_pill.setFixedHeight(32)
         self._uninstall_pill.setStyleSheet(f"""
             QPushButton {{
-                background: rgba(220, 50, 40, 25);
-                color: #ff8a7a;
-                border: 1px solid rgba(220, 50, 40, 45);
+                background: {err_bg};
+                color: {err_color};
+                border: 1px solid {err_border};
                 border-radius: 6px;
                 font-weight: bold;
                 font-size: 9.5pt;
                 padding: 0 16px;
             }}
             QPushButton:hover {{
-                background: rgba(220, 50, 40, 45);
+                background: {err_hover};
             }}
         """)
         self._uninstall_pill.clicked.connect(self._do_standard_uninstall)
         btn_row.addWidget(self._uninstall_pill, 1)
 
         # Right: Advanced Uninstall Button
-        self._adv_uninstall_btn = QPushButton("⚙  Advanced Uninstall")
+        self._adv_uninstall_btn = QPushButton("Advanced Uninstall")
         self._adv_uninstall_btn.setFixedHeight(32)
         self._adv_uninstall_btn.setCheckable(True)
         self._adv_uninstall_btn.setStyleSheet(f"""
             QPushButton {{
-                background: rgba(255, 255, 255, 0.03);
-                color: #e0e0e0;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                background: {adv_bg};
+                color: {err_color};
+                border: 1px solid {adv_border};
                 border-radius: 6px;
                 font-weight: bold;
                 font-size: 9.5pt;
                 padding: 0 16px;
             }}
             QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.08);
+                background: {adv_hover};
             }}
             QPushButton:checked {{
-                background: rgba(220, 50, 40, 20);
-                color: #ff8a7a;
-                border-color: rgba(220, 50, 40, 55);
+                background: {adv_checked_bg};
+                color: #FFFFFF;
+                border-color: {adv_checked_border};
             }}
         """)
         self._adv_uninstall_btn.clicked.connect(self._toggle_uninstall_panel)
@@ -1091,8 +1116,8 @@ class GameDetailsDialogV2(QDialog):
         self._uninstall_panel = QFrame()
         self._uninstall_panel.setStyleSheet(f"""
             QFrame {{
-                background-color: rgba(180, 30, 20, 12);
-                border: 1px solid rgba(180, 60, 50, 30);
+                background-color: {panel_bg};
+                border: 1px solid {panel_border};
                 border-radius: 4px;
             }}
         """)
@@ -1132,11 +1157,9 @@ class GameDetailsDialogV2(QDialog):
             elif app_info and app_info.get("buildid"):
                 fallback = {"public": {"buildid": str(app_info.get("buildid"))}}
                 self._on_branches_loaded(fallback)
-                loaded_from_cache = True
             elif self.game_data.get("buildid"):
                 fallback = {"public": {"buildid": str(self.game_data.get("buildid"))}}
                 self._on_branches_loaded(fallback)
-                loaded_from_cache = True
         except Exception:
             pass
 
@@ -1176,7 +1199,7 @@ class GameDetailsDialogV2(QDialog):
             try:
                 from core.steam_api import get_app_branches
                 return get_app_branches(appid, force_refresh=True)
-            except Exception as e:
+            except BaseException as e:
                 logger.error(f"Error fetching branches for {appid}: {e}")
                 return {"public": {"buildid": ""}}
 
@@ -1192,33 +1215,44 @@ class GameDetailsDialogV2(QDialog):
             fresh = get_app_branches(self.appid, force_refresh=True)
             if fresh:
                 self.branches_loaded.emit(fresh)
-        except Exception:
+        except BaseException:
             pass
 
     def _on_branches_loaded(self, branches_dict: dict):
-        if not branches_dict:
-            return
-        self._branches_dict = branches_dict
-        self.branch_combo.blockSignals(True)
-        self.branch_combo.clear()
+        try:
+            if not branches_dict or not isinstance(branches_dict, dict):
+                branches_dict = {"public": {"buildid": str(self.game_data.get("buildid") or "")}}
+            self._branches_dict = branches_dict
+            self.branch_combo.blockSignals(True)
+            self.branch_combo.clear()
 
-        # Sort: 'public' branch first, then alphabetical. Default to installed branch.
-        sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
-        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        saved_branch = installed_branch or self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
-        select_idx = 0
+            sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
+            installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+            saved_branch = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
+            if not saved_branch:
+                saved_branch = installed_branch or "public"
+            select_idx = 0
 
-        for idx, b_name in enumerate(sorted_keys):
-            b_info = branches_dict[b_name]
-            bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
-            label = f"{b_name} ({bid})" if bid else b_name
-            self.branch_combo.addItem(label, b_name)
-            if b_name == saved_branch:
-                select_idx = idx
+            for idx, b_name in enumerate(sorted_keys):
+                b_info = branches_dict[b_name]
+                bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
+                label = f"{b_name} ({bid})" if bid else b_name
+                self.branch_combo.addItem(label, b_name)
+                if b_name == saved_branch:
+                    select_idx = idx
 
-        self.branch_combo.setCurrentIndex(select_idx)
-        self.branch_combo.blockSignals(False)
-        self._on_branch_combo_changed()
+            self.branch_combo.setCurrentIndex(select_idx)
+        except Exception as e:
+            logger.error(f"Error in _on_branches_loaded: {e}", exc_info=True)
+            self.branch_combo.clear()
+            installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""))
+            self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
+        finally:
+            self.branch_combo.blockSignals(False)
+            try:
+                self._on_branch_combo_changed()
+            except Exception as e:
+                logger.error(f"Error in _on_branch_combo_changed: {e}", exc_info=True)
 
     def _on_branch_combo_changed(self):
         sel_branch = self.branch_combo.currentData() or "public"
@@ -1333,9 +1367,49 @@ class GameDetailsDialogV2(QDialog):
         if not active_job or str(active_job.get("appid")) != str(self.appid):
             self.validate_btn.set_progress(0.0)
 
+        from PyQt6.QtGui import QPalette
+        from utils.color_utils import get_best_foreground_color
+
+        def set_btn_style(base_hex):
+            # Programmatically compute the highest-contrast foreground color to satisfy WCAG AA/AAA.
+            text_hex = get_best_foreground_color(base_hex, dark_color="#121214", light_color="#FFFFFF")
+            
+            base_qcolor = QColor(base_hex)
+            h, s, v, a = base_qcolor.getHsv()
+            val_hover = min(255, int(v * 1.15)) if v > 0 else 30
+            val_pressed = int(v * 0.85)
+            hover_qcolor = QColor.fromHsv(h, s, val_hover, a)
+            pressed_qcolor = QColor.fromHsv(h, s, val_pressed, a)
+            
+            from utils.color_utils import get_dark_container_color
+            disabled_bg = get_dark_container_color(base_hex)
+            
+            self.validate_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {base_hex};
+                    color: {text_hex};
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 6px;
+                }}
+                QPushButton:hover {{
+                    background-color: {hover_qcolor.name()};
+                }}
+                QPushButton:pressed {{
+                    background-color: {pressed_qcolor.name()};
+                }}
+                QPushButton:disabled {{
+                    background-color: {disabled_bg};
+                    color: rgba(255, 255, 255, 0.4);
+                }}
+            """)
+            palette = self.validate_btn.palette()
+            palette.setColor(QPalette.ColorRole.Highlight, base_qcolor)
+            self.validate_btn.setPalette(palette)
+
         if pinned and has_cache and not is_missing_manifest_or_lua:
             self.validate_btn.setText("Verify Pinned Build")
-            self.validate_btn.setStyleSheet(f"background: {success_hex}; color: #000000; font-weight: bold; border: none;")
+            set_btn_style(success_hex)
         elif not same_branch:
             b_dict = getattr(self, "_branches_dict", {})
             branch_bid = ""
@@ -1347,25 +1421,26 @@ class GameDetailsDialogV2(QDialog):
             if branch_bid:
                 label += f" ({branch_bid})"
             self.validate_btn.setText(label)
-            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
+            set_btn_style(accent_hex)
         elif is_missing_manifest_or_lua:
             self.validate_btn.setText("Refetch")
-            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
+            set_btn_style(accent_hex)
         elif self.game_data.get("update_status") == "update_available":
             self.validate_btn.setText("Download Update")
-            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
+            set_btn_style(accent_hex)
         else:
             self.validate_btn.setText("Verify Files")
-            self.validate_btn.setStyleSheet(f"background: {success_hex}; color: #000000; font-weight: bold; border: none;")
+            set_btn_style(success_hex)
 
     def _on_validate_btn_clicked(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
         btn_text = self.validate_btn.text()
 
+        self.validate_btn.set_loading(True)
+        self.validate_btn.setEnabled(False)
+        self.validate_btn.setToolTip("Task in progress...")
+
         if btn_text == "Refetch":
-            self.validate_btn.set_loading(True)
-            self.validate_btn.setEnabled(False)
-            self.validate_btn.setToolTip("Refetching manifest zip in progress...")
             self.parent_window._fetch_game_manifest(
                 self.game_data, self, branch=sel_branch, download_only=True
             )
@@ -1552,11 +1627,13 @@ class GameDetailsDialogV2(QDialog):
                 self.settings.setValue(f"pin_build/{self.appid}", True)
                 self.settings.setValue(f"exclude_from_update_all/{self.appid}", False)
                 self.settings.setValue(f"installed_buildid/{self.appid}", build_id)
-            if hasattr(self, "pref4_toggle") and self.pref4_toggle:
-                self.pref4_toggle.setChecked(True)
-            if hasattr(self, "pref2_toggle") and self.pref2_toggle:
-                self.pref2_toggle.setChecked(False)
-                self.pref2_toggle.setEnabled(False)
+            if hasattr(self, "pin_tile") and self.pin_tile:
+                self.pin_tile.setChecked(True)
+                self.pin_tile.update_state(True, self.accent_color)
+            if hasattr(self, "exclude_tile") and self.exclude_tile:
+                self.exclude_tile.setChecked(False)
+                self.exclude_tile.update_state(False, "#e05a47")
+                self.exclude_tile.setEnabled(False)
         except Exception as e:
             logger.error(f"[DEBUG_DEV] Failed to create temporary manifest zip: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to package manifest file: {e}")
@@ -1641,9 +1718,9 @@ class GameDetailsDialogV2(QDialog):
             confirm = QPushButton("Remove Selected DLC Files")
             confirm.setFixedHeight(25)
             confirm.setStyleSheet("""
-                QPushButton { background: rgba(160,40,30,60); color: #ff8a7a;
+                QPushButton { background: rgba(160, 40, 30, 0.235); color: #ff8a7a;
                     border: none; font-size: 9.5pt; font-weight: bold; }
-                QPushButton:hover { background: rgba(180,50,35,80); }
+                QPushButton:hover { background: rgba(180, 50, 35, 0.314); }
             """)
             confirm.clicked.connect(self._do_dlc_uninstall)
             self._uninstall_content.addWidget(confirm)
@@ -1665,9 +1742,9 @@ class GameDetailsDialogV2(QDialog):
             confirm = QPushButton("Confirm Uninstall")
             confirm.setFixedHeight(25)
             confirm.setStyleSheet("""
-                QPushButton { background: rgba(160,40,30,60); color: #ff8a7a;
+                QPushButton { background: rgba(160, 40, 30, 0.235); color: #ff8a7a;
                     border: none; font-size: 9.5pt; font-weight: bold; }
-                QPushButton:hover { background: rgba(180,50,35,80); }
+                QPushButton:hover { background: rgba(180, 50, 35, 0.314); }
             """)
             confirm.clicked.connect(
                 lambda: self.parent_window._uninstall_game(
@@ -1713,6 +1790,8 @@ class GameDetailsDialogV2(QDialog):
         self.parent_window._uninstall_game(gd, self, {})
 
     def _on_dlc_only_toggled(self, state):
+        if hasattr(self, "dlc_tile") and self.dlc_tile:
+            self.dlc_tile.update_state(state, self.accent_color)
         if self.settings:
             self.settings.setValue(f"dlc_only_mode/{self.appid}", state)
             try:
@@ -1725,22 +1804,142 @@ class GameDetailsDialogV2(QDialog):
                 logger.debug(f"DLC sync error: {e}")
         self._build_uninstall_panel()
 
+    def _update_eos_btn_state(self):
+        # Phase 1: File Detection
+        install_path = self.game_data.get("install_path")
+        if not install_path or not os.path.exists(install_path):
+            self.eos_tile.setVisible(False)
+            return
+
+        from utils.eos_detector import EOSDetector
+        dll_paths = EOSDetector.get_eos_dll_paths(install_path)
+        
+        if not dll_paths:
+            self.eos_tile.setVisible(False)
+            return
+
+        # Phase 2: SLSonline Dependency Check
+        self.eos_tile.setVisible(True)
+        is_sls_active = self.sls_tile.isChecked() if hasattr(self, "sls_tile") else False
+        has_yes = any(p.suffix == ".yes" for p in dll_paths)
+
+        if not is_sls_active:
+            self.eos_tile.setEnabled(False)
+            self.eos_tile.update_state(False, self.accent_color, inactive_sub="Enable SLSonline")
+            self.eos_tile.setToolTip("Activate SLSonline first to enable EOS Proxy.")
+        else:
+            self.eos_tile.setEnabled(True)
+            if has_yes:
+                self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
+                self.eos_tile.setToolTip("Remove Epic Online Services proxy and restore original DLL.")
+            else:
+                self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
+                self.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
+
+    def _on_eos_btn_clicked(self):
+        install_path = self.game_data.get("install_path")
+        if not install_path or not os.path.exists(install_path):
+            return
+
+        from utils.eos_detector import EOSDetector
+        dll_paths = EOSDetector.get_eos_dll_paths(install_path)
+        if not dll_paths:
+            return
+
+        has_yes = any(p.suffix == ".yes" for p in dll_paths)
+        from utils.paths import Paths
+        proxy_src = Paths.deps("EOSSDK-Win64-Shipping.dll")
+
+        try:
+            if has_yes:
+                # Disable/Remove EOS Proxy
+                for root, _, files in os.walk(install_path):
+                    if ".DepotDownloader" in Path(root).parts:
+                        continue
+                    for file in files:
+                        if file == "EOSSDK-Win64-Shipping.yes":
+                            yes_path = Path(root) / file
+                            dll_path = Path(root) / "EOSSDK-Win64-Shipping.dll"
+                            if dll_path.exists():
+                                dll_path.unlink()
+                            yes_path.rename(dll_path)
+                QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy removed successfully.")
+            else:
+                # Enable/Apply EOS Proxy
+                if not proxy_src.exists():
+                    QMessageBox.critical(self, "Error", "Bundled proxy file EOSSDK-Win64-Shipping.dll not found in deps folder.")
+                    return
+                
+                applied = False
+                for root, _, files in os.walk(install_path):
+                    if ".DepotDownloader" in Path(root).parts:
+                        continue
+                    for file in files:
+                        if file == "EOSSDK-Win64-Shipping.dll":
+                            dll_path = Path(root) / file
+                            yes_path = Path(root) / "EOSSDK-Win64-Shipping.yes"
+                            if not yes_path.exists():
+                                dll_path.rename(yes_path)
+                            else:
+                                dll_path.unlink()
+                            import shutil
+                            shutil.copy2(proxy_src, dll_path)
+                            applied = True
+                if applied:
+                    QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy enabled successfully.")
+                else:
+                    QMessageBox.warning(self, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
+        except Exception as e:
+            logger.error(f"Failed to toggle EOS Proxy: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to toggle EOS Proxy:\n{e}")
+
+        self._update_eos_btn_state()
+
     def _init_slsonline_logic(self):
+        # Update EOS Proxy button state and connect action
+        self._update_eos_btn_state()
+        self.eos_tile.clicked.connect(self._on_eos_btn_clicked)
+
         if is_slssteam_config_management_enabled() and self.appid not in ("0", "N/A", "unknown", "480"):
             config = get_user_config_path()
             if config.exists():
                 existing = get_fake_appid(config, self.appid)
+                
+                self.sls_tile.blockSignals(True)
+                def _apply_split_style(checked):
+                    self.sls_tile.update_state(checked, self.accent_color)
+                    if checked:
+                        from utils.color_utils import get_best_foreground_color
+                        text_color = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
+                        self.sls_tile.setStyleSheet(f"""
+                            QPushButton {{
+                                background-color: {self.accent_color};
+                                border: none;
+                                border-top-left-radius: 8px;
+                                border-bottom-left-radius: 8px;
+                                border-top-right-radius: 0px;
+                                border-bottom-right-radius: 0px;
+                            }}
+                        """)
+                        self.sls_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
+                        self.sls_tile.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
+
                 if existing:
-                    self.sls_toggle.setChecked(True)
+                    self.sls_tile.setChecked(True)
+                    _apply_split_style(True)
                     self.sls_input.setText(existing)
-                    self.sls_input.setEnabled(True)
+                    self.sls_input_container.setVisible(True)
                 else:
-                    self.sls_toggle.setChecked(False)
+                    self.sls_tile.setChecked(False)
+                    _apply_split_style(False)
                     self.sls_input.setText("480")
-                    self.sls_input.setEnabled(False)
+                    self.sls_input_container.setVisible(False)
+                self.sls_tile.blockSignals(False)
 
                 def _tog(checked):
-                    self.sls_input.setEnabled(checked)
+                    _apply_split_style(checked)
+                    self.sls_input_container.setVisible(checked)
+                    self._update_eos_btn_state()
                     fid = self.sls_input.text().strip() or "480"
                     name = self.game_data.get("game_name", "Unknown")
                     if checked:
@@ -1754,7 +1953,7 @@ class GameDetailsDialogV2(QDialog):
                             remove_fake_app_id(config, self.appid, cur)
 
                 def _fin():
-                    if self.sls_toggle.isChecked():
+                    if self.sls_tile.isChecked():
                         fid = self.sls_input.text().strip() or "480"
                         name = self.game_data.get("game_name", "Unknown")
                         cur = get_fake_appid(config, self.appid)
@@ -1763,16 +1962,17 @@ class GameDetailsDialogV2(QDialog):
                                 remove_fake_app_id(config, self.appid, cur)
                             add_fake_app_id(config, self.appid, name, fid)
 
-                self.sls_toggle.stateChanged.connect(_tog)
+                self.sls_tile.toggled.connect(_tog)
                 self.sls_input.editingFinished.connect(_fin)
         else:
-            self.sls_toggle.setEnabled(False)
+            self.sls_tile.setEnabled(False)
+            self.sls_tile.update_state(False, self.accent_color)
             self.sls_input.setEnabled(False)
 
     # ──────────────────────────────────────────
     def _on_status_btn_clicked(self):
         if self.parent_window.game_manager:
-            self.status_btn.setEnabled(False)
+            self.status_tile.setEnabled(False)
             self._update_status_ui("checking")
             self._load_branches_async(force_refresh=True)
             self.parent_window.game_manager.check_single_game_update(self.appid)
@@ -1780,56 +1980,48 @@ class GameDetailsDialogV2(QDialog):
     def _update_status_ui(self, status):
         ac = self.accent_color
         last_chk = self._get_last_checked()
-        time_suffix = f" ({last_chk})" if last_chk != "Never" else ""
+        sub = last_chk if last_chk != "Never" else "Click to check"
+
+        from utils.color_utils import get_semantic_colors
+        sem_colors = get_semantic_colors(ac)
 
         if status == "update_available":
             hubcap_needs_update = self.game_data.get("hubcap_needs_update", False)
             hubcap_update_in_progress = self.game_data.get("hubcap_update_in_progress", False)
             
             if hubcap_needs_update or hubcap_update_in_progress:
-                reason = "HUBCAP UPDATING" if hubcap_update_in_progress else "HUBCAP NOT READY"
-                self.status_btn.setText(f"⚠  UPDATE AVAILABLE ({reason}){time_suffix}  —  click to check")
-                self.status_btn.setStyleSheet("""
-                    QPushButton { background: rgba(180, 110, 30, 110); color: #ffe699;
-                        border: none; border-radius: 4px;
-                        font-weight: bold; font-size: 8.5pt; }
-                    QPushButton:hover { background: rgba(180, 110, 30, 150); }
-                """)
+                reason = "Hubcap updating" if hubcap_update_in_progress else "Hubcap not ready"
+                title = f"UPDATE ({reason})"
             else:
-                self.status_btn.setText(f"★  UPDATE AVAILABLE{time_suffix}  —  click to check")
-                self.status_btn.setStyleSheet("""
-                    QPushButton { background: rgba(180, 110, 30, 110); color: #ffe699;
-                        border: none; border-radius: 4px;
-                        font-weight: bold; font-size: 8.5pt; }
-                    QPushButton:hover { background: rgba(180, 110, 30, 150); }
-                """)
-            self.status_btn.setEnabled(True)
+                title = "UPDATE"
+            
+            self.status_tile.title_lbl.setText(title)
+            self.status_tile.sub_lbl.setText(sub)
+            self.status_tile.update_state(True, sem_colors["warning"], active_sub=sub)
+            self.status_tile.setEnabled(True)
+            
         elif status == "up_to_date":
-            self.status_btn.setText(f"✓  UP TO DATE{time_suffix}  —  click to check")
-            self.status_btn.setStyleSheet("""
-                QPushButton { background: rgba(36, 140, 70, 210); color: #ffffff;
-                    border: 1px solid rgba(46, 180, 90, 0.9); border-radius: 4px;
-                    font-weight: bold; font-size: 8.5pt; }
-                QPushButton:hover { background: rgba(46, 180, 90, 240); color: #ffffff; }
-            """)
-            self.status_btn.setEnabled(True)
+            title = "UP TO DATE"
+            self.status_tile.title_lbl.setText(title)
+            self.status_tile.sub_lbl.setText(sub)
+            self.status_tile.update_state(True, sem_colors["success"], active_sub=sub)
+            self.status_tile.setEnabled(True)
+            
         elif status == "checking":
-            self.status_btn.setText("⟳  CHECKING FOR UPDATES...")
-            self.status_btn.setStyleSheet("""
-                QPushButton { background: rgba(20,40,80,100); color: #7ab3ff;
-                    border: none; border-radius: 4px;
-                    font-weight: bold; font-size: 8.5pt; }
-            """)
-            self.status_btn.setEnabled(False)
+            title = "CHECKING..."
+            sub = "Checking Steam API..."
+            self.status_tile.title_lbl.setText(title)
+            self.status_tile.sub_lbl.setText(sub)
+            self.status_tile.update_state(True, sem_colors["info"], active_sub=sub)
+            self.status_tile.setEnabled(False)
+            
         else:
-            self.status_btn.setText("?  STATUS UNKNOWN  —  click to check")
-            self.status_btn.setStyleSheet("""
-                QPushButton { background: rgba(255,255,255,12); color: rgba(255,255,255,75);
-                    border: none; border-radius: 4px;
-                    font-weight: bold; font-size: 8.5pt; }
-                QPushButton:hover { background: rgba(255,255,255,20); }
-            """)
-            self.status_btn.setEnabled(True)
+            title = "STATUS UNKNOWN"
+            sub = "Click to check"
+            self.status_tile.title_lbl.setText(title)
+            self.status_tile.sub_lbl.setText(sub)
+            self.status_tile.update_state(False, ac, inactive_sub=sub)
+            self.status_tile.setEnabled(True)
 
         self._update_validate_button()
 
@@ -1854,7 +2046,7 @@ class GameDetailsDialogV2(QDialog):
         inner.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(0)
+        lay.setSpacing(10)
 
         scroll = QScrollArea()
         scroll.setWidget(inner)
@@ -1865,46 +2057,34 @@ class GameDetailsDialogV2(QDialog):
         name = self.game_data.get("game_name")
         ac = self.accent_color
 
-        def _btn(text, tooltip=None, width=246):
-            btn = self._card_btn(text, tooltip)
-            btn.setFixedWidth(width)
-            return btn
-
-        def _row_label(text):
-            lbl = QLabel(text)
-            lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            return lbl
+        from utils.color_utils import get_best_foreground_color
 
         grid_widget = QWidget()
-        grid = QGridLayout(grid_widget)
+        grid = QVBoxLayout(grid_widget)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 0)
 
-        row_idx = 0
-
-        # Section 1: DRM & Emulation — 4-button layout (no row labels)
-        grid.addWidget(self._section_title("DRM & Emulation"), row_idx, 0, 1, 2)
-        row_idx += 1
+        # Section 1: DRM & Emulation
+        grid.addWidget(self._section_title("DRM & Emulation"))
 
         # Row 1: Steamless (Python) | Steamless (Legacy)
         b_aio = QPushButton("Steamless (Python)")
         b_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        b_aio.setFixedHeight(36)
         b_aio.setCursor(Qt.CursorShape.PointingHandCursor)
         b_aio.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
-                border: 1.5px solid rgba(255,255,255,0.12);
-                border-radius: 10px;
-                color: {ac};
-                font-size: 10pt;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 9pt;
                 font-weight: 600;
-                padding: 8px 0;
             }}
             QPushButton:hover {{
                 background: rgba(255,255,255,0.12);
                 border-color: {ac};
+                color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
@@ -1913,20 +2093,21 @@ class GameDetailsDialogV2(QDialog):
 
         b_steamless = QPushButton("Steamless (Legacy)")
         b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+        b_steamless.setFixedHeight(36)
         b_steamless.setCursor(Qt.CursorShape.PointingHandCursor)
         b_steamless.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
-                border: 1.5px solid rgba(255,255,255,0.12);
-                border-radius: 10px;
-                color: {ac};
-                font-size: 10pt;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 9pt;
                 font-weight: 600;
-                padding: 8px 0;
             }}
             QPushButton:hover {{
                 background: rgba(255,255,255,0.12);
                 border-color: {ac};
+                color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
@@ -1934,49 +2115,47 @@ class GameDetailsDialogV2(QDialog):
             lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
 
         sl_row_widget = QWidget()
-        sl_row_widget.setStyleSheet("background: transparent;")
         sl_row = QHBoxLayout(sl_row_widget)
         sl_row.setContentsMargins(0, 0, 0, 0)
         sl_row.setSpacing(8)
-        sl_row.addWidget(b_aio)
-        sl_row.addWidget(b_steamless)
-
-        grid.addWidget(sl_row_widget, row_idx, 0, 1, 2)
-        row_idx += 1
+        sl_row.addWidget(b_aio, 1)
+        sl_row.addWidget(b_steamless, 1)
+        grid.addWidget(sl_row_widget)
 
         # Row 2: Apply Goldberg | Remove Goldberg
         self.gb_apply_btn = QPushButton("Apply Goldberg")
         self.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
+        self.gb_apply_btn.setFixedHeight(36)
         self.gb_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gb_apply_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
-                border: 1.5px solid rgba(255,255,255,0.12);
-                border-radius: 10px;
-                color: {ac};
-                font-size: 10pt;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 9pt;
                 font-weight: 600;
-                padding: 8px 0;
             }}
             QPushButton:hover {{
                 background: rgba(255,255,255,0.12);
                 border-color: {ac};
+                color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
 
         self.gb_remove_btn = QPushButton("Remove Goldberg")
         self.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
+        self.gb_remove_btn.setFixedHeight(36)
         self.gb_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gb_remove_btn.setStyleSheet("""
             QPushButton {
                 background: rgba(255,255,255,0.04);
-                border: 1.5px solid rgba(255,255,255,0.07);
-                border-radius: 10px;
+                border: 1px solid rgba(255,255,255,0.07);
+                border-radius: 8px;
                 color: rgba(255,255,255,0.3);
-                font-size: 10pt;
+                font-size: 9pt;
                 font-weight: 600;
-                padding: 8px 0;
             }
             QPushButton:enabled {
                 background: rgba(160,30,20,0.15);
@@ -2013,88 +2192,221 @@ class GameDetailsDialogV2(QDialog):
         self.gb_remove_btn.clicked.connect(_remove_gb)
 
         gb_row_widget = QWidget()
-        gb_row_widget.setStyleSheet("background: transparent;")
         gb_row = QHBoxLayout(gb_row_widget)
         gb_row.setContentsMargins(0, 0, 0, 0)
         gb_row.setSpacing(8)
-        gb_row.addWidget(self.gb_apply_btn)
-        gb_row.addWidget(self.gb_remove_btn)
+        gb_row.addWidget(self.gb_apply_btn, 1)
+        gb_row.addWidget(self.gb_remove_btn, 1)
+        grid.addWidget(gb_row_widget)
 
-        grid.addWidget(gb_row_widget, row_idx, 0, 1, 2)
-        row_idx += 1
+        grid.addWidget(self._thin_line())
 
-        # Divider
-        grid.addWidget(self._thin_line(), row_idx, 0, 1, 2)
-        row_idx += 1
+        # Section 2: Depots & Installation (Single Row Layout)
+        grid.addWidget(self._section_title("Depots & Installation"))
 
-        # Section 2: Depot selection & ACF fixing
-        grid.addWidget(self._section_title("Depots & Installation"), row_idx, 0, 1, 2)
-        row_idx += 1
+        depots_row_widget = QWidget()
+        depots_row = QHBoxLayout(depots_row_widget)
+        depots_row.setContentsMargins(0, 0, 0, 0)
+        depots_row.setSpacing(8)
 
-        self.depot_status_lbl = QLabel()
-        self.depot_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 9.5pt;")
-        self._update_depot_label()
+        # Grouped Choose + Reset (Material 3 Split Pill)
+        choose_reset_group = QFrame()
+        choose_reset_group.setFixedHeight(36)
+        choose_reset_group.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+            }
+        """)
+        cr_layout = QHBoxLayout(choose_reset_group)
+        cr_layout.setContentsMargins(0, 0, 0, 0)
+        cr_layout.setSpacing(0)
 
-        choose_btn = _btn("Choose...", width=120)
-        choose_btn.clicked.connect(self._configure_depots_wrapper)
-        reset_btn = _btn("Reset", width=120)
+        self.choose_depots_btn = QPushButton("Choose...")
+        self.choose_depots_btn.setFixedHeight(34)
+        self.choose_depots_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.choose_depots_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                color: {ac};
+                font-weight: bold;
+                font-size: 8.5pt;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.08);
+            }}
+        """)
+        self.choose_depots_btn.clicked.connect(self._configure_depots_wrapper)
+
+        cr_divider = QFrame()
+        cr_divider.setFixedWidth(1)
+        cr_divider.setStyleSheet("background: rgba(255, 255, 255, 0.12);")
+
+        reset_btn = QPushButton("Reset")
+        reset_btn.setFixedHeight(34)
+        reset_btn.setFixedWidth(60)
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #e05a47;
+                font-weight: bold;
+                font-size: 8.5pt;
+            }
+            QPushButton:hover {
+                background: rgba(224, 90, 71, 0.12);
+            }
+        """)
         reset_btn.clicked.connect(self._reset_depots_wrapper)
 
-        depot_container = QWidget()
-        depot_container.setFixedWidth(246)
-        depot_container.setStyleSheet("background: transparent;")
-        depot_row = QHBoxLayout(depot_container)
-        depot_row.setContentsMargins(0, 0, 0, 0)
-        depot_row.setSpacing(6)
-        depot_row.addWidget(choose_btn)
-        depot_row.addWidget(reset_btn)
+        cr_layout.addWidget(self.choose_depots_btn, 1)
+        cr_layout.addWidget(cr_divider)
+        cr_layout.addWidget(reset_btn)
 
-        grid.addWidget(self.depot_status_lbl, row_idx, 0)
-        grid.addWidget(depot_container, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-        row_idx += 1
+        depots_row.addWidget(choose_reset_group, 1)
 
-        fix_btn = _btn("Fix Installation")
+        # Fix Installation button adjacent on the same row
+        fix_btn = QPushButton("Fix Installation")
+        fix_btn.setFixedHeight(36)
+        fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
+        fix_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 8.5pt;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.10);
+                border-color: {ac};
+                color: {ac};
+            }}
+        """)
         fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
-        grid.addWidget(_row_label("Fix Installation State"), row_idx, 0)
-        grid.addWidget(fix_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-        row_idx += 1
+        depots_row.addWidget(fix_btn, 1)
 
-        # Divider
-        grid.addWidget(self._thin_line(), row_idx, 0, 1, 2)
-        row_idx += 1
+        grid.addWidget(depots_row_widget)
 
-        # Section 3: Clipboard & Web Links
-        grid.addWidget(self._section_title("Utility & Store Links"), row_idx, 0, 1, 2)
-        row_idx += 1
+        self._update_depot_label()
 
-        if self.appid not in ("0", "N/A", "unknown"):
-            steam_btn = _btn("Open Store")
-            steam_btn.clicked.connect(lambda: QDesktopServices.openUrl(
-                QUrl(f"https://store.steampowered.com/app/{self.appid}/")))
-            grid.addWidget(_row_label("Steam Store Page"), row_idx, 0)
-            grid.addWidget(steam_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-            row_idx += 1
+        grid.addWidget(self._thin_line())
 
-            steamdb_btn = _btn("Open SteamDB")
-            steamdb_btn.clicked.connect(lambda: QDesktopServices.openUrl(
-                QUrl(f"https://www.steamdb.info/app/{self.appid}/")))
-            grid.addWidget(_row_label("Steam Database"), row_idx, 0)
-            grid.addWidget(steamdb_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-            row_idx += 1
+        # Section 3: Utility & Store Links (All 4 in a Single Horizontal Row)
+        grid.addWidget(self._section_title("Utility & Store Links"))
 
-        copy_appid = _btn("Copy ID")
+        links_row_widget = QWidget()
+        links_row = QHBoxLayout(links_row_widget)
+        links_row.setContentsMargins(0, 0, 0, 0)
+        links_row.setSpacing(6)
+
+        is_real_app = self.appid not in ("0", "N/A", "unknown")
+
+        steam_btn = QPushButton("Open Store")
+        steam_btn.setFixedHeight(34)
+        steam_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        steam_btn.setEnabled(is_real_app)
+        steam_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.10);
+                border-color: {ac};
+                color: {ac};
+            }}
+            QPushButton:disabled {{
+                color: rgba(255,255,255,0.3);
+                border-color: rgba(255,255,255,0.05);
+            }}
+        """)
+        steam_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl(f"https://store.steampowered.com/app/{self.appid}/")))
+        links_row.addWidget(steam_btn, 1)
+
+        steamdb_btn = QPushButton("Open SteamDB")
+        steamdb_btn.setFixedHeight(34)
+        steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        steamdb_btn.setEnabled(is_real_app)
+        steamdb_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.10);
+                border-color: {ac};
+                color: {ac};
+            }}
+            QPushButton:disabled {{
+                color: rgba(255,255,255,0.3);
+                border-color: rgba(255,255,255,0.05);
+            }}
+        """)
+        steamdb_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl(f"https://www.steamdb.info/app/{self.appid}/")))
+        links_row.addWidget(steamdb_btn, 1)
+
+        copy_appid = QPushButton("Copy App ID")
+        copy_appid.setFixedHeight(34)
+        copy_appid.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_appid.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.10);
+                border-color: {ac};
+                color: {ac};
+            }}
+        """)
         copy_appid.clicked.connect(lambda: QApplication.clipboard().setText(self.appid))
-        grid.addWidget(_row_label("Game Application ID"), row_idx, 0)
-        grid.addWidget(copy_appid, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-        row_idx += 1
+        links_row.addWidget(copy_appid, 1)
 
-        copy_path = _btn("Copy Path")
+        copy_path = QPushButton("Copy Path")
+        copy_path.setFixedHeight(34)
+        copy_path.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_path.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.10);
+                border-color: {ac};
+                color: {ac};
+            }}
+        """)
         copy_path.clicked.connect(lambda: QApplication.clipboard().setText(
             str(self.game_data.get("install_path", ""))))
-        grid.addWidget(_row_label("Install Folder Location"), row_idx, 0)
-        grid.addWidget(copy_path, row_idx, 1, Qt.AlignmentFlag.AlignRight)
-        row_idx += 1
+        links_row.addWidget(copy_path, 1)
+
+        grid.addWidget(links_row_widget)
 
         lay.addWidget(grid_widget)
         lay.addStretch()
@@ -2107,28 +2419,56 @@ class GameDetailsDialogV2(QDialog):
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         ws_widget = QWidget()
-        ws_layout = QVBoxLayout(ws_widget)
-        ws_layout.setContentsMargins(16, 14, 16, 14)
-        ws_layout.setSpacing(10)
+        self.ws_layout = QVBoxLayout(ws_widget)
+        self.ws_layout.setContentsMargins(16, 14, 16, 14)
+        self.ws_layout.setSpacing(10)
 
         # Header Title
         title_lbl = QLabel(f"Installed Workshop Mods ({self.game_data.get('game_name', 'Game')})")
         title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color};")
-        ws_layout.addWidget(title_lbl)
+        self.ws_layout.addWidget(title_lbl)
 
-        ws_mods = []
-        if self.appid and self.appid not in ("0", "N/A", "unknown"):
-            try:
-                from core.steam_helpers import get_steam_libraries
-                for lib in get_steam_libraries():
-                    ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
-                    if ws_dir.exists():
-                        for item_dir in ws_dir.iterdir():
-                            if item_dir.is_dir() and item_dir.name.isdigit():
-                                size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
-                                ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
-            except Exception as e:
-                logger.error(f"Error scanning workshop mods: {e}")
+        # Loading placeholder
+        self.ws_loading_lbl = QLabel("Scanning local workshop directories...")
+        self.ws_loading_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 9.5pt;")
+        self.ws_layout.addWidget(self.ws_loading_lbl)
+
+        ws_widget.setLayout(self.ws_layout)
+        scroll.setWidget(ws_widget)
+        self.stacked.addWidget(scroll)
+
+    def _scan_workshop_mods_async(self):
+        def _thread_scan():
+            ws_mods = []
+            if self.appid and self.appid not in ("0", "N/A", "unknown"):
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    from pathlib import Path
+                    for lib in get_steam_libraries():
+                        ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
+                        if ws_dir.exists():
+                            for item_dir in ws_dir.iterdir():
+                                if item_dir.is_dir() and item_dir.name.isdigit():
+                                    size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
+                                    ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
+                except Exception as e:
+                    logger.error(f"Error scanning workshop mods: {e}")
+            
+            from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+            QMetaObject.invokeMethod(self, "_on_workshop_mods_scanned", Qt.ConnectionType.QueuedConnection, Q_ARG(list, ws_mods))
+
+        import threading
+        threading.Thread(target=_thread_scan, daemon=True).start()
+
+    @pyqtSlot(list)
+    def _on_workshop_mods_scanned(self, ws_mods):
+
+
+        # 2. Update Workshop Tab
+        if hasattr(self, "ws_loading_lbl") and self.ws_loading_lbl:
+            self.ws_layout.removeWidget(self.ws_loading_lbl)
+            self.ws_loading_lbl.deleteLater()
+            self.ws_loading_lbl = None
 
         if not ws_mods:
             empty_box = QFrame()
@@ -2139,37 +2479,80 @@ class GameDetailsDialogV2(QDialog):
             empty_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 9.5pt; line-height: 1.4;")
             empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_lay.addWidget(empty_lbl)
-            ws_layout.addWidget(empty_box)
+            self.ws_layout.addWidget(empty_box)
         else:
             for mod in ws_mods:
                 mod_card = QFrame()
-                mod_card.setStyleSheet("""
-                    QFrame {
-                        background: rgba(255, 255, 255, 0.05);
+                mod_card.setStyleSheet(f"""
+                    QFrame {{
+                        background: rgba(255, 255, 255, 0.04);
                         border: 1px solid rgba(255, 255, 255, 0.08);
-                        border-radius: 8px;
-                    }
+                        border-radius: 10px;
+                    }}
+                    QFrame:hover {{
+                        background: rgba(255, 255, 255, 0.07);
+                        border-color: rgba(255, 255, 255, 0.15);
+                    }}
                 """)
                 card_lay = QHBoxLayout(mod_card)
-                card_lay.setContentsMargins(12, 10, 12, 10)
+                card_lay.setContentsMargins(14, 10, 14, 10)
+                card_lay.setSpacing(10)
 
                 mb_size = mod['size'] / (1024 * 1024)
-                mod_info = QLabel(f"<b>Workshop Item #{mod['wid']}</b><br><span style='color: rgba(255,255,255,0.6); font-size: 8.5pt;'>Size: {mb_size:.2f} MB</span>")
-                mod_info.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
+                mod_info = QLabel(f"<b style='color: #FFFFFF; font-size: 9.5pt;'>Workshop Item #{mod['wid']}</b><br><span style='color: rgba(255,255,255,0.6); font-size: 8pt;'>Size: {mb_size:.2f} MB</span>")
+                mod_info.setStyleSheet("background: transparent;")
                 card_lay.addWidget(mod_info, 1)
 
+                from utils.color_utils import get_best_foreground_color
+                btn_fg = get_best_foreground_color(self.accent_color)
+
+                btn_view = QPushButton("View on Workshop")
+                btn_view.setFixedHeight(28)
+                btn_view.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_view.setStyleSheet(f"""
+                    QPushButton {{
+                        background: rgba(255, 255, 255, 0.08);
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-radius: 6px;
+                        color: #FFFFFF;
+                        font-size: 8.5pt;
+                        font-weight: bold;
+                        padding: 0 12px;
+                    }}
+                    QPushButton:hover {{
+                        background: {self.accent_color};
+                        border-color: {self.accent_color};
+                        color: {btn_fg};
+                    }}
+                """)
+                wid = mod['wid']
+                btn_view.clicked.connect(lambda _c, w=wid: QDesktopServices.openUrl(QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={w}")))
+                card_lay.addWidget(btn_view)
+
                 btn_open = QPushButton("Open Folder")
-                btn_open.setFixedHeight(26)
-                btn_open.setStyleSheet(f"background: rgba(255,255,255,0.1); color: #FFFFFF; border-radius: 4px; padding: 0 10px; font-weight: bold;")
+                btn_open.setFixedHeight(28)
+                btn_open.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_open.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self.accent_color};
+                        border: none;
+                        border-radius: 6px;
+                        color: {btn_fg};
+                        font-size: 8.5pt;
+                        font-weight: bold;
+                        padding: 0 12px;
+                    }}
+                    QPushButton:hover {{
+                        opacity: 0.9;
+                    }}
+                """)
                 mod_path = mod['path']
                 btn_open.clicked.connect(lambda _c, p=mod_path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
                 card_lay.addWidget(btn_open)
 
-                ws_layout.addWidget(mod_card)
+                self.ws_layout.addWidget(mod_card)
 
-        ws_layout.addStretch()
-        scroll.setWidget(ws_widget)
-        self.stacked.addWidget(scroll)
+        self.ws_layout.addStretch()
 
     def _init_tickets_tab(self):
         """Initialize the Tickets Management tab with drag & drop import, export, and status."""
@@ -2376,6 +2759,7 @@ class GameDetailsDialogV2(QDialog):
                 self.gb_remove_btn.setEnabled(False)
 
     def _update_depot_label(self):
+        btn_text = "Choose (All)"
         if self.settings:
             val = self.settings.value(f"depot_selection/{self.appid}", "", type=str)
             if val:
@@ -2384,11 +2768,11 @@ class GameDetailsDialogV2(QDialog):
                     data = json.loads(val)
                     sel = data.get("selected", [])
                     tot = len(data.get("all_available", []))
-                    self.depot_status_lbl.setText(f"{len(sel)} of {tot} depots selected")
-                    return
+                    btn_text = f"Choose ({len(sel)} of {tot} Selected)"
                 except Exception:
                     pass
-        self.depot_status_lbl.setText("All depots selected (default)")
+        if hasattr(self, "choose_depots_btn") and self.choose_depots_btn:
+            self.choose_depots_btn.setText(btn_text)
 
     def _configure_depots_wrapper(self):
         self.parent_window._configure_depots(self.game_data)
@@ -2451,13 +2835,17 @@ class GameDetailsDialogV2(QDialog):
         self._active_fetchers.pop(key, None)
 
     def _on_pin_build_toggled(self, pinned: bool):
+        if hasattr(self, "pin_tile") and self.pin_tile:
+            self.pin_tile.update_state(pinned, self.accent_color)
         if self.settings:
             self.settings.setValue(f"pin_build/{self.appid}", pinned)
         
         if pinned:
             # Force exclude_from_update_all to True and grey it out
-            self.pref2_toggle.setChecked(True)
-            self.pref2_toggle.setEnabled(False)
+            if hasattr(self, "update_all_tile") and self.update_all_tile:
+                self.update_all_tile.setChecked(False)
+                self.update_all_tile.update_state(False, "#e05a47", active_sub="Include", inactive_sub="Exclude")
+                self.update_all_tile.setEnabled(False)
             if self.settings:
                 self.settings.setValue(f"exclude_from_update_all/{self.appid}", True)
             
@@ -2477,7 +2865,15 @@ class GameDetailsDialogV2(QDialog):
             except Exception as e:
                 logger.warning(f"Failed to duplicate manifest zip on pin build activation: {e}")
         else:
-            self.pref2_toggle.setEnabled(True)
+            if hasattr(self, "update_all_tile") and self.update_all_tile:
+                self.update_all_tile.setEnabled(True)
+                is_ex = self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
+                is_inc = not is_ex
+                self.update_all_tile.setChecked(is_inc)
+                self.update_all_tile.update_state(is_inc, self.accent_color if is_inc else "#e05a47", active_sub="Include", inactive_sub="Exclude")
+            if self.settings:
+                is_ex = self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", is_ex)
 
         self._update_validate_button()
 

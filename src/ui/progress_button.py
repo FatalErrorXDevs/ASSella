@@ -77,15 +77,28 @@ class ProgressButton(QPushButton):
             painter.fillRect(rect, color)
             
         elif self._is_loading:
-            width = 60
-            x = self._loading_offset
-            rect = QRect(x - width, 0, width, self.height())
-            color = QColor(accent.red(), accent.green(), accent.blue(), 45)
-            painter.setClipRect(self.rect())
-            painter.fillRect(rect, color)
+            # Draw a beautiful Material circular progress spinner on the left
+            from PyQt6.QtCore import QRectF
+            from PyQt6.QtGui import QPen
             
-            # Wrap around support
-            if x > self.width():
-                rect2 = QRect(x - self.width() - width, 0, width, self.height())
-                painter.fillRect(rect2, color)
+            spinner_size = 14
+            x = 12
+            y = (self.height() - spinner_size) // 2
+            
+            # Use self._loading_offset to animate the rotation angle
+            angle = (self._loading_offset * 4) % 360
+            
+            # Indeterminate breathing arc span: breathes between 90 and 270 degrees
+            cycle = (self._loading_offset // 2) % 180
+            span = 90 + abs(cycle - 90) * 2
+            
+            painter.save()
+            pen = QPen(accent)
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            
+            rect = QRectF(x, y, spinner_size, spinner_size)
+            painter.drawArc(rect, int(angle * 16), int(span * 16))
+            painter.restore()
 

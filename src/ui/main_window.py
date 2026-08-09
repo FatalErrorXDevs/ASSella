@@ -927,7 +927,6 @@ class MainWindow(QMainWindow):
         # Deferred refresh: run after the event loop processes the UI construction
         # so update_stats and refresh_system_status always see fully built widgets
         QTimer.singleShot(0, self._deferred_post_init_refresh)
-        QTimer.singleShot(1000, self._prompt_experimental_features_once_if_needed)
         self._setup_resize_handles()
         if self.ui_state:
             self.ui_state.apply_style_settings()
@@ -1197,7 +1196,6 @@ class MainWindow(QMainWindow):
         )
         self.game_manager.all_updates_checked.connect(self.update_dashboard_elements)
         self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
-        self.game_manager.all_updates_checked.connect(self._on_boot_autofetch_manifests)
 
         # Initial stats fetch
         self.refresh_hubcap_stats()
@@ -1314,182 +1312,6 @@ class MainWindow(QMainWindow):
                 f"{skipped} skipped. Smart Update Mode is now available."
             )
 
-
-    def _on_boot_autofetch_manifests(self) -> None:
-        """Sequential background fetch of update manifests whenever all_updates_checked fires.
-
-        Runs on the first batch check (boot) and also on any subsequent check triggered by
-        the periodic timer, ensuring newly-detected updates get their manifest downloaded
-        automatically without requiring a tool restart.
-
-        When Smart Update Mode is enabled, routes through SmartUpdateTask (PICS + generate
-        endpoint) and skips all Hubcap status/timestamp/Stage-2 verification checks.
-        """
-        if not self.settings.value("autofetch_manifests_on_boot", False, type=bool):
-            return
-
-        # Guard: only mark boot done after the first run, but keep running for periodic checks
-        if not self._autofetch_on_boot_done:
-            self._autofetch_on_boot_done = True
-
-        smart_mode = True
-        if smart_mode:
-            logger.info("[Auto-fetch] Smart Update Mode is ON — using SmartUpdateTask path")
-
-        from utils.helpers import get_base_path
-        games_to_fetch = []
-        for game in self.game_manager.games:
-            appid = game.get("appid")
-            status = game.get("update_status")
-            if appid and appid not in ("0", "N/A", "unknown") and status == "update_available":
-                # Check if this game is excluded from background auto-update manifest
-                if not self.settings.value(f"auto_update_manifest/{appid}", True, type=bool):
-                    logger.debug(f"Auto-fetch background: AppID {appid} is excluded from manifest auto-fetch.")
-                    continue
-                # Skip if already fetched this session and the file is still fresh
-                sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
-                inst_b = self.settings.value(f"installed_branch/{appid}", "public", type=str)
-                target_b = inst_b or sel_b
-                if target_b and target_b != "public":
-                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}_branch_{target_b}.zip"
-                else:
-                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-                is_fresh = self.settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
-                if fpath.exists() and is_fresh:
-                    continue
-                if appid in self._autofetched_appids:
-                    # Already attempted in this session but file is not fresh — retry
-                    self._autofetched_appids.discard(appid)
-                games_to_fetch.append((appid, game.get("game_name", "Unknown")))
-                self._autofetched_appids.add(appid)
-
-        if not games_to_fetch:
-            logger.info("Auto-fetch: no update manifests need downloading.")
-            return
-
-        logger.info(f"Auto-fetch on boot: starting background fetch for {len(games_to_fetch)} games.")
-
-        # Pre-compute branch per appid so SmartUpdateTask targets the correct branch
-        from utils.helpers import get_base_path
-        _auto_branches = {}
-        for appid, _ in games_to_fetch:
-            sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
-            inst_b = self.settings.value(f"installed_branch/{appid}", "public", type=str)
-            _auto_branches[appid] = inst_b or sel_b
-
-        from utils.task_runner import TaskRunner
-        self._autofetch_runner = TaskRunner(self)
-
-        def run_downloads():
-            from core import morrenus_api
-            from utils.manifest_verifier import verify_hubcap_freshness
-
-            for appid, name in games_to_fetch:
-                try:
-                    if smart_mode:
-                        # ── Smart Update path: PICS + /generate/appmanifest ──────────────
-                        # No status check, no timestamp check, no Stage 2 — trust PICS.
-                        logger.info(f"[Auto-fetch Smart] Processing {name} ({appid})")
-                        from managers.depot_key_manager import DepotKeyManager
-                        from core.tasks.smart_update_task import SmartUpdateTask
-
-                        dkm = DepotKeyManager()
-                        if not dkm.has_depot_keys(appid):
-                            logger.warning(
-                                f"[Auto-fetch Smart] {name} ({appid}): no cached depot keys — "
-                                "falling back to full zip fetch"
-                            )
-                            # Fall through to old path below
-                        else:
-                            # Run SmartUpdateTask synchronously (we're already in a worker thread)
-                            task = SmartUpdateTask(appid, name, branch=_auto_branches.get(appid, "public"))
-                            _smart_result = {"game_data": None, "fallback": None}
-
-                            task.progress.connect(lambda msg: logger.info(msg))
-                            task.finished.connect(lambda gd: _smart_result.__setitem__("game_data", gd))
-                            task.needs_full_zip.connect(lambda r: _smart_result.__setitem__("fallback", r))
-                            task.error.connect(lambda e: logger.error(f"[Auto-fetch Smart] Error: {e}"))
-
-                            task._execute()  # Call directly since we're in worker thread
-
-                            if _smart_result["game_data"]:
-                                self.settings.setValue(f"manifest_is_fresh/{appid}", True)
-                                gd = _smart_result["game_data"]
-                                if gd.get("buildid"):
-                                    self.settings.setValue(f"fetched_buildid/{appid}", gd["buildid"])
-                                logger.info(f"[Auto-fetch Smart] SUCCESS for {name} ({appid})")
-                            elif _smart_result["fallback"]:
-                                logger.info(
-                                    f"[Auto-fetch Smart] {name} ({appid}) needs full zip: "
-                                    f"{_smart_result['fallback']} — falling back"
-                                )
-                                # Fall through to old endpoint below by not continuing
-                            else:
-                                logger.warning(f"[Auto-fetch Smart] {name} ({appid}): no result from SmartUpdateTask")
-                            
-                            if not _smart_result["fallback"]:
-                                import time
-                                time.sleep(2.0)
-                                continue  # Do not fall through to old path if smart result was obtained or a fallback signal fired
-
-                    # ── Classic path: Hubcap /manifest/{appid} ───────────────────────
-                    logger.info(f"Auto-fetch background: checking Hubcap manifest status for {name} ({appid})")
-                    status_res = morrenus_api.get_manifest_status(appid)
-                    if status_res and isinstance(status_res, dict) and not status_res.get("error"):
-                        needs_up = status_res.get("needs_update", False)
-                        up_in_prog = status_res.get("update_in_progress", False)
-
-                        # Default check: skip if Hubcap reports needs_update or update_in_progress
-                        if needs_up or up_in_prog:
-                            logger.info(
-                                f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is not ready "
-                                f"(needs_update={needs_up}, in_progress={up_in_prog}). Skipping download."
-                            )
-                            import time
-                            time.sleep(2.0)
-                            continue
-
-                        # Refined check removed because it is deprecated
-
-                    target_b = _auto_branches.get(appid, "public")
-                    fpath, error = morrenus_api.download_manifest(appid, branch=target_b)
-                    if fpath and not error:
-                        # Stage 2 Post-Check: Parse zip and verify extracted manifest IDs against Steam
-                        from core.tasks.process_zip_task import ProcessZipTask
-                        from utils.manifest_verifier import verify_extracted_zip_manifest
-
-                        try:
-                            parsed_zip = ProcessZipTask().run(fpath)
-                            is_valid, post_reason = verify_extracted_zip_manifest(appid, parsed_zip, is_update=True)
-                            if not is_valid:
-                                logger.warning(
-                                    f"Auto-fetch background: Stage 2 Post-Check failed for {name} ({appid}): {post_reason}. Discarding downloaded manifest zip."
-                                )
-                                import time
-                                time.sleep(2.0)
-                                continue
-                        except Exception as p_ex:
-                            logger.error(f"Auto-fetch background: error during Stage 2 zip processing for {name} ({appid}): {p_ex}")
-                            import time
-                            time.sleep(2.0)
-                            continue
-
-                        self.settings.setValue(f"manifest_is_fresh/{appid}", True)
-                        latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
-                        if latest_id:
-                            self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
-                        logger.info(f"Auto-fetch background: successfully downloaded and verified manifest for {name} ({appid})")
-                    else:
-                        logger.warning(f"Auto-fetch background: failed for {name} ({appid}): {error}")
-                    
-                    import time
-                    time.sleep(2.0)
-                except Exception as ex:
-                    logger.error(f"Auto-fetch background error for {name} ({appid}): {ex}", exc_info=True)
-                    import time
-                    time.sleep(2.0)
-
-        self._autofetch_runner.run(run_downloads)
 
 
     def _setup_update_timer(self) -> None:
@@ -1744,7 +1566,7 @@ class MainWindow(QMainWindow):
         dash_main_layout.setContentsMargins(15, 6, 15, 6)
         dash_main_layout.setSpacing(4)
 
-        row_item_style = "color: rgba(255, 255, 255, 200); font-size: 11px; font-weight: bold; background: transparent; border: none;"
+        row_item_style = "color: rgba(255, 255, 255, 0.90); font-size: 11px; font-weight: bold; background: transparent; border: none;"
 
         # --- ROW 1 ---
         row1_layout = QHBoxLayout()
@@ -1753,7 +1575,7 @@ class MainWindow(QMainWindow):
 
         # 1. Hubcap API Stats
         hubcap_api_lbl = QLabel("Hubcap API:")
-        hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_api_value = QLabel("-- / -- [ --d ]")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
@@ -1764,9 +1586,9 @@ class MainWindow(QMainWindow):
 
         # 2. SLS Config
         self.sls_lbl = QLabel("SLS Config:")
-        self.sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.sls_status_value = QLabel("Checking...")
-        self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.sls_status_value.setStyleSheet(self._get_status_style("neutral"))
         sls_item = QHBoxLayout()
         sls_item.setSpacing(4)
         sls_item.addWidget(self.sls_lbl)
@@ -1775,9 +1597,9 @@ class MainWindow(QMainWindow):
 
         # 3. SLSsteam
         self.slssteam_lbl = QLabel("SLSsteam:")
-        self.slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.slssteam_status_value = QLabel("Checking...")
-        self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.slssteam_status_value.setStyleSheet(self._get_status_style("neutral"))
         slssteam_item = QHBoxLayout()
         slssteam_item.setSpacing(4)
         slssteam_item.addWidget(self.slssteam_lbl)
@@ -1786,9 +1608,9 @@ class MainWindow(QMainWindow):
 
         # 4. Steam Updates
         steam_updates_lbl = QLabel("Steam Updates:")
-        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.steam_updates_value = QLabel("Checking...")
-        self.steam_updates_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.steam_updates_value.setStyleSheet(self._get_status_style("neutral"))
         steam_updates_item = QHBoxLayout()
         steam_updates_item.setSpacing(4)
         steam_updates_item.addWidget(steam_updates_lbl)
@@ -1805,9 +1627,9 @@ class MainWindow(QMainWindow):
 
         # 1. Hubcap Connection Status
         hubcap_conn_lbl = QLabel("Hubcap:")
-        hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")
-        self.hubcap_conn_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.hubcap_conn_value.setStyleSheet(self._get_status_style("neutral"))
         hubcap_conn_item = QHBoxLayout()
         hubcap_conn_item.setSpacing(4)
         hubcap_conn_item.addWidget(hubcap_conn_lbl)
@@ -1816,9 +1638,9 @@ class MainWindow(QMainWindow):
 
         # 2. Steam Connection Status
         steam_conn_lbl = QLabel("Steam Status:")
-        steam_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        steam_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.steam_conn_value = QLabel("Connecting...")
-        self.steam_conn_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.steam_conn_value.setStyleSheet(self._get_status_style("neutral"))
         steam_conn_item = QHBoxLayout()
         steam_conn_item.setSpacing(4)
         steam_conn_item.addWidget(steam_conn_lbl)
@@ -1827,9 +1649,9 @@ class MainWindow(QMainWindow):
 
         # 3. ASSella Status
         assella_lbl = QLabel("ASSella:")
-        assella_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        assella_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.assella_status_value = QLabel("Checking...")
-        self.assella_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.assella_status_value.setStyleSheet(self._get_status_style("neutral"))
         assella_item = QHBoxLayout()
         assella_item.setSpacing(4)
         assella_item.addWidget(assella_lbl)
@@ -1838,9 +1660,9 @@ class MainWindow(QMainWindow):
 
         # 4. Library Size
         library_lbl = QLabel("Library:")
-        library_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        library_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.library_size_value = QLabel("-- GB (-- games)")
-        self.library_size_value.setStyleSheet("color: rgba(255, 255, 255, 200); font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.library_size_value.setStyleSheet(row_item_style)
         library_item = QHBoxLayout()
         library_item.setSpacing(4)
         library_item.addWidget(library_lbl)
@@ -1849,9 +1671,9 @@ class MainWindow(QMainWindow):
 
         # 5. CloudR (New)
         self.cloudr_lbl = QLabel("CloudR:")
-        self.cloudr_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.cloudr_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.cloudr_value = QLabel("Checking...")
-        self.cloudr_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        self.cloudr_value.setStyleSheet(self._get_status_style("neutral"))
         cloudr_item = QHBoxLayout()
         cloudr_item.setSpacing(4)
         cloudr_item.addWidget(self.cloudr_lbl)
@@ -2064,6 +1886,26 @@ class MainWindow(QMainWindow):
             logger.error(f"Error reading steam.cfg: {e}")
             return False
 
+    def _get_status_style(self, state: str) -> str:
+        """
+        Returns the stylesheet string for bottom visor status values 
+        using theme-harmonized semantic colors.
+        """
+        accent_color = self.settings.value("accent_color", "#C06C84", type=str)
+        from utils.color_utils import get_semantic_colors
+        sem_colors = get_semantic_colors(accent_color)
+        
+        color_map = {
+            "success": sem_colors["success"],
+            "warning": sem_colors["warning"],
+            "error": sem_colors["error"],
+            "info": sem_colors["info"],
+            "neutral": "#888888"
+        }
+        
+        c = color_map.get(state.lower(), "#888888")
+        return f"color: {c} !important; font-size: 11px; font-weight: bold; border: none; background: transparent;"
+
     @pyqtSlot()
     def refresh_system_status(self) -> None:
         """Refresh local Steam updates, SLS, and ASSella status labels."""
@@ -2073,10 +1915,10 @@ class MainWindow(QMainWindow):
         blocked = self.check_steam_updates_blocked()
         if blocked:
             self.steam_updates_value.setText("Blocked")
-            self.steam_updates_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.steam_updates_value.setStyleSheet(self._get_status_style("success"))
         else:
             self.steam_updates_value.setText("Allowed")
-            self.steam_updates_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.steam_updates_value.setStyleSheet(self._get_status_style("warning"))
             
         # --- SLS Detection ---
         from ui.dialogs.settings_sls import get_sls_paths, get_local_sls_version
@@ -2137,9 +1979,9 @@ class MainWindow(QMainWindow):
                 self.cloudr_value.setEnabled(True)
                 self.cloudr_value.setText(cloudr_status_str)
                 if cloudr_status_str == "On":
-                    self.cloudr_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                    self.cloudr_value.setStyleSheet(self._get_status_style("success"))
                 else:
-                    self.cloudr_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                    self.cloudr_value.setStyleSheet(self._get_status_style("error"))
             else:
                 self.cloudr_lbl.setEnabled(False)
                 self.cloudr_value.setEnabled(False)
@@ -2149,10 +1991,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "assella_status_value") and self.assella_status_value:
             if getattr(self, "_tool_update_available_flag", False):
                 self.assella_status_value.setText("Update Available")
-                self.assella_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.assella_status_value.setStyleSheet(self._get_status_style("warning"))
             else:
                 self.assella_status_value.setText("Up to Date")
-                self.assella_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.assella_status_value.setStyleSheet(self._get_status_style("success"))
 
         # Library Size Stats
         if hasattr(self, "library_size_value") and self.library_size_value:
@@ -2231,19 +2073,19 @@ class MainWindow(QMainWindow):
                 if hubcap_mode in ("DoH", "Tor"):
                     lbl = f"Online {hubcap_mode}"
                 self.hubcap_conn_value.setText(lbl)
-                self.hubcap_conn_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
             else:
                 self.hubcap_conn_value.setText("Offline")
-                self.hubcap_conn_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.hubcap_conn_value.setStyleSheet(self._get_status_style("error"))
 
         # 2. Update Steam connection label
         if hasattr(self, "steam_conn_value") and self.steam_conn_value:
             if steam_ok:
                 self.steam_conn_value.setText("Online")
-                self.steam_conn_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
             else:
                 self.steam_conn_value.setText("Offline")
-                self.steam_conn_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
 
     def _on_user_stats_loaded(self, stats: dict) -> None:
         """Handle async hubcap stats load success."""
@@ -2553,6 +2395,12 @@ class MainWindow(QMainWindow):
             try:
                 from utils.isp_bypass import TorManager
                 TorManager.stop_tor()
+            except Exception:
+                pass
+            # Signal SLS background retry workers to stop before teardown
+            try:
+                from utils.slssteam_integration import register_shutdown
+                register_shutdown()
             except Exception:
                 pass
             from utils.update_status_cache import get_update_cache

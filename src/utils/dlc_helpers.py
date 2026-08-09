@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from utils.settings import get_settings
-from utils.helpers import get_base_path
 
 logger = logging.getLogger("ACCELA.dlc_helpers")
 
@@ -54,6 +53,7 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
     if not is_dlc_only_mode(base_appid):
         return []
 
+    from utils.helpers import get_base_path
     depot_file = get_base_path() / "depots" / f"{base_appid}.depot"
     if not depot_file.exists():
         return []

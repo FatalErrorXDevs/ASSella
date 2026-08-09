@@ -233,11 +233,11 @@ def create_sls_tab(dialog) -> QWidget:
     """Relocate Steam/SLS settings, ASShead fixer, and implement updater UI."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(15, 15, 15, 15)
+    layout.setContentsMargins(16, 16, 16, 16)
+    layout.setSpacing(24)
 
-    # 1. Integration Group
-    int_group = QGroupBox("SLS Settings")
-    int_layout = QVBoxLayout()
+    # 1. Integration Card
+    int_card, int_layout = dialog._create_card_frame("SLS Settings")
 
     if sys.platform == "linux":
         wrapper_name = "SLSsteam"
@@ -245,6 +245,7 @@ def create_sls_tab(dialog) -> QWidget:
         linux_hint = QLabel(
             "SLSsteam is enabled automatically for Steam library installs on Linux."
         )
+        linux_hint.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
         linux_hint.setWordWrap(True)
         int_layout.addWidget(linux_hint)
     else:
@@ -297,54 +298,19 @@ def create_sls_tab(dialog) -> QWidget:
     )
     dialog.ignore_slssteam_updater_checkbox.hide()
 
-    int_group.setLayout(int_layout)
-    layout.addWidget(int_group)
+    layout.addWidget(int_card)
 
-    # 2. SLS Config Fixer (ASShead) Group
-    fixer_group = QGroupBox("SLS Config Fixer (ASShead)")
-    fixer_layout = QVBoxLayout()
-
-    dialog.asshead_status_label = QLabel()
-    dialog.asshead_status_label.setWordWrap(True)
-    fixer_layout.addWidget(dialog.asshead_status_label)
-
-    fixer_btn_layout = QHBoxLayout()
-
-    dialog.run_asshead_btn = QPushButton("Run SLS Config Fixer")
-    dialog.run_asshead_btn.setToolTip(
-        "Scan, format, deduplicate, and merge latest upstream keys into your SLSsteam config.yaml."
-    )
-    dialog.run_asshead_btn.clicked.connect(dialog.run_asshead_fixer)
-    fixer_btn_layout.addWidget(dialog.run_asshead_btn)
-
-    dialog.open_config_btn = QPushButton("Open Config")
-    dialog.open_config_btn.setToolTip("Open the config.yaml file in the system default text editor.")
-    dialog.open_config_btn.clicked.connect(dialog.open_sls_config)
-    fixer_btn_layout.addWidget(dialog.open_config_btn)
-
-    dialog.restore_backup_btn = QPushButton("Restore Backup")
-    dialog.restore_backup_btn.setToolTip("Restore the last backup copy of config.yaml.")
-    dialog.restore_backup_btn.clicked.connect(dialog.restore_sls_backup)
-    fixer_btn_layout.addWidget(dialog.restore_backup_btn)
-
-
-    fixer_layout.addLayout(fixer_btn_layout)
-
-    # layout.addWidget(fixer_group)
-
-    # Update status UI via helper reference
-    dialog._update_asshead_status_ui()
-
-    # 3. SLSsteam Updater Group (Linux only)
+    # 2. SLSsteam Updater Card (Linux only)
     if sys.platform == "linux":
-        updater_group = QGroupBox("SLSsteam Updater")
-        updater_layout = QVBoxLayout()
+        updater_card, updater_layout = dialog._create_card_frame("SLSsteam Updater")
 
         local_ver = get_local_sls_version()
         local_ver_label = QLabel(f"Local Version: {local_ver}")
+        local_ver_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
         updater_layout.addWidget(local_ver_label)
 
         online_ver_label = QLabel("Latest Online: Not Checked")
+        online_ver_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9.5pt;")
         updater_layout.addWidget(online_ver_label)
 
         btn_layout = QHBoxLayout()
@@ -481,10 +447,9 @@ def create_sls_tab(dialog) -> QWidget:
             online_ver_label.setText(f"Latest Online: Error ({update_error[:30]}...)")
             online_ver_label.setStyleSheet("color: #cc4444;")
 
-    # 4. Generate & Share Tickets (Experimental) Group
-    ticket_group = QGroupBox("Generate & Share Tickets (Experimental)")
-    ticket_layout = QVBoxLayout(ticket_group)
-    ticket_layout.setSpacing(10)
+    # 4. Generate & Share Tickets (Experimental) Card
+    ticket_card, ticket_layout = dialog._create_card_frame("Generate & Share Tickets (Experimental)")
+    ticket_layout.setSpacing(12)
 
     # Experimental Warning Banner
     warning_lbl = QLabel(
@@ -507,10 +472,6 @@ def create_sls_tab(dialog) -> QWidget:
     # Dropdown Selection for Available Games with Tickets
     from utils.ticket_manager import get_available_ticket_games, export_ticket, export_all_tickets
 
-    drop_lbl = QLabel("Select Available Game to Export Ticket:")
-    drop_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9.5pt; font-weight: bold;")
-    ticket_layout.addWidget(drop_lbl)
-
     combo_row = QHBoxLayout()
     combo_row.setSpacing(6)
 
@@ -520,73 +481,66 @@ def create_sls_tab(dialog) -> QWidget:
             background: rgba(255, 255, 255, 0.08);
             color: #FFFFFF;
             border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 5px;
-            padding: 5px 10px;
-            font-size: 9.5pt;
-        }
-        QComboBox QAbstractItemView {
-            background: #1e1e24;
-            color: #FFFFFF;
-            selection-background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 4px 8px;
         }
     """)
-    game_combo.addItem("-- Select Game from Ticket Cache --", "")
+
+    available_games = get_available_ticket_games()
+    if available_games:
+        game_combo.addItem("Select from detected tickets...", "")
+        for g in available_games:
+            game_combo.addItem(g.get("display", f"AppID {g.get('appid')}"), str(g.get("appid")))
+    else:
+        game_combo.addItem("No tickets detected in Steam/SLS folder", "")
+
     combo_row.addWidget(game_combo, 1)
 
-    refresh_combo_btn = QPushButton("Refresh List")
-    refresh_combo_btn.setFixedHeight(28)
-    refresh_combo_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.1); color: #FFFFFF; border-radius: 4px; padding: 0 10px;")
-    combo_row.addWidget(refresh_combo_btn)
+    refresh_btn = QPushButton("Refresh")
+    refresh_btn.setFixedWidth(70)
 
+    def _refresh_tickets():
+        game_combo.clear()
+        games = get_available_ticket_games()
+        if games:
+            game_combo.addItem("Select from detected tickets...", "")
+            for g in games:
+                game_combo.addItem(g.get("display", f"AppID {g.get('appid')}"), str(g.get("appid")))
+        else:
+            game_combo.addItem("No tickets detected in Steam/SLS folder", "")
+
+    refresh_btn.clicked.connect(_refresh_tickets)
+    combo_row.addWidget(refresh_btn)
     ticket_layout.addLayout(combo_row)
 
-    # Populate dropdown lazily / safely
-    is_populated = False
-
-    def _populate_game_combo():
-        nonlocal is_populated
-        try:
-            game_combo.blockSignals(True)
-            game_combo.clear()
-            avail_games = get_available_ticket_games()
-            game_combo.addItem(f"-- Select Game from Cache ({len(avail_games)} available) --", "")
-            for g in avail_games:
-                game_combo.addItem(g["display"], g["appid"])
-            is_populated = True
-        except Exception as err:
-            logger.error(f"Error populating ticket games: {err}")
-            game_combo.addItem("-- Error Loading Ticket Games --", "")
-        finally:
-            game_combo.blockSignals(False)
-
-    refresh_combo_btn.clicked.connect(_populate_game_combo)
-
-    # Initial population trigger
-    _populate_game_combo()
-
-    # AppID Export Row
+    # Custom AppID Export Row
     app_export_lay = QHBoxLayout()
-    app_export_lay.setSpacing(8)
+    app_export_lay.setSpacing(6)
 
     appid_input = QLineEdit()
-    appid_input.setPlaceholderText("Or enter custom AppID (e.g. 108600, 2934220)...")
-    appid_input.setStyleSheet("background: rgba(255, 255, 255, 0.06); color: #FFFFFF; border-radius: 4px; padding: 4px 8px;")
+    appid_input.setPlaceholderText("Or enter custom AppID (e.g. 1086940)")
+    appid_input.setStyleSheet("""
+        QLineEdit {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            padding: 4px 8px;
+            color: #FFFFFF;
+        }
+    """)
     app_export_lay.addWidget(appid_input, 1)
 
     def _on_game_selected(idx):
-        try:
-            selected_appid = game_combo.itemData(idx)
-            if selected_appid:
-                appid_input.setText(str(selected_appid))
-        except Exception as _e:
-            logger.debug(f"Error in _on_game_selected: {_e}")
+        val = game_combo.itemData(idx)
+        if val:
+            appid_input.setText(str(val))
 
     game_combo.currentIndexChanged.connect(_on_game_selected)
 
-    export_single_btn = QPushButton("Export Ticket (.yaml)")
-    export_single_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.1); color: #FFFFFF; border-radius: 4px; padding: 4px 12px;")
+    export_single_btn = QPushButton("Export Selected Ticket")
+    export_single_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.15); color: #FFFFFF; border-radius: 4px; padding: 6px 12px;")
 
-    def _do_export_single(_checked=False):
+    def _do_export_single():
         try:
             appid = appid_input.text().strip()
             if not appid or not appid.isdigit():
@@ -628,7 +582,7 @@ def create_sls_tab(dialog) -> QWidget:
     batch_btn.clicked.connect(lambda _c=False: _do_export_all())
     ticket_layout.addWidget(batch_btn)
 
-    layout.addWidget(ticket_group)
+    layout.addWidget(ticket_card)
 
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "SLS")

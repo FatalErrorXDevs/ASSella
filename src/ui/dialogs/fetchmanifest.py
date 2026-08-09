@@ -4,8 +4,8 @@ import re
 import time
 from typing import Any, Dict
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient
+from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QPushButton,
     QFileDialog,
+    QFrame,
     QSizePolicy,
 )
 
@@ -33,6 +34,99 @@ from utils.task_runner import TaskRunner
 from utils.helpers import get_base_path
 from core import steam_helpers
 from ui.dialogs.steamlibrary import SteamLibraryDialog
+
+from ui.material_progress import MaterialSpinner
+
+
+class SingleDepotTimerDialog(QDialog):
+    """A Material 3 styled confirmation dialog with a 3-second auto-proceed countdown timer."""
+    def __init__(self, parent=None, title="Single Depot Option", message="Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedSize(380, 160)
+        self.seconds = seconds
+        
+        from utils.color_utils import get_theme_colors, get_best_foreground_color
+        theme = get_theme_colors()
+        ac = theme.get("accent_color", "#7ab3ff")
+        bg = theme.get("background_color", "#141416")
+        text_color = get_best_foreground_color(ac)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {bg};
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+            }}
+            QLabel {{ color: #FFFFFF; font-size: 9.5pt; }}
+        """)
+        
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+        
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        lay.addWidget(msg_lbl)
+        
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(10)
+        btn_row.addStretch()
+        
+        self.yes_btn = QPushButton(f"✓ Yes ({self.seconds})")
+        self.yes_btn.setFixedHeight(32)
+        self.yes_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.yes_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ac};
+                color: {text_color};
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+        """)
+        self.yes_btn.clicked.connect(self.accept)
+        
+        self.no_btn = QPushButton("✕ No")
+        self.no_btn.setFixedHeight(32)
+        self.no_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.no_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                font-weight: bold;
+                padding: 0 16px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.14);
+            }
+        """)
+        self.no_btn.clicked.connect(self.reject)
+        
+        btn_row.addWidget(self.yes_btn)
+        btn_row.addWidget(self.no_btn)
+        lay.addLayout(btn_row)
+        
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._on_tick)
+        self.timer.start()
+
+    def _on_tick(self):
+        self.seconds -= 1
+        if self.seconds <= 0:
+            self.timer.stop()
+            self.accept()
+        else:
+            self.yes_btn.setText(f"✓ Yes ({self.seconds})")
+
 
 class SearchItemWidget(QWidget):
     """Custom widget for displaying polished search results — styled like the game library cards."""
@@ -328,19 +422,19 @@ class FetchManifestDialog(QDialog):
                 }}
                 QListWidget::item {{
                     background-color: rgba(255, 255, 255, 0.03);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
-                    border-radius: 12px;
-                    margin: 6px 16px;
+                    border: 1px solid transparent;
+                    border-radius: 10px;
+                    margin: 2px 16px;
                     color: #FFFFFF;
                     padding: 8px;
                 }}
                 QListWidget::item:hover {{
-                    background-color: rgba(255, 255, 255, 0.07);
-                    border-color: rgba(255, 255, 255, 0.16);
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
                 }}
                 QListWidget::item:selected {{
-                    background-color: rgba(255, 255, 255, 0.12);
-                    border-color: {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.14);
+                    border: 1px solid {self.accent_color};
                     color: #FFFFFF;
                 }}
                 QTabWidget::pane {{
@@ -442,41 +536,121 @@ class FetchManifestDialog(QDialog):
         self.results_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         games_layout.addWidget(self.results_list)
 
+
+
+        # Bottom Status Footer Layout (Horizontal, Centered)
+        status_footer_container = QWidget()
+        status_footer_layout = QHBoxLayout(status_footer_container)
+        status_footer_layout.setContentsMargins(0, 5, 0, 5)
+        status_footer_layout.setSpacing(8)
+        status_footer_layout.addStretch()
+
+        self.footer_spinner = MaterialSpinner(self, size=14, color=self.accent_color, thickness=2)
+        status_footer_layout.addWidget(self.footer_spinner)
+
         self.status_label = QLabel("Search for a game to begin")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        games_layout.addWidget(self.status_label)
+        status_footer_layout.addWidget(self.status_label)
+
+        status_footer_layout.addStretch()
+        games_layout.addWidget(status_footer_container)
+
+        self.footer_spinner.setVisible(False)
 
         self.tab_widget.addTab(self.games_tab, "Game Manifests")
 
         # --- Tab 2: Workshop Downloader ---
         self.workshop_tab = QWidget()
         workshop_layout = QVBoxLayout(self.workshop_tab)
-        workshop_layout.setContentsMargins(0, 8, 0, 0)
+        workshop_layout.setContentsMargins(14, 12, 14, 12)
+        workshop_layout.setSpacing(10)
 
-        # IDs Input
-        ids_group = QGroupBox("Workshop IDs or Steam URLs (one per line, or comma-separated)")
-        ids_g_layout = QVBoxLayout(ids_group)
+        # Material Header Banner Card
+        ws_card = QFrame()
+        ws_card.setObjectName("WorkshopCard")
+        ws_card.setStyleSheet("""
+            QFrame#WorkshopCard {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QFrame#WorkshopCard QLabel {
+                border: none !important;
+                background: transparent !important;
+                padding: 0px !important;
+            }
+        """)
+        ws_card_lay = QVBoxLayout(ws_card)
+        ws_card_lay.setContentsMargins(14, 14, 14, 14)
+        ws_card_lay.setSpacing(8)
+
+        ws_title = QLabel("Workshop Batch Downloader")
+        ws_title.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color}; border: none; background: transparent;")
+        ws_sub = QLabel("Paste Workshop item URLs or IDs below (one per line, or comma-separated):")
+        ws_sub.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt; border: none; background: transparent;")
+
+        ws_card_lay.addWidget(ws_title)
+        ws_card_lay.addWidget(ws_sub)
+
         self.ids_input = QTextEdit()
-        self.ids_input.setPlaceholderText("e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=3772598164\nor 3772598164")
-        ids_g_layout.addWidget(self.ids_input)
-        workshop_layout.addWidget(ids_group)
+        self.ids_input.setFixedHeight(120)
+        self.ids_input.setPlaceholderText("e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=3772598164\nor 3772598164, 12345678")
+        self.ids_input.setStyleSheet(f"""
+            QTextEdit {{
+                background: rgba(0, 0, 0, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 9.5pt;
+                padding: 8px;
+            }}
+            QTextEdit:focus {{
+                border: 2px solid {self.accent_color};
+            }}
+        """)
+        ws_card_lay.addWidget(self.ids_input)
 
         # Action Buttons
         btns_layout = QHBoxLayout()
-        btns_layout.setContentsMargins(0, 8, 0, 8)
+        btns_layout.setContentsMargins(0, 4, 0, 0)
         btns_layout.setSpacing(10)
 
+        from utils.color_utils import get_best_foreground_color
+        text_color = get_best_foreground_color(self.accent_color)
+
         self.dl_btn = QPushButton("⬇ Download (Add to Queue)")
-        self.dl_btn.setObjectName("workshopDlBtn")
+        self.dl_btn.setFixedHeight(36)
+        self.dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dl_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: {text_color};
+                border: none;
+                font-weight: bold;
+                font-size: 9.5pt;
+                border-radius: 8px;
+                padding: 0 18px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.06) !important;
+                border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                color: rgba(255, 255, 255, 0.38) !important;
+            }}
+        """)
         self.dl_btn.clicked.connect(self._download_workshop)
         
         self.workshop_status_label = QLabel()
-        self.workshop_status_label.setStyleSheet(f"color: {self.accent_color}; font-weight: bold;")
+        self.workshop_status_label.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 8.5pt;")
 
         btns_layout.addWidget(self.dl_btn)
         btns_layout.addWidget(self.workshop_status_label)
         btns_layout.addStretch()
-        workshop_layout.addLayout(btns_layout)
+        ws_card_lay.addLayout(btns_layout)
+
+        workshop_layout.addWidget(ws_card)
+        workshop_layout.addStretch()
 
         self.tab_widget.addTab(self.workshop_tab, "Workshop Downloader")
 
@@ -487,19 +661,24 @@ class FetchManifestDialog(QDialog):
         container.setContentsMargins(0, 0, 0, 5)
         container.setSpacing(10)
 
-        # Connection Dot
+        # Connection Dot & Top Spinner
         self.api_status_dot = QLabel()
         self.api_status_dot.setFixedSize(10, 10)
         self.api_status_dot.setStyleSheet(
             "border-radius: 5px; background-color: #7f8c8d;"
         )
+        self.api_status_dot.setVisible(False)  # Hidden while checking
+
+        self.top_spinner = MaterialSpinner(parent=status_widget, size=14, color=self.accent_color, thickness=2)
+        self.top_spinner.setVisible(True)  # Visible while checking
 
         self.api_status_text = QLabel("Checking...")
         self.api_status_text.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.6);")
 
-        # Group Dot + Text
+        # Group Dot + Spinner + Text
         conn_layout = QHBoxLayout()
         conn_layout.setSpacing(6)
+        conn_layout.addWidget(self.top_spinner)
         conn_layout.addWidget(self.api_status_dot)
         conn_layout.addWidget(self.api_status_text)
 
@@ -521,7 +700,14 @@ class FetchManifestDialog(QDialog):
     # Status / Health Logic
     # --------------------------
 
+    def _set_loading_active(self, active: bool):
+        """Toggle loading spinners inside the dialog synchronously."""
+        if hasattr(self, "footer_spinner") and self.footer_spinner:
+            self.footer_spinner.setVisible(active)
+
     def _request_api_status_update(self):
+        self.top_spinner.setVisible(True)
+        self.api_status_dot.setVisible(False)
         worker = self.task_runner.run(self._fetch_api_status)
         worker.finished.connect(self._apply_api_status)
         worker.error.connect(self._on_api_status_error)
@@ -541,6 +727,8 @@ class FetchManifestDialog(QDialog):
 
     def _apply_api_status(self, result):
         """UI: Update status bar."""
+        self.top_spinner.setVisible(False)
+        self.api_status_dot.setVisible(True)
         health = result.get("health", {})
         is_healthy = health.get("status") == "healthy"
 
@@ -571,6 +759,11 @@ class FetchManifestDialog(QDialog):
 
     def _on_api_status_error(self, error_info):
         """Handle errors during status check silently."""
+        self.top_spinner.setVisible(False)
+        self.api_status_dot.setVisible(True)
+        self.api_status_dot.setStyleSheet("border-radius: 5px; background-color: #FF8A80;")
+        self.api_status_text.setText("Offline")
+        self.api_status_text.setStyleSheet("font-weight: bold; color: #FF8A80;")
         logger.error(f"Status check failed: {error_info}")
         self.api_status_dot.setStyleSheet(
             "border-radius: 6px; background-color: #e74c3c;"
@@ -592,7 +785,10 @@ class FetchManifestDialog(QDialog):
         query = self.search_input.text().strip()
         if len(query) < 2:
             self.status_label.setText("Enter at least 2 characters")
+            self._set_loading_active(False)
             return
+
+        self._set_loading_active(True)
 
         # Direct AppID bypass: check library status or fetch branches, fallback to text search
         if query.isdigit():
@@ -771,6 +967,7 @@ class FetchManifestDialog(QDialog):
 
     def on_search_finished(self, results):
         self._toggle_inputs(True)
+        self._set_loading_active(False)
 
         if "error" in results:
             self._handle_error(results["error"])
@@ -1015,7 +1212,7 @@ class FetchManifestDialog(QDialog):
                             logger.debug(f"Failed to update database with fresh app info: {db_err}")
                             
                     api_depots = steam_client_data.get("depots", {}) if steam_client_data else {}
-                except Exception as e:
+                except BaseException as e:
                     logger.error(f"Failed to fetch depot info from Steam API for {app_id}: {e}")
                     api_depots = {}
 
@@ -1046,7 +1243,7 @@ class FetchManifestDialog(QDialog):
             else:
                 logger.info(f"No cached manifest found for {app_id}. Downloading.")
 
-        except Exception as e:
+        except BaseException as e:
             logger.error(f"Error checking manifest cache for {app_id}: {e}", exc_info=True)
 
         return morrenus_api.download_manifest(app_id, branch=branch)
@@ -1057,13 +1254,14 @@ class FetchManifestDialog(QDialog):
         try:
             branches = get_app_branches(app_id, force_refresh=True)
             return app_id, branches
-        except Exception as e:
+        except BaseException as e:
             logger.error(f"Failed to fetch branches for AppID {app_id}: {e}")
             return app_id, {"public": {"buildid": ""}}
 
     def _on_branches_fetched(self, result):
         app_id, branches = result
         self._toggle_inputs(True)
+        self._set_loading_active(False)
 
         selected_branch = "public"
         if branches and len(branches) > 1:
@@ -1094,6 +1292,7 @@ class FetchManifestDialog(QDialog):
         self._current_selected_branch = selected_branch
         self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
+        self._set_loading_active(True)
         self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
 
         worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
@@ -1127,6 +1326,7 @@ class FetchManifestDialog(QDialog):
             return
 
         self._toggle_inputs(False)
+        self._set_loading_active(True)
         self.status_label.setText(f"Checking branches for App ID {app_id}...")
         worker = self.task_runner.run(self._fetch_branches_and_prompt, app_id)
         worker.finished.connect(self._on_branches_fetched)
@@ -1144,61 +1344,64 @@ class FetchManifestDialog(QDialog):
         
         branch = getattr(self, "_current_selected_branch", "public")
         metadata = {"branch": branch}
-        if self.parent_window:
+        
+        self.status_label.setText("Processing manifest data...")
+        self._toggle_inputs(False)
+
+        def _parse_task():
             try:
                 from core.tasks.process_zip_task import ProcessZipTask
                 zip_task = ProcessZipTask()
-                parsed_data = zip_task.run(filepath)
-                
-                if parsed_data and parsed_data.get("appid"):
-                    appid = str(parsed_data["appid"])
-                    self.settings.setValue(f"selected_branch/{appid}", branch)
-
-                if parsed_data and parsed_data.get("depots"):
-                    from ui.dialogs.depotselection import DepotSelectionDialog
-                    from utils.settings import get_settings
-                    settings = get_settings()
-                    auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
-                    depots = parsed_data.get("depots")
-                    
-                    selected_depots = None
-                    if auto_skip and len(depots) == 1:
-                        reply = QMessageBox.question(
-                            self,
-                            "Single Depot Option",
-                            "Game has only one depot.\n\nProceed to download and add it to queue?",
-                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                            QMessageBox.StandardButton.Yes,
-                        )
-                        if reply == QMessageBox.StandardButton.Yes:
-                            selected_depots = list(depots.keys())
-                        else:
-                            logger.info("User cancelled single-depot download from search window.")
-                            self._toggle_inputs(True)
-                            self.status_label.setText("Download cancelled.")
-                            return
-                    else:
-                        depot_dialog = DepotSelectionDialog(
-                            parsed_data["appid"],
-                            parsed_data.get("game_name", ""),
-                            depots,
-                            parsed_data.get("header_url"),
-                            self.parent_window,
-                        )
-                        if depot_dialog.exec():
-                            selected_depots = depot_dialog.get_selected_depots()
-                    
-                    if selected_depots:
-                        metadata["selected_depots_list"] = selected_depots
-                        metadata["game_name"] = parsed_data.get("game_name", "")
-                    else:
-                        # User cancelled depot selection
-                        logger.info("User cancelled depot selection.")
-                        self._toggle_inputs(True)
-                        self.status_label.setText("Download cancelled.")
-                        return
+                return zip_task.run(filepath)
             except Exception as e:
                 logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
+                return None
+
+        self._parse_task_runner = TaskRunner(self)
+        worker = self._parse_task_runner.run(_parse_task)
+        worker.finished.connect(lambda parsed_data: self._on_parse_finished(parsed_data, filepath, branch, metadata))
+
+    def _on_parse_finished(self, parsed_data, filepath, branch, metadata):
+        self._toggle_inputs(True)
+        self._set_loading_active(False)
+        if parsed_data and parsed_data.get("appid"):
+            appid = str(parsed_data["appid"])
+            self.settings.setValue(f"selected_branch/{appid}", branch)
+
+        if parsed_data and parsed_data.get("depots"):
+            from ui.dialogs.depotselection import DepotSelectionDialog
+            from utils.settings import get_settings
+            settings = get_settings()
+            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            depots = parsed_data.get("depots")
+            
+            selected_depots = None
+            if auto_skip and len(depots) == 1:
+                dlg = SingleDepotTimerDialog(self, "Single Depot Option", "Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3)
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    selected_depots = list(depots.keys())
+                else:
+                    logger.info("User cancelled single-depot download from search window.")
+                    self.status_label.setText("Download cancelled.")
+                    return
+            else:
+                depot_dialog = DepotSelectionDialog(
+                    parsed_data["appid"],
+                    parsed_data.get("game_name", ""),
+                    depots,
+                    parsed_data.get("header_url"),
+                    self.parent_window,
+                )
+                if depot_dialog.exec():
+                    selected_depots = depot_dialog.get_selected_depots()
+            
+            if selected_depots:
+                metadata["selected_depots_list"] = selected_depots
+                metadata["game_name"] = parsed_data.get("game_name", "")
+            else:
+                logger.info("User cancelled depot selection.")
+                self.status_label.setText("Download cancelled.")
+                return
 
         self.status_label.setText("Download complete! Adding to queue")
 
@@ -1217,6 +1420,7 @@ class FetchManifestDialog(QDialog):
 
     def _handle_error(self, message):
         logger.error(f"Operation failed: {message}")
+        self._set_loading_active(False)
         QMessageBox.critical(self, "Error", message)
         self.status_label.setText("Error occurred")
 
