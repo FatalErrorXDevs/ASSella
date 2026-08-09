@@ -1971,19 +1971,22 @@ class SettingsDialog(QDialog):
             )
 
     def _save_general_settings(self) -> None:
-        api_key = self.api_key_input.text().strip()
-        self.settings.setValue("morrenus_api_key", api_key)
-        try:
-            self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
-        except RuntimeError:
-            pass
-        try:
-            self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
-        except RuntimeError:
-            pass
-        if hasattr(self, "steam_username_input") and self.steam_username_input:
+        if hasattr(self, "api_key_input") and self.api_key_input is not None:
+            api_key = self.api_key_input.text().strip()
+            self.settings.setValue("morrenus_api_key", api_key)
+        if hasattr(self, "use_wirecutter_checkbox") and self.use_wirecutter_checkbox is not None:
+            try:
+                self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
+            except Exception:
+                pass
+        if hasattr(self, "wirecutter_url_input") and self.wirecutter_url_input is not None:
+            try:
+                self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
+            except Exception:
+                pass
+        if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
-        if hasattr(self, "steam_password_input") and self.steam_password_input:
+        if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
             from utils.helpers import encrypt_string
             encrypted_pass = encrypt_string(self.steam_password_input.text())
             self.settings.setValue("steam_password", encrypted_pass)
@@ -2046,24 +2049,26 @@ class SettingsDialog(QDialog):
             )
         
         # Save Consolidated Steamless DRM Remover settings
-        drm_mode = self.steamless_remover_combo.currentData()
-        if drm_mode == "aio":
-            self.settings.setValue("use_steamless_aio", True)
-            self.settings.setValue("use_steamless", False)
-        elif drm_mode == "cli":
-            self.settings.setValue("use_steamless_aio", False)
-            self.settings.setValue("use_steamless", True)
-        else:
-            self.settings.setValue("use_steamless_aio", False)
-            self.settings.setValue("use_steamless", False)
+        if hasattr(self, "steamless_remover_combo") and self.steamless_remover_combo is not None:
+            drm_mode = self.steamless_remover_combo.currentData()
+            if drm_mode == "aio":
+                self.settings.setValue("use_steamless_aio", True)
+                self.settings.setValue("use_steamless", False)
+            elif drm_mode == "cli":
+                self.settings.setValue("use_steamless_aio", False)
+                self.settings.setValue("use_steamless", True)
+            else:
+                self.settings.setValue("use_steamless_aio", False)
+                self.settings.setValue("use_steamless", False)
 
         if hasattr(self, "enable_denuvo_sync_checkbox") and self.enable_denuvo_sync_checkbox is not None:
             self.settings.setValue("enable_denuvo_sync", self.enable_denuvo_sync_checkbox.isChecked())
 
-
         # Save Soundtrack and Search Blacklist filtering toggles
-        self.settings.setValue("filter_soundtracks", self.filter_soundtracks_checkbox.isChecked())
-        self.settings.setValue("filter_search_blacklist", self.filter_search_blacklist_checkbox.isChecked())
+        if hasattr(self, "filter_soundtracks_checkbox") and self.filter_soundtracks_checkbox is not None:
+            self.settings.setValue("filter_soundtracks", self.filter_soundtracks_checkbox.isChecked())
+        if hasattr(self, "filter_search_blacklist_checkbox") and self.filter_search_blacklist_checkbox is not None:
+            self.settings.setValue("filter_search_blacklist", self.filter_search_blacklist_checkbox.isChecked())
 
         # Check if the toggle changed
         old_val = self.settings.value("fakeappid_db_integration", False, type=bool)
