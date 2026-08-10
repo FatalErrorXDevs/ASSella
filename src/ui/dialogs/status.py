@@ -72,30 +72,31 @@ class StatusDialog(QDialog):
             return
 
         task_manager = self.parent_window.task_manager
-        status = task_manager.get_component_status()
+        status = task_manager.get_component_status() if hasattr(task_manager, "get_component_status") else None
+        if not isinstance(status, dict):
+            return
 
-        # Map status strings to colors
         status_map = {
-            "ok": task_manager.STATUS_OK,
-            "in_progress": task_manager.STATUS_IN_PROGRESS,
-            "error": task_manager.STATUS_ERROR,
+            "ok": getattr(task_manager, "STATUS_OK", "#00FF00"),
+            "in_progress": getattr(task_manager, "STATUS_IN_PROGRESS", "#FFA500"),
+            "error": getattr(task_manager, "STATUS_ERROR", "#FF0000"),
             "not_run": accent_color,
         }
 
-        self.ddm_status = status_map.get(status["ddm_status"], task_manager.STATUS_OK)
-        self.ddm_status_text = status["ddm_status_text"]
+        self.ddm_status = status_map.get(status.get("ddm_status"), accent_color)
+        self.ddm_status_text = status.get("ddm_status_text", "Not run")
 
         self.slscheevo_status = status_map.get(
-            status["slscheevo_status"], task_manager.STATUS_OK
+            status.get("slscheevo_status"), accent_color
         )
-        self.slscheevo_status_text = status["slscheevo_status_text"]
+        self.slscheevo_status_text = status.get("slscheevo_status_text", "Not run")
 
         self.steamless_status = status_map.get(
-            status["steamless_status"], task_manager.STATUS_OK
+            status.get("steamless_status"), accent_color
         )
-        self.steamless_status_text = status["steamless_status_text"]
+        self.steamless_status_text = status.get("steamless_status_text", "Not run")
 
-        self.last_game_name = task_manager.last_installed_game or "No game installed"
+        self.last_game_name = getattr(task_manager, "last_installed_game", "No game installed") or "No game installed"
 
     def _setup_ui(self) -> None:
         """Orchestrate UI creation."""

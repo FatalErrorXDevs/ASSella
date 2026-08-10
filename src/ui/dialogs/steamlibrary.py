@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 class SteamLibraryDialog(QDialog):
     """Dialog for selecting a Steam library folder."""
 
-    def __init__(self, library_paths: List[str], parent: Optional[QWidget] = None):
+    def __init__(self, library_paths: Optional[List[str]] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Select Steam Library")
         self.setMinimumWidth(500)
 
+        library_paths = library_paths or []
         self.selected_path: Optional[str] = None
         self.list_widget: Optional[QListWidget] = None
 

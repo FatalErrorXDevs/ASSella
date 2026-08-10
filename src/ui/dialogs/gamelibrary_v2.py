@@ -616,7 +616,18 @@ class GameDetailsDialogV2(QDialog):
             item_widget.addWidget(val)
             return item_widget, val
 
-        size_str = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
+        if self.parent_window and hasattr(self.parent_window, "_format_size"):
+            size_str = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
+        else:
+            sb = self.game_data.get("size_on_disk", 0) or 0
+            if sb < 1024:
+                size_str = f"{sb} B"
+            elif sb < 1024 * 1024:
+                size_str = f"{sb / 1024:.1f} KB"
+            elif sb < 1024 * 1024 * 1024:
+                size_str = f"{sb / (1024 * 1024):.1f} MB"
+            else:
+                size_str = f"{sb / (1024 * 1024 * 1024):.2f} GB"
         ri, self.size_val_lbl = _stat_item("SIZE", size_str)
         stats_row.addLayout(ri)
 
@@ -998,12 +1009,12 @@ class GameDetailsDialogV2(QDialog):
         self._load_branches_immediate()
         self._update_status_ui(self.game_data.get("update_status"))
 
-        if self.parent_window.game_manager:
+        if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             self.parent_window.game_manager.game_update_status_changed.connect(self._on_status_changed)
             self.parent_window.game_manager.game_hubcap_status_checked.connect(self._on_hubcap_status_changed)
             
             def _cleanup_signals():
-                if self.parent_window.game_manager:
+                if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
                     try:
                         self.parent_window.game_manager.game_update_status_changed.disconnect(self._on_status_changed)
                     except Exception:
@@ -1971,7 +1982,7 @@ class GameDetailsDialogV2(QDialog):
 
     # ──────────────────────────────────────────
     def _on_status_btn_clicked(self):
-        if self.parent_window.game_manager:
+        if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             self.status_tile.setEnabled(False)
             self._update_status_ui("checking")
             self._load_branches_async(force_refresh=True)
@@ -2169,12 +2180,14 @@ class GameDetailsDialogV2(QDialog):
         """)
         self.gb_remove_btn.setEnabled(False)
 
-        self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
-        self.finished.connect(
-            lambda: self.parent_window.goldberg_check_complete.disconnect(
-                self._on_goldberg_check_complete)
-            if hasattr(self.parent_window, "goldberg_check_complete") else None)
-        self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
+        if self.parent_window and hasattr(self.parent_window, "goldberg_check_complete") and self.parent_window.goldberg_check_complete:
+            self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
+            self.finished.connect(
+                lambda: self.parent_window.goldberg_check_complete.disconnect(
+                    self._on_goldberg_check_complete)
+                if hasattr(self.parent_window, "goldberg_check_complete") and self.parent_window.goldberg_check_complete else None)
+        if self.parent_window and hasattr(self.parent_window, "executor") and self.parent_window.executor:
+            self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
 
         def _apply_gb():
             if self.parent_window.main_window and self.parent_window.main_window.task_manager:

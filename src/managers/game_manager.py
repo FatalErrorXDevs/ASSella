@@ -62,10 +62,10 @@ class GameManager(QObject):
         self.library_updated.emit()
         self.scan_complete.emit(games_found)
 
-    def __init__(self, main_window):
+    def __init__(self, main_window=None):
         super().__init__()
         self.main_window = main_window
-        self.settings = main_window.settings
+        self.settings = main_window.settings if main_window and hasattr(main_window, "settings") and main_window.settings else get_settings()
 
         # Game library data
         self.games = []
