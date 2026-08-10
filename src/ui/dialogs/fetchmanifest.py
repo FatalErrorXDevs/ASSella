@@ -46,10 +46,11 @@ class SingleDepotTimerDialog(QDialog):
         self.setFixedSize(380, 160)
         self.seconds = seconds
         
-        from utils.color_utils import get_theme_colors, get_best_foreground_color
-        theme = get_theme_colors()
-        ac = theme.get("accent_color", "#7ab3ff")
-        bg = theme.get("background_color", "#141416")
+        from utils.settings import get_settings
+        from utils.color_utils import get_best_foreground_color
+        settings = get_settings()
+        ac = settings.value("accent_color", "#7ab3ff", type=str)
+        bg = settings.value("background_color", "#141416", type=str)
         text_color = get_best_foreground_color(ac)
 
         self.setStyleSheet(f"""
