@@ -4,13 +4,220 @@ import sys
 import re
 import psutil
 import subprocess
-from typing import Optional
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional
 
 
 logger = logging.getLogger(__name__)
 
 _slssteam_so_path_cache = None
 _library_inject_so_path_cache = None
+
+# ---------------------------------------------------------------------------
+# SteamEnv — single source of truth for Steam/SLS path resolution
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SteamEnv:
+    """Resolved paths for Steam and SLSsteam for the current user environment.
+
+    Detection is Flatpak vs Native only (per SLS dev guidance).
+    The OS/distro never changes these paths — only how Steam was installed does.
+
+    Based on headcrab.sh's flatpakcheck() pattern:
+        flatpakcheck() { [ -d "$FlatpakSteamInstallDir" ] }
+    where FlatpakSteamInstallDir = ~/.var/app/com.valvesoftware.Steam/.steam/steam
+    """
+    is_flatpak: bool
+    steam_path: Optional[str]              # Steam root dir (resolved)
+    sls_config_path: Path                  # config.yaml for SLSsteam
+    sls_log_path: Path                     # .SLSsteam.log
+    sls_install_dir: Path                  # directory containing SLSsteam.so
+    sls_config_dir: Path                   # ~/.config/SLSsteam or Flatpak equiv
+    steamapps_paths: List[Path]            # all steamapps dirs to search (ACF etc.)
+    loginusers_path: Optional[Path]        # loginusers.vdf path, None if not found
+
+    def steam_found(self) -> bool:
+        return self.steam_path is not None
+
+    def sls_config_exists(self) -> bool:
+        return self.sls_config_path.exists()
+
+    def sls_log_exists(self) -> bool:
+        return self.sls_log_path.exists()
+
+    def sls_installed(self) -> bool:
+        """Return True if SLSsteam.so is present in the expected install dir."""
+        return (self.sls_install_dir / "SLSsteam.so").exists()
+
+    def get_diagnostic_summary(self) -> str:
+        """Human-readable summary for logging/warnings."""
+        lines = [
+            f"Steam type   : {'Flatpak' if self.is_flatpak else 'Native'}",
+            f"Steam path   : {self.steam_path or 'NOT FOUND'}",
+            f"SLS config   : {self.sls_config_path} ({'exists' if self.sls_config_exists() else 'MISSING'})",
+            f"SLS log      : {self.sls_log_path} ({'exists' if self.sls_log_exists() else 'MISSING'})",
+            f"SLS installed: {'yes' if self.sls_installed() else 'NO'}",
+            f"Steamapps    : {[str(p) for p in self.steamapps_paths]}",
+            f"loginusers   : {self.loginusers_path or 'NOT FOUND'}",
+        ]
+        return "\n".join(lines)
+
+
+# Module-level cache — populated lazily, invalidated by invalidate_steam_env_cache()
+_steam_env_cache: Optional[SteamEnv] = None
+_steam_env_lock = threading.Lock()
+
+
+def _build_steam_env() -> SteamEnv:
+    """Internal: detect Steam type and resolve all paths.
+
+    Detection order (mirrors headcrab flatpakcheck):
+      1. ~/.var/app/com.valvesoftware.Steam/.steam/steam  →  Flatpak
+      2. ~/.local/share/Steam / ~/.steam/steam            →  Native
+      3. Neither found                                    →  Native paths used, warnings emitted
+    """
+    home = Path.home()
+
+    # --- Flatpak detection (headcrab's flatpakcheck pattern) ---
+    flatpak_steam_sentinel = home / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "steam"
+    is_flatpak = flatpak_steam_sentinel.is_dir()
+
+    if is_flatpak:
+        # ── Flatpak paths ──────────────────────────────────────────────────
+        flatpak_base = home / ".var" / "app" / "com.valvesoftware.Steam"
+
+        # Steam root: data/Steam is the real install; .steam/steam is the symlink
+        steam_candidate = flatpak_base / "data" / "Steam"
+        steam_path = str(steam_candidate.resolve()) if (steam_candidate / "steamapps").is_dir() else None
+
+        sls_config_dir = flatpak_base / ".config" / "SLSsteam"
+        sls_config_path = sls_config_dir / "config.yaml"
+        sls_log_path = flatpak_base / ".SLSsteam.log"
+        sls_install_dir = flatpak_base / ".local" / "share" / "SLSsteam"
+
+        # Build steamapps search list
+        steamapps_paths: List[Path] = []
+        if steam_path:
+            steamapps_paths.append(Path(steam_path) / "steamapps")
+
+        # loginusers.vdf
+        loginusers_candidate = (
+            Path(steam_path) / "config" / "loginusers.vdf"
+            if steam_path else None
+        )
+        loginusers_path = loginusers_candidate if (loginusers_candidate and loginusers_candidate.exists()) else None
+
+        logger.info(
+            f"SteamEnv: Flatpak Steam detected. "
+            f"SLS config: {sls_config_path}, log: {sls_log_path}"
+        )
+
+    else:
+        # ── Native paths ───────────────────────────────────────────────────
+        # Steam root: prefer ~/.local/share/Steam, fall back to ~/.steam/steam symlink
+        native_candidates = [
+            home / ".local" / "share" / "Steam",
+            home / ".steam" / "steam",
+        ]
+        steam_path = None
+        for candidate in native_candidates:
+            if (candidate / "steamapps").is_dir():
+                steam_path = str(candidate.resolve())
+                break
+
+        # SLS config: respect XDG_CONFIG_HOME, else ~/.config/SLSsteam
+        xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "")
+        if xdg_cfg and Path(xdg_cfg).is_absolute():
+            sls_config_dir = Path(xdg_cfg) / "SLSsteam"
+        else:
+            sls_config_dir = home / ".config" / "SLSsteam"
+        sls_config_path = sls_config_dir / "config.yaml"
+
+        sls_log_path = home / ".SLSsteam.log"
+        sls_install_dir = home / ".local" / "share" / "SLSsteam"
+
+        # Build steamapps search list
+        steamapps_paths = []
+        if steam_path:
+            steamapps_paths.append(Path(steam_path) / "steamapps")
+
+        # loginusers.vdf
+        loginusers_candidates = [
+            home / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            home / ".steam" / "steam" / "config" / "loginusers.vdf",
+            home / ".steam" / "root" / "config" / "loginusers.vdf",
+        ]
+        loginusers_path = next(
+            (p for p in loginusers_candidates if p.exists()), None
+        )
+
+        logger.info(
+            f"SteamEnv: Native Steam detected. "
+            f"SLS config: {sls_config_path}, log: {sls_log_path}"
+        )
+
+    # --- Additional steamapps from libraryfolders.vdf ---
+    if steam_path:
+        try:
+            vdf_path = Path(steam_path) / "steamapps" / "libraryfolders.vdf"
+            if vdf_path.exists():
+                content = vdf_path.read_text(encoding="utf-8", errors="replace")
+                for m in re.finditer(r'"path"\s+"([^"]+)"', content):
+                    lib = Path(m.group(1).replace("\\\\", "\\"))
+                    candidate_sa = lib / "steamapps"
+                    if candidate_sa.is_dir() and candidate_sa not in steamapps_paths:
+                        steamapps_paths.append(candidate_sa)
+        except (OSError, IOError) as e:
+            logger.warning(f"SteamEnv: could not parse libraryfolders.vdf: {e}")
+
+    # --- Emit warnings for missing critical paths ---
+    if not steam_path:
+        logger.warning(
+            "SteamEnv: Steam installation not found in any expected location. "
+            "SLSsteam features that require Steam (ACF creation, library index) will use fallbacks."
+        )
+
+    env = SteamEnv(
+        is_flatpak=is_flatpak,
+        steam_path=steam_path,
+        sls_config_path=sls_config_path,
+        sls_log_path=sls_log_path,
+        sls_install_dir=sls_install_dir,
+        sls_config_dir=sls_config_dir,
+        steamapps_paths=steamapps_paths,
+        loginusers_path=loginusers_path,
+    )
+    logger.debug("SteamEnv diagnostic:\n" + env.get_diagnostic_summary())
+    return env
+
+
+def get_steam_env() -> SteamEnv:
+    """Return the cached SteamEnv, building it on first call.
+
+    Thread-safe. Call invalidate_steam_env_cache() to force re-detection
+    (e.g. when the user changes paths in Settings).
+    """
+    global _steam_env_cache
+    if _steam_env_cache is not None:
+        return _steam_env_cache
+    with _steam_env_lock:
+        if _steam_env_cache is None:  # double-checked locking
+            _steam_env_cache = _build_steam_env()
+    return _steam_env_cache
+
+
+def invalidate_steam_env_cache() -> None:
+    """Force SteamEnv to be re-detected on the next call to get_steam_env().
+
+    Call this when the user changes Steam or SLSsteam paths in Settings.
+    """
+    global _steam_env_cache
+    with _steam_env_lock:
+        _steam_env_cache = None
+    logger.info("SteamEnv cache invalidated — will re-detect on next access")
 
 
 def find_steam_install():
@@ -452,47 +659,81 @@ def app_id_exists_in_applist(app_list_dir, app_id_to_check):
 
 
 def get_most_recent_steam_id() -> Optional[str]:
-    """Find the most recently logged in Steam ID64 from loginusers.vdf."""
-    from pathlib import Path
-    paths = [
-        Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
-        Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
-        Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
-    ]
-    
-    for path in paths:
-        if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                
-                user_pattern = re.compile(r'"(7656\d+)"\s*\{([^}]+)\}', re.MULTILINE | re.DOTALL)
-                users = []
-                for match in user_pattern.finditer(content):
-                    steam_id = match.group(1)
-                    body = match.group(2)
-                    
-                    ts_match = re.search(r'"Timestamp"\s+"(\d+)"', body)
-                    timestamp = int(ts_match.group(1)) if ts_match else 0
-                    
-                    al_match = re.search(r'"AutoLogin"\s+"(\d+)"', body)
-                    auto_login = int(al_match.group(1)) if al_match else 0
-                    
-                    mr_match = re.search(r'"MostRecent"\s+"(\d+)"', body)
-                    most_recent = int(mr_match.group(1)) if mr_match else 0
-                    
-                    users.append({
-                        "steam_id": steam_id,
-                        "timestamp": timestamp,
-                        "auto_login": auto_login,
-                        "most_recent": most_recent
-                    })
-                
-                if not users:
-                    continue
-                
-                users.sort(key=lambda u: (u["auto_login"], u["most_recent"], u["timestamp"]), reverse=True)
-                return users[0]["steam_id"]
-            except Exception as e:
-                logger.error(f"Error parsing loginusers.vdf at {path}: {e}")
+    """Find the most recently logged in Steam ID64 from loginusers.vdf.
+
+    Uses SteamEnv for Flatpak-aware path detection, with additional
+    fallback candidates in case the environment hasn't been built yet.
+    """
+    # Primary: use SteamEnv (handles both Flatpak and native)
+    try:
+        env = get_steam_env()
+        candidate_paths = []
+        if env.loginusers_path:
+            candidate_paths.append(env.loginusers_path)
+        # Safety fallback: extra native paths in case env resolution missed one
+        candidate_paths += [
+            Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
+            Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
+            Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
+        ]
+    except Exception:
+        candidate_paths = [
+            Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
+            Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
+            Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
+        ]
+
+    # Deduplicate while preserving order (env path takes priority)
+    seen: set = set()
+    unique_paths = []
+    for p in candidate_paths:
+        rp = str(p.resolve()) if p.exists() else str(p)
+        if rp not in seen:
+            seen.add(rp)
+            unique_paths.append(p)
+
+    for path in unique_paths:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            user_pattern = re.compile(r'"(7656\d+)"\s*\{([^}]+)\}', re.MULTILINE | re.DOTALL)
+            users = []
+            for match in user_pattern.finditer(content):
+                steam_id = match.group(1)
+                body = match.group(2)
+
+                ts_match = re.search(r'"Timestamp"\s+"(\d+)"', body)
+                timestamp = int(ts_match.group(1)) if ts_match else 0
+
+                al_match = re.search(r'"AutoLogin"\s+"(\d+)"', body)
+                auto_login = int(al_match.group(1)) if al_match else 0
+
+                mr_match = re.search(r'"MostRecent"\s+"(\d+)"', body)
+                most_recent = int(mr_match.group(1)) if mr_match else 0
+
+                users.append({
+                    "steam_id": steam_id,
+                    "timestamp": timestamp,
+                    "auto_login": auto_login,
+                    "most_recent": most_recent,
+                })
+
+            if not users:
+                continue
+
+            users.sort(
+                key=lambda u: (u["auto_login"], u["most_recent"], u["timestamp"]),
+                reverse=True,
+            )
+            logger.debug(f"get_most_recent_steam_id: found {users[0]['steam_id']} from {path}")
+            return users[0]["steam_id"]
+        except Exception as e:
+            logger.error(f"Error parsing loginusers.vdf at {path}: {e}")
+
+    logger.warning("get_most_recent_steam_id: loginusers.vdf not found in any known location")
     return None

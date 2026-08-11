@@ -161,7 +161,7 @@ def build_acf_content(
         f"{{\n"
         f'\t"appid"\t\t"{game_data.get("appid", "")}"\n'
         f'\t"Universe"\t\t"1"\n'
-        f'\t"name"\t\t"{game_data.get("game_name", "")}"\n'
+        f'\t"name"\t\t"{game_data.get("name") or game_data.get("game_name", "")}"\n'
         f'\t"StateFlags"\t\t"4"\n'
         f'\t"installdir"\t\t"{install_folder_name}"\n'
         f'\t"LastUpdated"\t\t"0"\n'

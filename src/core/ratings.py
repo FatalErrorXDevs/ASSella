@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Cache paths & expiry
 # ---------------------------------------------------------------------------
-DENUVO_CACHE_PATH  = Path.home() / ".local" / "share" / "ACCELA" / "denuvo_cache.json"
-PROTONDB_CACHE_PATH = Path.home() / ".local" / "share" / "ACCELA" / "protondb_cache.json"
+from utils.helpers import get_data_file_path
+DENUVO_CACHE_PATH = get_data_file_path("denuvo_cache.json")
+PROTONDB_CACHE_PATH = get_data_file_path("protondb_cache.json")
 
 DENUVO_CACHE_EXPIRY          = 21600    # 6 hours
 PROTONDB_CACHE_EXPIRY_SUCCESS = 604800  # 7 days

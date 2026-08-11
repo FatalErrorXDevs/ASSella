@@ -92,16 +92,36 @@ def get_ticket_status(appid: str) -> Dict[str, Any]:
 
 
 def _get_active_steam_id_64() -> str:
-    """Retrieve active user's SteamID64 from loginusers.vdf, or fallback."""
+    """Retrieve active user's SteamID64 from loginusers.vdf, or fallback.
+
+    Uses SteamEnv for Flatpak-aware path detection.
+    """
     try:
-        vdf_path = Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf"
-        if vdf_path.exists():
-            content = vdf_path.read_text(encoding="utf-8", errors="ignore")
-            matches = re.findall(r'"(7656119\d{10})"', content)
-            if matches:
-                return matches[0]
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        candidate_paths = []
+        if env.loginusers_path:
+            candidate_paths.append(env.loginusers_path)
+        # Extra fallbacks in case env resolution missed something
+        candidate_paths += [
+            Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
+        ]
     except Exception:
-        pass
+        candidate_paths = [
+            Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
+        ]
+
+    for vdf_path in candidate_paths:
+        try:
+            if vdf_path.exists():
+                content = vdf_path.read_text(encoding="utf-8", errors="ignore")
+                matches = re.findall(r'"(7656119\d{10})"', content)
+                if matches:
+                    return matches[0]
+        except Exception:
+            continue
     return "76561198000000000"
 
 
@@ -408,7 +428,8 @@ def get_available_ticket_games() -> List[Dict[str, str]]:
         # 2. Check install history for cached game names
         try:
             import json
-            hist_file = Path.home() / ".local" / "share" / "ACCELA" / "install_history.json"
+            from utils.helpers import get_data_file_path
+            hist_file = get_data_file_path("install_history.json")
             if hist_file.exists():
                 hdata = json.loads(hist_file.read_text(encoding="utf-8", errors="ignore"))
                 if isinstance(hdata, list):

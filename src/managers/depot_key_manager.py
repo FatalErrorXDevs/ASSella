@@ -24,8 +24,8 @@ _lock = threading.Lock()
 
 
 def _get_db_path() -> Path:
-    path = get_base_path() / "depot_keys.db"
-    return path
+    from utils.helpers import get_data_file_path
+    return get_data_file_path("depot_keys.db")
 
 
 def _init_db(conn: sqlite3.Connection) -> None:

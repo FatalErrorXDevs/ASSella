@@ -74,6 +74,8 @@ def migrate_manifests(logger):
 def main():
     logger = setup_logging()
     migrate_manifests(logger)
+    from utils.helpers import migrate_databases_to_db_folder
+    migrate_databases_to_db_folder()
 
     logger.info("========================================")
     logger.info(f"ASSELA {app_version} starting...")

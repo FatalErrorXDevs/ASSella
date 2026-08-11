@@ -2,6 +2,7 @@ import os
 import platform
 import logging
 from pathlib import Path
+from typing import Optional, Dict, List, Tuple, Any
 
 from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QIntValidator, QPalette, QDesktopServices, QLinearGradient
@@ -1829,21 +1830,24 @@ class GameDetailsDialogV2(QDialog):
             self.eos_tile.setVisible(False)
             return
 
-        # Phase 2: SLSonline Dependency Check
+        # Phase 2: SLSonline Dependency Check & Active Proxy Detection
         self.eos_tile.setVisible(True)
         is_sls_active = self.sls_tile.isChecked() if hasattr(self, "sls_tile") else False
-        has_yes = any(p.suffix == ".yes" for p in dll_paths)
+        has_yes = any(p.name.lower() == "eossdk-win64-shipping.yes" or p.suffix.lower() == ".yes" for p in dll_paths)
 
-        if not is_sls_active:
-            self.eos_tile.setEnabled(False)
-            self.eos_tile.update_state(False, self.accent_color, inactive_sub="Enable SLSonline")
-            self.eos_tile.setToolTip("Activate SLSonline first to enable EOS Proxy.")
+        if has_yes:
+            # Proxy is currently applied (.yes exists) -> Active state
+            self.eos_tile.setEnabled(True)  # Allow removing proxy regardless of SLS state
+            self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
+            self.eos_tile.setToolTip("Epic Online Services proxy is active. Click to remove proxy and restore original DLL.")
         else:
-            self.eos_tile.setEnabled(True)
-            if has_yes:
-                self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
-                self.eos_tile.setToolTip("Remove Epic Online Services proxy and restore original DLL.")
+            # Proxy is not applied (original DLL present)
+            if not is_sls_active:
+                self.eos_tile.setEnabled(False)
+                self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable SLSonline")
+                self.eos_tile.setToolTip("Activate SLSonline first to enable EOS Proxy.")
             else:
+                self.eos_tile.setEnabled(True)
                 self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
                 self.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
 
@@ -1857,7 +1861,7 @@ class GameDetailsDialogV2(QDialog):
         if not dll_paths:
             return
 
-        has_yes = any(p.suffix == ".yes" for p in dll_paths)
+        has_yes = any(p.name.lower() == "eossdk-win64-shipping.yes" or p.suffix.lower() == ".yes" for p in dll_paths)
         from utils.paths import Paths
         proxy_src = Paths.deps("EOSSDK-Win64-Shipping.dll")
 
@@ -1868,7 +1872,7 @@ class GameDetailsDialogV2(QDialog):
                     if ".DepotDownloader" in Path(root).parts:
                         continue
                     for file in files:
-                        if file == "EOSSDK-Win64-Shipping.yes":
+                        if file.lower() == "eossdk-win64-shipping.yes":
                             yes_path = Path(root) / file
                             dll_path = Path(root) / "EOSSDK-Win64-Shipping.dll"
                             if dll_path.exists():
@@ -1886,7 +1890,7 @@ class GameDetailsDialogV2(QDialog):
                     if ".DepotDownloader" in Path(root).parts:
                         continue
                     for file in files:
-                        if file == "EOSSDK-Win64-Shipping.dll":
+                        if file.lower() == "eossdk-win64-shipping.dll":
                             dll_path = Path(root) / file
                             yes_path = Path(root) / "EOSSDK-Win64-Shipping.yes"
                             if not yes_path.exists():
@@ -1907,8 +1911,7 @@ class GameDetailsDialogV2(QDialog):
         self._update_eos_btn_state()
 
     def _init_slsonline_logic(self):
-        # Update EOS Proxy button state and connect action
-        self._update_eos_btn_state()
+        # Connect action
         self.eos_tile.clicked.connect(self._on_eos_btn_clicked)
 
         if is_slssteam_config_management_enabled() and self.appid not in ("0", "N/A", "unknown", "480"):
@@ -1973,12 +1976,15 @@ class GameDetailsDialogV2(QDialog):
                                 remove_fake_app_id(config, self.appid, cur)
                             add_fake_app_id(config, self.appid, name, fid)
 
-                self.sls_tile.toggled.connect(_tog)
+                self.sls_tile.clicked.connect(_tog)
                 self.sls_input.editingFinished.connect(_fin)
         else:
             self.sls_tile.setEnabled(False)
             self.sls_tile.update_state(False, self.accent_color)
             self.sls_input.setEnabled(False)
+
+        # Update EOS Proxy tile state AFTER sls_tile state has been restored
+        self._update_eos_btn_state()
 
     # ──────────────────────────────────────────
     def _on_status_btn_clicked(self):
@@ -2456,17 +2462,74 @@ class GameDetailsDialogV2(QDialog):
             if self.appid and self.appid not in ("0", "N/A", "unknown"):
                 try:
                     from core.steam_helpers import get_steam_libraries
+                    from utils.workshop_helpers import fetch_workshop_details, strip_emojis
                     from pathlib import Path
+                    from datetime import datetime
+
+                    wids = []
+                    local_mod_data = []
+
                     for lib in get_steam_libraries():
                         ws_dir = Path(lib) / "steamapps" / "workshop" / "content" / str(self.appid)
                         if ws_dir.exists():
                             for item_dir in ws_dir.iterdir():
-                                if item_dir.is_dir() and item_dir.name.isdigit():
-                                    size = sum(f.stat().st_size for f in item_dir.rglob('*') if f.is_file())
-                                    ws_mods.append({"wid": item_dir.name, "path": str(item_dir), "size": size})
+                                try:
+                                    if item_dir.is_dir() and item_dir.name.isdigit():
+                                        wid = item_dir.name
+                                        wids.append(wid)
+                                        size = 0
+                                        mtimes = []
+                                        try:
+                                            for f in item_dir.rglob('*'):
+                                                try:
+                                                    if f.is_file():
+                                                        st = f.stat()
+                                                        size += st.st_size
+                                                        mtimes.append(st.st_mtime)
+                                                except OSError:
+                                                    pass
+                                        except OSError:
+                                            pass
+                                        folder_mtime = item_dir.stat().st_mtime if item_dir.exists() else 0
+                                        mtime = max(mtimes, default=folder_mtime)
+                                        local_mod_data.append({
+                                            "wid": wid,
+                                            "path": str(item_dir),
+                                            "size": size,
+                                            "mtime": mtime,
+                                        })
+                                except OSError:
+                                    pass
+
+                    # Batch fetch real titles & updated timestamps from Steam API
+                    api_details = fetch_workshop_details(wids) if wids else {}
+
+                    for mod in local_mod_data:
+                        wid = mod["wid"]
+                        details = api_details.get(wid, {})
+                        raw_title = details.get("title") or f"Workshop Item #{wid}"
+                        time_updated = details.get("time_updated", 0)
+
+                        # Update available if Steam updated time is newer than local folder mtime
+                        update_available = (time_updated > 0 and time_updated > mod["mtime"] + 60)
+
+                        dt = datetime.fromtimestamp(mod["mtime"]) if mod["mtime"] > 0 else datetime.now()
+                        date_str = dt.strftime("%m/%d/%Y")
+
+                        ws_mods.append({
+                            "wid": wid,
+                            "title": raw_title,
+                            "path": mod["path"],
+                            "size": mod["size"],
+                            "mtime": mod["mtime"],
+                            "date_str": date_str,
+                            "time_updated": time_updated,
+                            "update_available": update_available,
+                        })
+
                 except Exception as e:
                     logger.error(f"Error scanning workshop mods: {e}")
-            
+
             from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
             QMetaObject.invokeMethod(self, "_on_workshop_mods_scanned", Qt.ConnectionType.QueuedConnection, Q_ARG(list, ws_mods))
 
@@ -2475,13 +2538,72 @@ class GameDetailsDialogV2(QDialog):
 
     @pyqtSlot(list)
     def _on_workshop_mods_scanned(self, ws_mods):
+        if not hasattr(self, "ws_layout") or self.ws_layout is None:
+            return
 
+        # Clear existing layout items safely
+        while self.ws_layout.count() > 0:
+            item = self.ws_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
-        # 2. Update Workshop Tab
-        if hasattr(self, "ws_loading_lbl") and self.ws_loading_lbl:
-            self.ws_layout.removeWidget(self.ws_loading_lbl)
-            self.ws_loading_lbl.deleteLater()
-            self.ws_loading_lbl = None
+        from utils.workshop_helpers import strip_emojis
+        from utils.color_utils import get_best_foreground_color
+        btn_fg = get_best_foreground_color(self.accent_color)
+
+        # Header Row
+        header_widget = QWidget()
+        header_lay = QHBoxLayout(header_widget)
+        header_lay.setContentsMargins(0, 0, 0, 6)
+
+        game_name = strip_emojis(self.game_data.get('game_name', 'Game'))
+        title_lbl = QLabel(f"Installed Workshop Mods ({game_name})")
+        title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color};")
+        header_lay.addWidget(title_lbl, 1)
+
+        outdated_wids = [m["wid"] for m in ws_mods if m.get("update_available")]
+        if outdated_wids:
+            btn_update_all = QPushButton(f"Update All ({len(outdated_wids)})")
+            btn_update_all.setFixedHeight(28)
+            btn_update_all.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_update_all.setStyleSheet("""
+                QPushButton {
+                    background: #E5A93C;
+                    border: none;
+                    border-radius: 6px;
+                    color: #000000;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    padding: 0 12px;
+                }
+                QPushButton:hover {
+                    background: #F0B84D;
+                }
+            """)
+            btn_update_all.clicked.connect(lambda: self._update_workshop_items(outdated_wids))
+            header_lay.addWidget(btn_update_all)
+
+        btn_rescan = QPushButton("Refresh")
+        btn_rescan.setFixedHeight(28)
+        btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_rescan.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: bold;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.15);
+            }}
+        """)
+        btn_rescan.clicked.connect(self._scan_workshop_mods_async)
+        header_lay.addWidget(btn_rescan)
+
+        self.ws_layout.addWidget(header_widget)
 
         if not ws_mods:
             empty_box = QFrame()
@@ -2496,76 +2618,207 @@ class GameDetailsDialogV2(QDialog):
         else:
             for mod in ws_mods:
                 mod_card = QFrame()
-                mod_card.setStyleSheet(f"""
-                    QFrame {{
+                mod_card.setObjectName("modCard")
+                mod_card.setStyleSheet("""
+                    QFrame#modCard {
                         background: rgba(255, 255, 255, 0.04);
                         border: 1px solid rgba(255, 255, 255, 0.08);
                         border-radius: 10px;
-                    }}
-                    QFrame:hover {{
+                    }
+                    QFrame#modCard:hover {
                         background: rgba(255, 255, 255, 0.07);
                         border-color: rgba(255, 255, 255, 0.15);
-                    }}
+                    }
                 """)
                 card_lay = QHBoxLayout(mod_card)
                 card_lay.setContentsMargins(14, 10, 14, 10)
                 card_lay.setSpacing(10)
 
-                mb_size = mod['size'] / (1024 * 1024)
-                mod_info = QLabel(f"<b style='color: #FFFFFF; font-size: 9.5pt;'>Workshop Item #{mod['wid']}</b><br><span style='color: rgba(255,255,255,0.6); font-size: 8pt;'>Size: {mb_size:.2f} MB</span>")
-                mod_info.setStyleSheet("background: transparent;")
+                size_bytes = mod['size']
+                if size_bytes >= 1024 * 1024 * 1024:
+                    formatted_size = f"{size_bytes / (1024**3):.2f} GB"
+                elif size_bytes >= 1024 * 1024:
+                    formatted_size = f"{size_bytes / (1024**2):.2f} MB"
+                else:
+                    formatted_size = f"{size_bytes / 1024:.2f} KB"
+
+                date_str = mod.get('date_str', '')
+                details_line = f"{formatted_size} • {date_str}" if date_str else formatted_size
+                import html
+                clean_title = str(mod.get('title', ''))      # raw title for dialogs/delete
+                mod_title = html.escape(clean_title)          # HTML-escaped for QLabel rich text
+
+                update_badge = ""
+                if mod.get("update_available"):
+                    update_badge = "<span style='background: #E5A93C; color: #000000; font-size: 7.5pt; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin-left: 8px;'>UPDATE AVAILABLE</span>"
+
+                info_text = (
+                    f"<b style='color: #FFFFFF; font-size: 9.5pt;'>{mod_title}</b>{update_badge}<br>"
+                    f"<span style='color: rgba(255,255,255,0.6); font-size: 8pt;'>{details_line}</span>"
+                )
+                mod_info = QLabel(info_text)
+                mod_info.setStyleSheet("background: transparent; border: none;")
                 card_lay.addWidget(mod_info, 1)
 
-                from utils.color_utils import get_best_foreground_color
-                btn_fg = get_best_foreground_color(self.accent_color)
-
-                btn_view = QPushButton("View on Workshop")
-                btn_view.setFixedHeight(28)
-                btn_view.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_view.setStyleSheet(f"""
-                    QPushButton {{
-                        background: rgba(255, 255, 255, 0.08);
-                        border: 1px solid rgba(255, 255, 255, 0.12);
-                        border-radius: 6px;
-                        color: #FFFFFF;
-                        font-size: 8.5pt;
-                        font-weight: bold;
-                        padding: 0 12px;
-                    }}
-                    QPushButton:hover {{
-                        background: {self.accent_color};
-                        border-color: {self.accent_color};
-                        color: {btn_fg};
-                    }}
-                """)
                 wid = mod['wid']
-                btn_view.clicked.connect(lambda _c, w=wid: QDesktopServices.openUrl(QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={w}")))
-                card_lay.addWidget(btn_view)
-
-                btn_open = QPushButton("Open Folder")
-                btn_open.setFixedHeight(28)
-                btn_open.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn_open.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {self.accent_color};
-                        border: none;
-                        border-radius: 6px;
-                        color: {btn_fg};
-                        font-size: 8.5pt;
-                        font-weight: bold;
-                        padding: 0 12px;
-                    }}
-                    QPushButton:hover {{
-                        opacity: 0.9;
-                    }}
-                """)
                 mod_path = mod['path']
-                btn_open.clicked.connect(lambda _c, p=mod_path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
-                card_lay.addWidget(btn_open)
+
+                # ── Action buttons (SVG icons, theme-coloured) ──────────────────
+                from utils.color_utils import make_svg_icon
+                from utils.helpers import get_base_path
+                from PyQt6.QtCore import QSize as _QSize
+                _icons_dir = str(get_base_path() / "media" / "icons")
+
+                _UPD_COLOR  = "#E5A93C"           # amber — always warm update colour
+                _MUTED      = "rgba(255,255,255,0.70)"  # icon colour at rest
+                _DEL_COLOR  = "#EF4444"           # red for delete
+
+                def _mk_btn(tooltip, icon_path, icon_color, bg_normal, bg_hover,
+                            border_normal, border_hover, fg_hover, fixed_size=34):
+                    _b = QPushButton()
+                    _b.setFixedSize(fixed_size, fixed_size)
+                    _b.setToolTip(tooltip)
+                    _b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    _b.setText("")
+                    _ic = make_svg_icon(icon_path, icon_color, size=18)
+                    _b.setIcon(_ic)
+                    _b.setIconSize(_QSize(18, 18))
+                    _b.setStyleSheet(f"""
+                        QPushButton {{
+                            background: {bg_normal};
+                            border: 1px solid {border_normal};
+                            border-radius: 7px;
+                            padding: 0px;
+                        }}
+                        QPushButton:hover {{
+                            background: {bg_hover};
+                            border-color: {border_hover};
+                        }}
+                        QPushButton:pressed {{
+                            background: {border_hover};
+                            border-color: {border_hover};
+                        }}
+                    """)
+                    return _b
+
+                actions_layout = QHBoxLayout()
+                actions_layout.setSpacing(5)
+                actions_layout.setContentsMargins(0, 0, 0, 0)
+
+                # 1. Update button — ALWAYS reserve space, hide/show based on status
+                btn_upd = _mk_btn(
+                    "Update mod to latest version",
+                    f"{_icons_dir}/up1.svg",
+                    _UPD_COLOR,
+                    "rgba(229,169,60,0.15)",
+                    _UPD_COLOR,
+                    "rgba(229,169,60,0.35)",
+                    _UPD_COLOR,
+                    "#000000",
+                )
+                # Tint the icon black on hover via a re-render trick: we use stylesheet opacity trick
+                btn_upd.setVisible(bool(mod.get("update_available")))
+                btn_upd.clicked.connect(lambda _c, w=wid: self._update_workshop_items([w]))
+                actions_layout.addWidget(btn_upd)
+
+                # 2. View on Steam Workshop
+                btn_view = _mk_btn(
+                    "View on Steam Workshop",
+                    f"{_icons_dir}/link.svg",
+                    "rgba(255,255,255,0.70)",
+                    "rgba(255,255,255,0.07)",
+                    self.accent_color,
+                    "rgba(255,255,255,0.12)",
+                    self.accent_color,
+                    btn_fg,
+                )
+                btn_view.clicked.connect(lambda _c, w=wid: QDesktopServices.openUrl(
+                    QUrl(f"https://steamcommunity.com/sharedfiles/filedetails/?id={w}")))
+                actions_layout.addWidget(btn_view)
+
+                # 3. Open local folder
+                btn_open = _mk_btn(
+                    "Open local mod folder",
+                    f"{_icons_dir}/folder.svg",
+                    "rgba(255,255,255,0.70)",
+                    "rgba(255,255,255,0.07)",
+                    "rgba(255,255,255,0.18)",
+                    "rgba(255,255,255,0.12)",
+                    "rgba(255,255,255,0.30)",
+                    "#FFFFFF",
+                )
+                btn_open.clicked.connect(lambda _c, p=mod_path: QDesktopServices.openUrl(
+                    QUrl.fromLocalFile(p)))
+                actions_layout.addWidget(btn_open)
+
+                # 4. Delete / uninstall
+                btn_del = _mk_btn(
+                    "Uninstall / delete mod",
+                    f"{_icons_dir}/bin.svg",
+                    _DEL_COLOR,
+                    "rgba(239,68,68,0.12)",
+                    "#EF4444",
+                    "rgba(239,68,68,0.28)",
+                    "#EF4444",
+                    "#FFFFFF",
+                )
+                btn_del.clicked.connect(lambda _c, w=wid, p=mod_path, t=clean_title:
+                    self._delete_workshop_item_dialog(w, p, t))
+                actions_layout.addWidget(btn_del)
+
+                card_lay.addLayout(actions_layout)
 
                 self.ws_layout.addWidget(mod_card)
 
         self.ws_layout.addStretch()
+
+    def _delete_workshop_item_dialog(self, wid: str, mod_path: str, title: str):
+        from PyQt6.QtWidgets import QMessageBox
+        from utils.workshop_helpers import delete_workshop_item
+        reply = QMessageBox.question(
+            self,
+            "Delete Workshop Mod",
+            f"Are you sure you want to delete '{title}' (WID: {wid})?\nThis will permanently remove the item files.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            delete_workshop_item(self.appid, wid, mod_path)
+            self._scan_workshop_mods_async()
+
+    def _update_workshop_items(self, wids: List[str]):
+        if not wids:
+            return
+        try:
+            from utils.settings import get_settings
+            from PyQt6.QtWidgets import QMessageBox, QApplication
+            settings = get_settings()
+            api_key = settings.value("morrenus_api_key", "", type=str).strip()
+            max_downloads = settings.value("workshop_max_downloads", 8, type=int)
+            cellid = settings.value("workshop_cell_id", "", type=str)
+            steam_integration = settings.value("workshop_steam_enabled", True, type=bool)
+
+            from core.steam_helpers import find_steam_install
+            dest_path = find_steam_install()
+
+            from ui.main_window import MainWindow
+            mw = None
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, MainWindow):
+                    mw = widget
+                    break
+
+            if mw and hasattr(mw, "job_queue"):
+                mw.job_queue.add_workshop_job(wids, api_key, max_downloads, cellid, steam_integration, dest_path)
+                QMessageBox.information(
+                    self,
+                    "Workshop Update",
+                    f"Queued update for {len(wids)} workshop mod(s)!\nCheck Job Manager for download progress.",
+                )
+            else:
+                QMessageBox.warning(self, "Error", "Job queue manager not available.")
+        except Exception as e:
+            logger.error(f"Failed to queue workshop update: {e}")
 
     def _init_tickets_tab(self):
         """Initialize the Tickets Management tab with drag & drop import, export, and status."""

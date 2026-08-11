@@ -52,6 +52,7 @@ class GameManager(QObject):
     scan_complete = pyqtSignal(int)  # Emits number of games found
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
     all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
+    update_check_started = pyqtSignal()  # Emitted when a batch update check starts
     game_hubcap_status_checked = pyqtSignal(str, bool, bool)  # (appid, needs_update, update_in_progress)
     update_check_progress = pyqtSignal(int, int)  # (current, total)
 
@@ -243,6 +244,8 @@ class GameManager(QObject):
             f"Starting async update check for {len(self._games_to_check)} game(s) "
             f"(skipped {len(self.games) - len(self._games_to_check)} with known status)"
         )
+
+        self.update_check_started.emit()
 
         # Create new task
         self.manifest_check_task = ManifestCheckTask(self._games_to_check)
@@ -437,17 +440,22 @@ class GameManager(QObject):
     def _on_update_check_completed(self):
         """Handle update check completion"""
         logger.info("All game updates checked")
+        self.manifest_check_task = None
+        self.manifest_check_runner = None
+        self._games_to_check = []
         self.all_updates_checked.emit()
-        # Note: references cleared by _on_manifest_check_runner_cleanup when thread finishes
 
-    @staticmethod
-    def _on_update_check_error(error_info):
+    def _on_update_check_error(self, error_info):
         """Handle update check error"""
         exc_type, exc_msg, exc_traceback = error_info
         logger.error(
             f"Error during update check: {exc_msg}",
             exc_info=(exc_type, exc_msg, exc_traceback),
         )
+        self.manifest_check_task = None
+        self.manifest_check_runner = None
+        self._games_to_check = []
+        self.all_updates_checked.emit()
 
     def _on_manifest_check_runner_cleanup(self):
         """Handle TaskRunner cleanup completion - called when thread finishes"""

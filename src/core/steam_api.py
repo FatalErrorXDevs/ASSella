@@ -6,7 +6,8 @@ import tempfile
 import re
 import time
 import threading
-from typing import Optional, Dict, List, Tuple
+import queue
+from typing import Optional, Dict, List, Tuple, Callable
 
 from utils.image_fetcher import ImageFetcher
 from managers.db_manager import DatabaseManager
@@ -28,38 +29,202 @@ except ImportError:
         "`steam[client]` package not found. Skipping steam.client fetch method."
     )
 
-_shared_client = None
+
+class _SteamClientWorker(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True, name="SteamClientWorker")
+        self.q = queue.Queue()
+        self.client = None
+        self._started_evt = threading.Event()
+
+    def run(self):
+        if not SteamClient:
+            self._started_evt.set()
+            return
+        try:
+            logger.debug("SteamClientWorker starting & initializing SteamClient...")
+            self.client = SteamClient()
+            self.client.connect()
+            self.client.anonymous_login()
+            logger.debug("SteamClientWorker connected & logged on anonymously.")
+        except Exception as e:
+            logger.error(f"SteamClientWorker initial connect error: {e}")
+        finally:
+            self._started_evt.set()
+
+        while True:
+            item = self.q.get()
+            if item is None:
+                break
+            func_name, args, kwargs, reply_q = item
+            try:
+                if not self.client or not getattr(self.client, "connected", False) or not getattr(self.client, "logged_on", False):
+                    logger.debug("SteamClientWorker reconnecting...")
+                    if self.client is None:
+                        self.client = SteamClient()
+                    try:
+                        self.client.connect()
+                        self.client.anonymous_login()
+                    except Exception as rec_err:
+                        logger.error(f"SteamClientWorker reconnect error: {rec_err}")
+
+                res = getattr(self.client, func_name)(*args, **kwargs)
+                reply_q.put((True, res))
+            except Exception as e:
+                logger.error(f"SteamClientWorker task error ({func_name}): {e}")
+                reply_q.put((False, e))
+            finally:
+                self.q.task_done()
+
+    def execute(self, func_name, *args, timeout=10, **kwargs):
+        self._started_evt.wait(timeout=5)
+        reply_q = queue.Queue()
+        self.q.put((func_name, args, kwargs, reply_q))
+        try:
+            ok, res = reply_q.get(timeout=timeout)
+            if not ok:
+                raise res
+            return res
+        except queue.Empty:
+            raise TimeoutError(f"SteamClientWorker query '{func_name}' timed out after {timeout}s")
+
+
+_steam_worker_instance = None
+_steam_worker_lock = threading.Lock()
+
+
+def get_steam_worker() -> _SteamClientWorker:
+    global _steam_worker_instance
+    with _steam_worker_lock:
+        if _steam_worker_instance is None or not _steam_worker_instance.is_alive():
+            _steam_worker_instance = _SteamClientWorker()
+            _steam_worker_instance.start()
+        return _steam_worker_instance
+
 
 def get_shared_client():
-    global _shared_client
-    if not SteamClient:
-        raise RuntimeError("SteamClient is not available")
-    if _shared_client is None:
-        _shared_client = SteamClient()
-    if not _shared_client.connected:
-        logger.debug("Connecting shared SteamClient")
-        _shared_client.connect()
-    if not _shared_client.logged_on:
-        logger.debug("Attempting Anonymous login on shared SteamClient")
-        _shared_client.anonymous_login()
-    return _shared_client
+    worker = get_steam_worker()
+    return worker.client
+
 
 def disconnect_shared_client():
-    global _shared_client
-    if _shared_client is not None:
-        try:
-            if _shared_client.logged_on:
-                logger.info("Logging out shared SteamClient")
-                _shared_client.logout()
-            if _shared_client.connected:
-                logger.info("Disconnecting shared SteamClient")
-                _shared_client.disconnect()
-        except Exception as e:
-            logger.debug(f"Error disconnecting shared client: {e}")
-        _shared_client = None
+    pass
+
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "mistwalker_api_cache")
 CACHE_EXPIRATION_SECONDS = 86400
+
+
+import concurrent.futures
+
+def fetch_steamcmd_info(app_id: str) -> dict:
+    """
+    Fetch app metadata directly from SteamCMD REST API (https://api.steamcmd.net/v1/info/:id).
+    Fast, stateless HTTP request with no socket or gevent overhead.
+    Returns standard app info dict or {} on failure.
+    """
+    appid_str = str(app_id)
+    url = f"https://api.steamcmd.net/v1/info/{appid_str}"
+    try:
+        res = requests.get(url, timeout=6)
+        if res.status_code != 200:
+            logger.debug(f"SteamCMD API returned HTTP {res.status_code} for AppID {appid_str}")
+            return {}
+
+        payload = res.json()
+        if payload.get("status") != "success":
+            return {}
+
+        app_data = payload.get("data", {}).get(appid_str, {})
+        if not app_data or not isinstance(app_data, dict):
+            return {}
+
+        depots_raw = app_data.get("depots", {}) if isinstance(app_data.get("depots"), dict) else {}
+        branches_raw = depots_raw.get("branches", {}) if isinstance(depots_raw.get("branches"), dict) else {}
+
+        depot_info = {}
+        for depot_id, depot_data in depots_raw.items():
+            if not isinstance(depot_data, dict):
+                continue
+            config = depot_data.get("config", {})
+            manifests = depot_data.get("manifests", {})
+            manifest_public = manifests.get("public", {})
+            manifest_id = (
+                manifest_public.get("gid")
+                if isinstance(manifest_public, dict)
+                else manifest_public
+            )
+            depot_info[depot_id] = {
+                "name": depot_data.get("name"),
+                "oslist": config.get("oslist"),
+                "language": config.get("language"),
+                "steamdeck": config.get("steamdeck") == "1",
+                "size": None,
+                "manifest_id": manifest_id,
+                "manifests": depot_data.get("manifests"),
+            }
+
+        public_branch = branches_raw.get("public", {})
+        build_id = public_branch.get("buildid") if isinstance(public_branch, dict) else None
+        time_updated = public_branch.get("timeupdated") if isinstance(public_branch, dict) else None
+        app_name = app_data.get("common", {}).get("name")
+        installdir = app_data.get("config", {}).get("installdir")
+        header_url = ImageFetcher.get_header_image_url(int(appid_str)) if appid_str.isdigit() else None
+
+        return {
+            "depots": depot_info,
+            "branches": branches_raw,
+            "installdir": installdir,
+            "header_url": header_url,
+            "buildid": build_id,
+            "timeupdated": time_updated,
+            "name": app_name,
+        }
+    except Exception as e:
+        logger.debug(f"SteamCMD API request failed for AppID {appid_str}: {e}")
+        return {}
+
+
+def batched_fetch_steamcmd_info(
+    app_ids: List[str],
+    max_workers: int = 25,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, dict]:
+    """
+    Fetch app info for multiple AppIDs concurrently using SteamCMD REST API.
+    Calls on_progress(completed, total) as each request finishes for real-time UI counters.
+    Returns Dict[appid_str, app_info_dict].
+    """
+    if not app_ids:
+        return {}
+
+    results = {}
+    total = len(app_ids)
+    completed = 0
+    lock = threading.Lock()
+
+    def _worker(appid_str):
+        return appid_str, fetch_steamcmd_info(appid_str)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, total)) as executor:
+        futures = [executor.submit(_worker, str(aid)) for aid in app_ids]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                aid, data = future.result()
+                with lock:
+                    completed += 1
+                    if data and data.get("depots"):
+                        results[aid] = data
+                    if on_progress:
+                        try:
+                            on_progress(completed, total)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"Error in batched SteamCMD worker: {e}")
+
+    logger.info(f"SteamCMD REST API fetched info for {len(results)}/{total} AppIDs")
+    return results
 
 
 def get_depot_info_from_api(app_id, access_token=None):
@@ -85,25 +250,29 @@ def get_depot_info_from_api(app_id, access_token=None):
             f"Cached data for AppID {app_id} has generic/missing name. Forcing API refresh."
         )
 
-    logger.info(
-        f"Attempting to fetch app info for AppID {app_id} using steam.client..."
-    )
-    steam_client_data = _fetch_with_steam_client(app_id, access_token)
-    logger.info(f"Fetching Web API data for AppID {app_id} for header image...")
+    # 2. Try SteamCMD REST API first (Fast HTTP)
+    logger.info(f"Attempting to fetch app info for AppID {app_id} using SteamCMD REST API...")
+    steamcmd_data = fetch_steamcmd_info(app_id)
     web_api_data = _fetch_with_web_api(app_id)
-    if steam_client_data and steam_client_data.get("depots"):
-        logger.debug("Using depot and installdir info from steam.client.")
-        final_data = steam_client_data
+
+    if steamcmd_data and steamcmd_data.get("depots"):
+        logger.info(f"Successfully fetched AppID {app_id} via SteamCMD REST API.")
+        final_data = steamcmd_data
     else:
-        logger.warning(
-            f"steam.client method failed for AppID {app_id}. Falling back to public Web API for all data."
-        )
-        final_data = web_api_data
+        # 3. Fallback to steam.client PICS
+        logger.info(f"SteamCMD API empty/failed for AppID {app_id}. Falling back to steam.client PICS...")
+        steam_client_data = _fetch_with_steam_client(app_id, access_token)
+        if steam_client_data and steam_client_data.get("depots"):
+            logger.debug("Using depot and installdir info from steam.client.")
+            final_data = steam_client_data
+        else:
+            logger.warning(
+                f"steam.client method failed for AppID {app_id}. Falling back to public Web API for all data."
+            )
+            final_data = web_api_data
+
     if web_api_data.get("header_url"):
         if final_data.get("header_url") != web_api_data.get("header_url"):
-            logger.info(
-                "Overwriting steam.client header URL with more reliable Web API version."
-            )
             final_data["header_url"] = web_api_data["header_url"]
     elif not final_data.get("header_url"):
         logger.warning("Header URL not found in Web API or steam.client.")
@@ -121,14 +290,6 @@ def get_depot_info_from_api(app_id, access_token=None):
 def _fetch_with_steam_client(app_id, access_token=None):
     if not SteamClient:
         return {}
-    global _shared_client
-    try:
-        client = get_shared_client()
-    except BaseException as e:
-        logger.error(f"Failed to get or connect shared client: {e}")
-        _shared_client = None
-        return {}
-
     try:
         try:
             int_app_id = int(app_id)
@@ -152,7 +313,8 @@ def _fetch_with_steam_client(app_id, access_token=None):
         else:
             request_list = [int_app_id]
 
-        result = client.get_product_info(apps=request_list, timeout=30)
+        worker = get_steam_worker()
+        result = worker.execute("get_product_info", apps=request_list, timeout=10)
         # Only write the debug dump when DEBUG logging is explicitly enabled
         if logger.isEnabledFor(logging.DEBUG):
             debug_dump_path = os.path.join(
@@ -242,6 +404,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
                     "steamdeck": config.get("steamdeck") == "1",
                     "size": size_str,
                     "manifest_id": manifest_id,
+                    "manifests": manifests,
                 }
         api_data = {
             "depots": depot_info,
@@ -263,8 +426,8 @@ def _fetch_with_steam_client(app_id, access_token=None):
             f"An unexpected error occurred in _fetch_with_steam_client: {e}",
             exc_info=True,
         )
-        # Reset shared client on failure to force a fresh login next time
-        _shared_client = None
+        # Do not discard the shared client on query errors to prevent login-spamming
+        pass
     logger.error("steam.client fetch failed.")
     return {}
 
@@ -373,13 +536,9 @@ def batched_get_product_info(
 
     shared_client = None
     try:
-        shared_client = SteamClient()
-        shared_client.anonymous_login()
-        if not shared_client.logged_on:
-            logger.warning("Batched fetch: Failed to establish shared SteamClient. Will fallback to per-batch clients.")
-            shared_client = None
+        shared_client = get_shared_client()
     except Exception as e:
-        logger.error(f"Batched fetch: Error establishing shared SteamClient: {e}. Will fallback.")
+        logger.error(f"Batched fetch: Error obtaining shared SteamClient: {e}")
         shared_client = None
 
     # Process each batch
@@ -415,141 +574,87 @@ def batched_get_product_info(
 
         # Retry loop for fallback mechanism
         batch_success = False
-        client = None
-        for attempt in range(2):
-            used_shared_client = False
-            try:
-                if attempt == 0 and shared_client and shared_client.logged_on:
-                    client = shared_client
-                    used_shared_client = True
-                else:
-                    logger.debug(f"Batch {batch_idx + 1}: Using new fallback client for attempt {attempt + 1}")
-                    client = SteamClient()
-                    client.anonymous_login()
+        try:
+            worker = get_steam_worker()
+            result = worker.execute("get_product_info", apps=request_list, timeout=request_timeout)
 
-                if is_cancelled and is_cancelled():
-                    logger.info("Batched fetch cancelled after login")
-                    break
+            # Process results
+            if result and isinstance(result, dict):
+                cleaned_result = json.loads(json.dumps(result, default=str))
+                apps_data = cleaned_result.get("apps", {})
 
-                if not client.logged_on:
-                    logger.error(f"Batch {batch_idx + 1}: Failed to login to Steam")
-                    continue
+                for int_appid in int_appids:
+                    appid_str = str(int_appid)
+                    app_data = apps_data.get(appid_str, {})
+                    build_id = None
+                    app_name = None
+                    time_updated = None
 
-                # Single API call for all appids in this batch
-                result = client.get_product_info(apps=request_list, timeout=request_timeout)
+                    # Parse the app data
+                    depot_info = {}
+                    depots = {}
+                    branches = {}
+                    if app_data:
+                        app_data.get("config", {}).get("installdir")
+                        ImageFetcher.get_header_image_url(int_appid)
+                        app_name = app_data.get("common", {}).get("name")
+                        try:
+                            public_branch = (
+                                app_data.get("depots", {})
+                                .get("branches", {})
+                                .get("public", {})
+                            )
+                            if isinstance(public_branch, dict):
+                                build_id = public_branch.get("buildid")
+                                time_updated = public_branch.get("timeupdated")
+                        except AttributeError:
+                            pass
 
-                # Process results
-                if result and isinstance(result, dict):
-                    cleaned_result = json.loads(json.dumps(result, default=str))
-                    apps_data = cleaned_result.get("apps", {})
+                        depots = app_data.get("depots", {}) if isinstance(app_data.get("depots"), dict) else {}
+                        branches = depots.get("branches", {}) if isinstance(depots.get("branches"), dict) else {}
 
-                    for int_appid in int_appids:
-                        appid_str = str(int_appid)
-                        app_data = apps_data.get(appid_str, {})
-                        build_id = None
-                        app_name = None
-                        time_updated = None
+                        for depot_id, depot_data in depots.items():
+                            if not isinstance(depot_data, dict):
+                                continue
+                            config = depot_data.get("config", {})
+                            manifests = depot_data.get("manifests", {})
+                            manifest_public = manifests.get("public", {})
 
-                        # Parse the app data
-                        depot_info = {}
-                        depots = {}
-                        branches = {}
-                        if app_data:
-                            app_data.get("config", {}).get("installdir")
+                            manifest_id = (
+                                manifest_public.get("gid")
+                                if isinstance(manifest_public, dict)
+                                else manifest_public
+                            )
+
+                            depot_info[depot_id] = {
+                                "name": depot_data.get("name"),
+                                "oslist": config.get("oslist"),
+                                "language": config.get("language"),
+                                "steamdeck": config.get("steamdeck") == "1",
+                                "size": None,
+                                "manifest_id": manifest_id,
+                                "manifests": depot_data.get("manifests"),
+                            }
+
+                    all_results[appid_str] = {
+                        "depots": depot_info,
+                        "branches": branches,
+                        "installdir": app_data.get("config", {}).get("installdir") if app_data else None,
+                        "header_url": (
                             ImageFetcher.get_header_image_url(int_appid)
-                            app_name = app_data.get("common", {}).get("name")
-                            try:
-                                public_branch = (
-                                    app_data.get("depots", {})
-                                    .get("branches", {})
-                                    .get("public", {})
-                                )
-                                if isinstance(public_branch, dict):
-                                    build_id = public_branch.get("buildid")
-                                    time_updated = public_branch.get("timeupdated")
-                            except AttributeError:
-                                pass
+                            if app_data
+                            else None
+                        ),
+                        "buildid": build_id,
+                        "timeupdated": time_updated,
+                        "name": app_name,
+                    }
+            batch_success = True
 
-                            depots = app_data.get("depots", {}) if isinstance(app_data.get("depots"), dict) else {}
-                            branches = depots.get("branches", {}) if isinstance(depots.get("branches"), dict) else {}
-
-                            for depot_id, depot_data in depots.items():
-                                if not isinstance(depot_data, dict):
-                                    continue
-                                config = depot_data.get("config", {})
-                                manifests = depot_data.get("manifests", {})
-                                manifest_public = manifests.get("public", {})
-
-                                manifest_id = (
-                                    manifest_public.get("gid")
-                                    if isinstance(manifest_public, dict)
-                                    else manifest_public
-                                )
-
-                                depot_info[depot_id] = {
-                                    "name": depot_data.get("name"),
-                                    "oslist": config.get("oslist"),
-                                    "language": config.get("language"),
-                                    "steamdeck": config.get("steamdeck") == "1",
-                                    "size": None,
-                                    "manifest_id": manifest_id,
-                                    "manifests": depot_data.get("manifests"),
-                                }
-
-                        all_results[appid_str] = {
-                            "depots": depot_info,
-                            "branches": branches,
-                            "installdir": app_data.get("config", {}).get("installdir") if app_data else None,
-                            "header_url": (
-                                ImageFetcher.get_header_image_url(int_appid)
-                                if app_data
-                                else None
-                            ),
-                            "buildid": build_id,
-                            "timeupdated": time_updated,
-                            "name": app_name,
-                        }
-                batch_success = True
-                break  # Success! Exit retry loop
-
-            except BaseException as e:
-                # gevent.timeout.Timeout inherits from BaseException, not Exception,
-                # so a plain `except Exception` misses it entirely — the timeout
-                # propagates uncaught all the way up and crashes the update-check thread.
-                # Re-raise only genuine process-level exits; treat everything else
-                # (including gevent timeouts and network errors) as a retryable failure.
-                if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                    raise
-                is_timeout = type(e).__name__ == "Timeout"  # gevent.timeout.Timeout
-                if is_timeout:
-                    logger.warning(
-                        f"Batch {batch_idx + 1} (Attempt {attempt + 1}): "
-                        f"Steam API timed out after {request_timeout}s — "
-                        "will retry with a new client if possible."
-                    )
-                else:
-                    logger.error(
-                        f"Batch {batch_idx + 1} (Attempt {attempt + 1}): "
-                        f"Error during fetch: {e}"
-                    )
-                if used_shared_client:
-                    # Drop the broken shared client so the next iteration uses the fallback
-                    logger.info(
-                        f"Batch {batch_idx + 1}: Shared client failed, "
-                        "falling back to new client..."
-                    )
-                    shared_client = None
-                # If we're on the last attempt, it's a hard failure
-                if attempt == 1 or not used_shared_client:
-                    break
-            finally:
-                if client and not used_shared_client and client.logged_on:
-                    try:
-                        client.logout()
-                    except BaseException as e:
-                        if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                            raise
-                        logger.error(f"Error during fallback client logout: {e}")
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            logger.error(f"Batch {batch_idx + 1}: Error during fetch: {e}")
 
         if not batch_success:
             failed_appids.extend(batch_appids)
@@ -698,20 +803,37 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
                 _branch_cache[appid] = fallback_b
                 return fallback_b
 
-        data = _fetch_with_steam_client(appid, access_token)
-        branches = data.get("branches", {}) if data else {}
-        if not branches:
-            bid = data.get("buildid", "") if data else ""
-            branches = {"public": {"buildid": bid}}
+        # 1. Try SteamCMD REST API first (fast 0.2s HTTP call)
+        cmd_info = fetch_steamcmd_info(appid)
+        branches = cmd_info.get("branches", {}) if cmd_info else {}
 
-        if data:
-            data["branches"] = branches
+        if not branches:
+            # 2. Fallback to steam.client PICS
+            logger.info(f"SteamCMD API returned no branches for AppID {appid}. Falling back to steam.client PICS...")
+            data = _fetch_with_steam_client(appid, access_token)
+            branches = data.get("branches", {}) if data else {}
+            if not branches and data:
+                bid = data.get("buildid", "")
+                branches = {"public": {"buildid": bid}}
+
+        if branches:
             db = DatabaseManager()
-            db.upsert_app_info(appid, data)
+            db.upsert_app_info(appid, {"branches": branches})
 
         _branch_cache[appid] = branches
         return branches
     except BaseException as e:
         logger.error(f"Failed to fetch branches for AppID {appid}: {e}")
+        # Try DB fallback if live query fails
+        try:
+            db = DatabaseManager()
+            info = db.get_app_info(appid, bypass_expiration=True)
+            cached_branches = info.get("branches") if info else None
+            if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
+                logger.info(f"Fell back to cached DB branches for AppID {appid} after live fetch failure")
+                _branch_cache[appid] = cached_branches
+                return cached_branches
+        except Exception as db_err:
+            logger.debug(f"DB fallback failed for AppID {appid}: {db_err}")
         return {"public": {"buildid": ""}}
 

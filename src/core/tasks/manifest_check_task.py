@@ -148,38 +148,45 @@ class ManifestCheckTask(QObject):
                 f"Will process {len(appid_list)} appids in {num_batches} batches"
             )
 
-            # Fetch all data in batched calls
-            if batched_get_product_info is None:
-                logger.warning(
-                    "batched_get_product_info is not available; skipping API fetch and assuming no data."
-                )
-                batched_results = {}
-            else:
-                try:
-                    def on_fetch_progress(current_fetched, total_to_fetch):
-                        progress_val = min(total_games, int(current_fetched * total_games / total_to_fetch))
-                        self.progress.emit(progress_val, total_games)
+            # 1. Fetch data concurrently via SteamCMD REST API (Fast 25-worker HTTP)
+            from core.steam_api import batched_fetch_steamcmd_info
+            try:
+                logger.info(f"Starting SteamCMD REST API batch check for {len(appid_list)} games...")
+                def on_fetch_progress(current_fetched, total_to_fetch):
+                    progress_val = min(total_games, int(current_fetched * total_games / total_to_fetch))
+                    self.progress.emit(progress_val, total_games)
 
-                    batched_results = batched_get_product_info(
-                        appid_list,
-                        access_tokens=access_tokens,
-                        batch_size=batch_size,
-                        rate_limit_delay=rate_limit_delay,
-                        is_cancelled=lambda: not self._is_running,
-                        request_timeout=10,
-                        on_progress=on_fetch_progress,
-                    )
-                except BaseException as e:
-                    # Safety net: gevent.timeout.Timeout (and other BaseExceptions)
-                    # can escape the retry loop in steam_api if something unexpected
-                    # happens. Catch them here so the task thread doesn't crash.
-                    if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    logger.error(
-                        f"batched_get_product_info raised {type(e).__name__}: {e} — "
-                        "falling back to empty results (all games will show 'cannot determine')."
-                    )
-                    batched_results = {}
+                batched_results = batched_fetch_steamcmd_info(
+                    appid_list,
+                    max_workers=25,
+                    on_progress=on_fetch_progress,
+                )
+            except Exception as cmd_err:
+                logger.warning(f"SteamCMD REST API batch fetch error: {cmd_err}")
+                batched_results = {}
+
+            # 2. Check for missing/unresolved AppIDs and fall back to Steam PICS
+            missing_appids = [aid for aid in appid_list if str(aid) not in batched_results]
+            if missing_appids:
+                logger.info(
+                    f"{len(missing_appids)} games missing from SteamCMD REST API; "
+                    "falling back to Steam PICS client..."
+                )
+                if batched_get_product_info is not None:
+                    try:
+                        pics_results = batched_get_product_info(
+                            missing_appids,
+                            access_tokens=access_tokens,
+                            batch_size=25,
+                            rate_limit_delay=rate_limit_delay,
+                            is_cancelled=lambda: not self._is_running,
+                            request_timeout=10,
+                        )
+                        batched_results.update(pics_results)
+                    except BaseException as e:
+                        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                            raise
+                        logger.error(f"PICS fallback error in update check: {e}")
 
             if not self._is_running:
                 logger.debug("Update check task was stopped after batched fetch")

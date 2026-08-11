@@ -136,3 +136,67 @@ def get_grayscale_color(hex_color: str) -> str:
         return "#9E9E9E"
 
 
+def make_svg_icon(svg_path: str, color: str, size: int = 20):
+    """
+    Renders an SVG file with `currentColor` replaced by `color` and returns a
+    QIcon of the given pixel `size`. Falls back to an empty QIcon on error.
+
+    `color` can be any value accepted by QColor (hex, named colour, or even
+    CSS rgba() — it will be normalised to a plain hex string before being
+    written into the SVG, because SVG stroke/fill do NOT support rgba()).
+
+    Usage:
+        icon = make_svg_icon("/path/to/icon.svg", "#C06C84", size=20)
+        button.setIcon(icon)
+        button.setIconSize(QSize(20, 20))
+    """
+    try:
+        from PyQt6.QtSvg import QSvgRenderer
+        from PyQt6.QtGui import QPixmap, QIcon, QPainter
+        from PyQt6.QtCore import QByteArray, QSize
+
+        # --- Normalise color to SVG-safe hex --------------------------------
+        # QColor accepts hex (#rgb, #rrggbb) and named colours, but NOT CSS
+        # rgba().  Parse rgba() manually; everything else goes through QColor.
+        hex_color = "#FFFFFF"  # safe fallback
+        try:
+            c_stripped = color.strip()
+            if c_stripped.lower().startswith("rgba("):
+                # e.g. "rgba(255, 255, 255, 0.70)"
+                parts = c_stripped[5:-1].split(",")
+                r = max(0, min(255, int(float(parts[0].strip()))))
+                g = max(0, min(255, int(float(parts[1].strip()))))
+                b = max(0, min(255, int(float(parts[2].strip()))))
+                hex_color = QColor(r, g, b).name()   # → "#rrggbb"
+            elif c_stripped.lower().startswith("rgb("):
+                parts = c_stripped[4:-1].split(",")
+                r = max(0, min(255, int(float(parts[0].strip()))))
+                g = max(0, min(255, int(float(parts[1].strip()))))
+                b = max(0, min(255, int(float(parts[2].strip()))))
+                hex_color = QColor(r, g, b).name()
+            else:
+                qc = QColor(c_stripped)
+                hex_color = qc.name() if qc.isValid() else "#FFFFFF"
+        except Exception:
+            hex_color = "#FFFFFF"
+        # --------------------------------------------------------------------
+
+        with open(svg_path, "r", encoding="utf-8") as f:
+            svg_data = f.read()
+
+        colored_svg = svg_data.replace("currentColor", hex_color)
+
+        renderer = QSvgRenderer(QByteArray(colored_svg.encode("utf-8")))
+        pix = QPixmap(QSize(size, size))
+        pix.fill(QColor(0, 0, 0, 0))   # transparent background
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pix)
+    except Exception as e:
+        logger.warning(f"make_svg_icon: failed to render '{svg_path}': {e}")
+        from PyQt6.QtGui import QIcon
+        return QIcon()
+
+
+

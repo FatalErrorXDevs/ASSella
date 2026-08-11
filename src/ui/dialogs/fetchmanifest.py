@@ -1197,24 +1197,33 @@ class FetchManifestDialog(QDialog):
                     logger.warning(f"No manifests found in cached zip {cached_path}. Will redownload.")
                     return morrenus_api.download_manifest(app_id, branch=branch)
 
-                # 2. Get current depot info from Steam API (bypassing DB cache)
+                # 2. Get current depot info (try SQLite DB cache if it is fresh, otherwise query Steam API)
                 try:
-                    steam_client_data = _fetch_with_steam_client(app_id, app_token)
-                    if not steam_client_data or not steam_client_data.get("depots"):
-                        logger.debug("steam.client fetch failed or empty depots, falling back to Web API")
-                        steam_client_data = _fetch_with_web_api(app_id)
+                    db = DatabaseManager()
+                    cache_time = db.get_cache_time(app_id) or 0
+                    import time
                     
-                    if steam_client_data:
-                        # Update database with the latest info
-                        try:
-                            db = DatabaseManager()
-                            db.upsert_app_info(app_id, steam_client_data)
-                        except Exception as db_err:
-                            logger.debug(f"Failed to update database with fresh app info: {db_err}")
+                    # If cached less than 12 hours ago, use cache to keep UI responsive
+                    if cache_time and (time.time() - cache_time) < 43200:
+                        logger.info(f"Using fresh DB cache for AppID {app_id} (cached {int(time.time() - cache_time)}s ago)")
+                        steam_client_data = db.get_app_info(app_id, bypass_expiration=True)
+                    else:
+                        logger.info(f"Querying Steam client for fresh AppID {app_id} info...")
+                        steam_client_data = _fetch_with_steam_client(app_id, app_token)
+                        if not steam_client_data or not steam_client_data.get("depots"):
+                            logger.debug("steam.client fetch failed or empty depots, falling back to Web API")
+                            steam_client_data = _fetch_with_web_api(app_id)
+                        
+                        if steam_client_data:
+                            # Update database with the latest info
+                            try:
+                                db.upsert_app_info(app_id, steam_client_data)
+                            except Exception as db_err:
+                                logger.debug(f"Failed to update database with fresh app info: {db_err}")
                             
                     api_depots = steam_client_data.get("depots", {}) if steam_client_data else {}
                 except BaseException as e:
-                    logger.error(f"Failed to fetch depot info from Steam API for {app_id}: {e}")
+                    logger.error(f"Failed to fetch depot info for {app_id}: {e}")
                     api_depots = {}
 
                 if not api_depots:

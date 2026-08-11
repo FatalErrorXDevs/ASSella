@@ -84,6 +84,23 @@ class ProcessZipTask:
                     f"Found LUA manifest size for Depot {depot_id}: {size_bytes} bytes"
                 )
 
+            # Parse manifest GIDs from LUA file (for branch/LUA-only matching)
+            game_data.setdefault("manifests", {})
+            manifest_gid_matches = list(
+                re.finditer(
+                    r'setManifestid\(\s*(\d+)\s*,\s*"([^"]+)"',
+                    content,
+                    re.IGNORECASE,
+                )
+            )
+            for match in manifest_gid_matches:
+                depot_id = match.group(1).strip()
+                gid = match.group(2).strip()
+                game_data["manifests"][depot_id] = gid
+                logger.debug(
+                    f"Found LUA manifest GID for Depot {depot_id}: {gid}"
+                )
+
         except Exception as e:
             logger.error(f"Critical error during LUA parsing: {e}", exc_info=True)
             raise
@@ -319,7 +336,67 @@ class ProcessZipTask:
                             logger.info(
                                 f"Found official buildid: {game_data['buildid']}"
                             )
-                            if not game_data.get("branch"):
+                            # Smart branch detection:
+                            # 1. First, try to match by manifest GIDs (most robust, works regardless of zip name)
+                            matched_branch = None
+                            zip_manifests = game_data.get("manifests", {})
+                            api_depots = api_data.get("depots", {})
+                            if zip_manifests and api_depots:
+                                try:
+                                    # Find all branches mentioned in live depot manifests
+                                    candidate_branches = set()
+                                    for depot_id, depot_info in api_depots.items():
+                                        if isinstance(depot_info, dict):
+                                            manifests = depot_info.get("manifests", {})
+                                            if isinstance(manifests, dict):
+                                                candidate_branches.update(manifests.keys())
+
+                                    branch_scores = {}
+                                    for branch in candidate_branches:
+                                        matches = 0
+                                        total_checked = 0
+                                        for depot_id, zip_gid in zip_manifests.items():
+                                            depot_info = api_depots.get(str(depot_id)) or api_depots.get(int(depot_id))
+                                            if isinstance(depot_info, dict):
+                                                manifests = depot_info.get("manifests", {})
+                                                if isinstance(manifests, dict) and branch in manifests:
+                                                    branch_entry = manifests[branch]
+                                                    expected_gid = ""
+                                                    if isinstance(branch_entry, dict):
+                                                        expected_gid = str(branch_entry.get("gid", ""))
+                                                    elif isinstance(branch_entry, (str, int)):
+                                                        expected_gid = str(branch_entry)
+                                                    
+                                                    if expected_gid and expected_gid == str(zip_gid):
+                                                        matches += 1
+                                                    total_checked += 1
+                                        if total_checked > 0:
+                                            branch_scores[branch] = (matches, total_checked)
+
+                                    best_branch = None
+                                    best_score = -1
+                                    best_match_ratio = 0.0
+                                    for branch, (matches, total) in branch_scores.items():
+                                        ratio = matches / total if total > 0 else 0.0
+                                        # Prefer higher matches; tie-break on ratio
+                                        if matches > best_score or (matches == best_score and ratio > best_match_ratio):
+                                            best_branch = branch
+                                            best_score = matches
+                                            best_match_ratio = ratio
+
+                                    if best_branch and best_score > 0:
+                                        matched_branch = best_branch
+                                        logger.info(
+                                            f"[ProcessZipTask] Smart Branch Match: matched '{matched_branch}' via manifest GIDs "
+                                            f"({best_score}/{len(zip_manifests)} depots match)."
+                                        )
+                                except Exception as _smart_err:
+                                    logger.debug(f"Smart branch manifest matching failed: {_smart_err}")
+
+                            if matched_branch:
+                                game_data["branch"] = matched_branch
+                            elif not game_data.get("branch"):
+                                # 2. Fallback to Steam PICS buildid matching
                                 try:
                                     from core.steam_api import find_branch_for_buildid
                                     pics_branch = find_branch_for_buildid(game_data["appid"], game_data["buildid"])
@@ -328,6 +405,15 @@ class ProcessZipTask:
                                         logger.info(f"[ProcessZipTask] Steam PICS matched buildid {game_data['buildid']} -> branch '{pics_branch}'")
                                 except Exception as _pb_err:
                                     logger.debug(f"PICS branch match failed: {_pb_err}")
+
+                            # If still no branch resolved, fall back to what the user currently has selected in the UI, else "public"
+                            if not game_data.get("branch"):
+                                try:
+                                    sel_b = get_settings().value(f"selected_branch/{game_data['appid']}", "public", type=str)
+                                    game_data["branch"] = sel_b
+                                    logger.info(f"[ProcessZipTask] Branch fallback to currently selected UI branch: '{sel_b}'")
+                                except Exception:
+                                    game_data["branch"] = "public"
 
                         if api_data.get("header_url"):
                             game_data["header_url"] = api_data["header_url"]
@@ -346,6 +432,17 @@ class ProcessZipTask:
                             logger.warning(
                                 "Could not retrieve supplementary details from Steam API."
                             )
+                        else:
+                            missing_from_hubcap = [
+                                str(did) for did in api_details.keys()
+                                if str(did) not in filtered_depots and str(did) not in string_blacklist and str(did) != str(game_data.get("appid"))
+                            ]
+                            if missing_from_hubcap:
+                                logger.warning(
+                                    f"[DepotCheck {game_data.get('appid')}] Hubcap manifest is missing "
+                                    f"{len(missing_from_hubcap)} official depot(s) listed on Steam: {missing_from_hubcap}"
+                                )
+                                game_data["missing_depots_from_hubcap"] = missing_from_hubcap
 
                         enriched_depots = {}
                         filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)

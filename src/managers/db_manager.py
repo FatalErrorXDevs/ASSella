@@ -264,7 +264,9 @@ class DatabaseManager:
         installdir = data.get("installdir")
         depots_to_save = data.get("depots", {}).copy()
 
-        if data.get("buildid"):
+        if data.get("branches"):
+            depots_to_save["branches"] = data["branches"]
+        elif data.get("buildid"):
             depots_to_save["branches"] = {"public": {"buildid": data["buildid"]}}
 
         depots_json_str = json.dumps(depots_to_save)

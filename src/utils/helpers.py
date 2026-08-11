@@ -441,15 +441,92 @@ def get_data_dir() -> Path:
     return d_path
 
 
+DB_RELOCATED_FILES = {
+    "depot_keys.db",
+    "denuvo_cache.json",
+    "denuvo_cache.db",
+    "install_history.json",
+    "protondb_cache.json",
+    "protondb_cache.db",
+    "update_status_cache.json",
+    "update_status_cache.db",
+    "workshop_cache.db",
+}
+
+
 def get_data_file_path(filename: str) -> Path:
     """Return path for a database or state file (e.g. steam_headers.db, install_history.json).
-    Checks legacy location under base_path first; if not found, uses data_dir.
+    Checks new db/ folder under base_path first; if not found, falls back to legacy locations.
     """
     base = get_base_path()
+    if filename in DB_RELOCATED_FILES:
+        db_dir = base / "db"
+        target_file = db_dir / filename
+        if target_file.exists():
+            return target_file
+
+        # Fallback to legacy path if target doesn't exist yet
+        legacy_file = base / filename
+        if legacy_file.exists():
+            return legacy_file
+
+        # Default to new target path inside db/
+        db_dir.mkdir(parents=True, exist_ok=True)
+        return target_file
+
     legacy_file = base / filename
     if legacy_file.exists():
         return legacy_file
     return get_data_dir() / filename
+
+
+def migrate_databases_to_db_folder() -> None:
+    """Migrate database/cache files from legacy root location into db/ directory on boot.
+    Handles legacy migration, size verification, and stale root file cleanup cleanly.
+    """
+    try:
+        base = get_base_path()
+        db_dir = base / "db"
+        db_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in DB_RELOCATED_FILES:
+            legacy_path = base / filename
+            target_path = db_dir / filename
+
+            # Scenario 1: Legacy file exists, target in db/ does NOT exist -> Copy, Verify, Delete Legacy
+            if legacy_path.exists() and not target_path.exists():
+                try:
+                    import shutil
+
+                    shutil.copy2(str(legacy_path), str(target_path))
+                    if target_path.exists() and target_path.stat().st_size == legacy_path.stat().st_size:
+                        os.remove(str(legacy_path))
+                        logger.info(f"[DB Migration] Successfully migrated {filename} -> db/{filename}")
+                    else:
+                        logger.warning(f"[DB Migration] Size verification failed for {filename} — preserving legacy file")
+                except Exception as move_err:
+                    logger.warning(f"[DB Migration] Could not copy {filename} to db/: {move_err}")
+
+            # Scenario 2: BOTH legacy file and db/ target file exist (reconciliation)
+            elif legacy_path.exists() and target_path.exists():
+                try:
+                    legacy_size = legacy_path.stat().st_size
+                    target_size = target_path.stat().st_size
+
+                    # If file in db/ is larger or valid, db/ file is authoritative -> remove stale root file
+                    if target_size >= legacy_size and target_size > 0:
+                        os.remove(str(legacy_path))
+                        logger.info(f"[DB Migration] Cleaned up stale root file {filename} (authoritative db/{filename} kept)")
+                    elif legacy_size > target_size and legacy_size > 0:
+                        import shutil
+                        shutil.copy2(str(legacy_path), str(target_path))
+                        os.remove(str(legacy_path))
+                        logger.info(f"[DB Migration] Updated db/{filename} with fuller legacy file and cleaned root copy")
+                except Exception as clean_err:
+                    logger.warning(f"[DB Migration] Could not reconcile duplicate {filename}: {clean_err}")
+
+    except Exception as e:
+        logger.warning(f"[DB Migration] Database migration check failed: {e}")
 
 
 def _get_slscheevo_path() -> Path:
@@ -1120,7 +1197,7 @@ def create_font_setting(
 
 def create_font_from_settings(settings) -> QFont:
     """Create a QFont object from application settings."""
-    font_family = settings.value("font", "TrixieCyrG-Plain")
+    font_family = settings.value("font", "Open Sans")
     font_size = settings.value("font-size", 10, type=int)
     font_style = settings.value("font-style", "Normal")
 

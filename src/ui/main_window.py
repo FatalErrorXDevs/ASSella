@@ -144,21 +144,31 @@ class SimplifiedTerminalWidget(QWidget):
         self.setStyleSheet("background: transparent;")
         self.init_ui()
 
-        # Connect signals from GameManager to update stats
+        # Connect signals from GameManager to update stats & loading state
         if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
             gm = self.main_window.game_manager
             gm.library_updated.connect(self.update_stats)
             gm.game_update_status_changed.connect(
                 lambda appid, status: self.update_stats()
             )
-            # Also connect scan_complete and all_updates_checked so we never miss
-            # a refresh if library_updated fires before this widget is constructed
             gm.scan_complete.connect(lambda _: self.update_stats())
-            gm.all_updates_checked.connect(self.update_stats)
+            gm.update_check_started.connect(self._on_update_check_started)
+            gm.all_updates_checked.connect(self._on_update_check_finished)
 
         self.update_stats()
         self.update_history_display()
         self.update_style()
+
+    def _on_update_check_started(self):
+        if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
+            self.refresh_updates_btn.set_loading(True)
+            self.refresh_updates_btn.setToolTip("Checking for updates...")
+
+    def _on_update_check_finished(self):
+        if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
+            self.refresh_updates_btn.set_loading(False)
+            self.refresh_updates_btn.setToolTip("Force re-check updates for all games")
+        self.update_stats()
 
     def init_ui(self):
         self.layout = QStackedLayout(self)
@@ -236,8 +246,9 @@ class SimplifiedTerminalWidget(QWidget):
         self.update_all_btn.clicked.connect(self.main_window.run_update_all_flow)
         self.update_all_btn.hide()
 
-        # Floating Refresh Updates Button (Always visible)
-        self.refresh_updates_btn = QPushButton("↻", self.panel_mid)
+        # Floating Refresh Updates Button (ProgressButton with loading animation)
+        from ui.progress_button import ProgressButton
+        self.refresh_updates_btn = ProgressButton("", self.panel_mid)
         self.refresh_updates_btn.setFixedSize(36, 36)
         self.refresh_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_updates_btn.clicked.connect(self.main_window.force_check_all_updates)
@@ -391,23 +402,50 @@ class SimplifiedTerminalWidget(QWidget):
         accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
         bg = getattr(self.main_window, "background_color", "#000000") or "#000000"
 
+        from utils.color_utils import get_best_foreground_color, get_dark_container_color, make_svg_icon
+        from utils.helpers import get_base_path
+        from PyQt6.QtCore import QSize
+
+        icons_dir = str(get_base_path() / "media" / "icons")
+        fg = get_best_foreground_color(accent, dark_color="#121214", light_color="#FFFFFF")
+        disabled_bg = get_dark_container_color(accent)
+
         if hasattr(self, "update_all_btn") and self.update_all_btn:
             if total_updates > 0:
-                self.update_all_btn.setText(f"⟳ Update All ({total_updates})")
+                self.update_all_btn.setText(f" Update All ({total_updates})")
+                icon_cloud = make_svg_icon(f"{icons_dir}/dl_cloud.svg", fg, size=18)
+                self.update_all_btn.setIcon(icon_cloud)
+                self.update_all_btn.setIconSize(QSize(18, 18))
+
+                is_all_running = getattr(self.main_window, "_update_all_running", False)
+                self.update_all_btn.setEnabled(not is_all_running)
+                if is_all_running:
+                    self.update_all_btn.setToolTip("Queueing updates...")
+                else:
+                    self.update_all_btn.setToolTip("Queue updates for all pending games")
+
                 self.update_all_btn.setStyleSheet(f"""
                     QPushButton {{
                         background-color: {accent};
-                        color: {bg};
+                        color: {fg};
                         border: none;
                         border-radius: 18px;
                         font-weight: bold;
                         font-size: 9.5pt;
-                        padding-left: 14px;
+                        padding-left: 10px;
                         padding-right: 14px;
                     }}
                     QPushButton:hover {{
                         background-color: #FFFFFF;
                         color: #000000;
+                    }}
+                    QPushButton:pressed {{
+                        background-color: {disabled_bg};
+                        color: #FFFFFF;
+                    }}
+                    QPushButton:disabled {{
+                        background-color: {disabled_bg};
+                        color: rgba(255, 255, 255, 0.4);
                     }}
                 """)
                 self.update_all_btn.show()
@@ -416,19 +454,40 @@ class SimplifiedTerminalWidget(QWidget):
 
         # Show/Configure the Floating Refresh Updates Button (Always visible)
         if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
+            is_checking = False
+            if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
+                gm = self.main_window.game_manager
+                is_checking = (getattr(gm, "manifest_check_task", None) is not None or getattr(gm, "manifest_check_runner", None) is not None)
+
+            if is_checking:
+                self.refresh_updates_btn.set_loading(True)
+                self.refresh_updates_btn.setToolTip("Checking for updates...")
+            else:
+                self.refresh_updates_btn.set_loading(False)
+                self.refresh_updates_btn.setText("")
+                icon_ref = make_svg_icon(f"{icons_dir}/ref3.svg", fg, size=20)
+                self.refresh_updates_btn.setIcon(icon_ref)
+                self.refresh_updates_btn.setIconSize(QSize(20, 20))
+                self.refresh_updates_btn.setToolTip("Force re-check updates for all games")
+
             self.refresh_updates_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {accent};
-                    color: {bg};
+                    color: {fg};
                     border: none;
                     border-radius: 18px;
-                    font-weight: bold;
-                    font-size: 14pt;
                     padding: 0px;
                 }}
                 QPushButton:hover {{
                     background-color: #FFFFFF;
                     color: #000000;
+                }}
+                QPushButton:pressed {{
+                    background-color: {disabled_bg};
+                }}
+                QPushButton:disabled {{
+                    background-color: {disabled_bg};
+                    opacity: 0.5;
                 }}
             """)
             self.refresh_updates_btn.show()
@@ -1189,12 +1248,18 @@ class MainWindow(QMainWindow):
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
         
-        # Connect game manager signals to update the dashboard's elements
+        # Connect game manager signals to update the dashboard's elements & FAB loading state
         self.game_manager.library_updated.connect(self.update_dashboard_elements)
         self.game_manager.game_update_status_changed.connect(
             lambda appid, status: self.update_dashboard_elements()
         )
+        self.game_manager.update_check_started.connect(
+            lambda: self.simplified_terminal._on_update_check_started() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
+        )
         self.game_manager.all_updates_checked.connect(self.update_dashboard_elements)
+        self.game_manager.all_updates_checked.connect(
+            lambda: self.simplified_terminal._on_update_check_finished() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
+        )
         self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
 
         # Initial stats fetch
@@ -1489,6 +1554,9 @@ class MainWindow(QMainWindow):
         """Forces a clean re-check of updates for all games, ignoring cache."""
         if self.game_manager:
             logger.info("Forcing full updates check for all games (bypassing cache)")
+            if hasattr(self, "simplified_terminal") and self.simplified_terminal:
+                if hasattr(self.simplified_terminal, "refresh_updates_btn") and self.simplified_terminal.refresh_updates_btn:
+                    self.simplified_terminal.refresh_updates_btn.set_loading(True)
             # Reset 'up_to_date' / 'cannot_determine' / 'checking' games to 'checking'
             # so they are re-queried. Games already marked 'update_available' are
             # intentionally left intact so the pending-updates list stays populated
@@ -2295,6 +2363,8 @@ class MainWindow(QMainWindow):
             logger.info(f"Update All: queued {queued} of {len(updateable_games)} games.")
             # Release guard so user can trigger another cycle after this one finishes
             self._update_all_running = False
+            from PyQt6.QtCore import QMetaObject, Qt
+            QMetaObject.invokeMethod(self, "update_dashboard_elements", Qt.ConnectionType.QueuedConnection)
 
         threading.Thread(target=_do_update_all, daemon=True).start()
 

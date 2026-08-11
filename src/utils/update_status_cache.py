@@ -35,10 +35,8 @@ TRANSIENT_STATUSES = {"checking", "cannot_determine"}
 
 def _get_cache_path() -> Path:
     """Return the path to the on-disk update-status cache JSON file."""
-    # Store alongside other ACCELA user data
-    data_dir = Path.home() / ".local" / "share" / "ACCELA"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir / "update_status_cache.json"
+    from utils.helpers import get_data_file_path
+    return get_data_file_path("update_status_cache.json")
 
 
 class UpdateStatusCache:

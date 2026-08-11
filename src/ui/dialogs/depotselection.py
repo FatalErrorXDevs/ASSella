@@ -369,9 +369,12 @@ class DepotSelectionDialog(QDialog):
 
             display_tags = tags if tags else os_tag
             if display_tags:
-                config_text = f"{display_tags}  {final_desc}"
+                config_text = f"{display_tags}  {final_desc}".strip()
             else:
-                config_text = final_desc
+                config_text = final_desc.strip()
+
+            if not config_text or config_text == display_tags.strip():
+                config_text = f"{display_tags}  Depot {depot_id}".strip() if display_tags else f"Depot {depot_id}"
 
             size_str = ""
             if depot_data.get("size"):
@@ -393,8 +396,8 @@ class DepotSelectionDialog(QDialog):
             else:
                 id_item.setCheckState(Qt.CheckState.Unchecked)
  
-            # Removes ItemIsUserCheckable flag to disable internal checkbox handling, handled manually in cell click
-            id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+            # Make item non-editable and disable internal checkbox handling (handled manually on cell click)
+            id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
              
             config_item = QTableWidgetItem(config_text)
             config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)

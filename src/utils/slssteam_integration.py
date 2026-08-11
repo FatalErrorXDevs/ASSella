@@ -19,6 +19,12 @@ If Steam/SLSsteam is unavailable:
   - Config is still written → Steam will process on next launch
   - API calls fail silently → game shows as "installed" via metadata fallback
   - ASSella's metadata.json serves as the source of truth for library scanning
+
+Path resolution:
+  All Steam/SLS paths (log file, steamapps dirs, config.yaml) are resolved
+  via SteamEnv in steam_helpers.py, which handles both Flatpak and Native
+  Steam installations. The API pipe (/tmp/SLSsteam.API) is always in /tmp
+  regardless of installation type.
 """
 
 import logging
@@ -28,11 +34,12 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SLSSTEAM_LOG_PATH = Path.home() / ".SLSsteam.log"
+# The API pipe is always /tmp/SLSsteam.API regardless of Flatpak or native.
+# All other paths (log, config, steamapps) are resolved lazily via SteamEnv.
 SLSSTEAM_API_PIPE = "/tmp/SLSsteam.API"
 MAX_CONFIG_WAIT_SECONDS = 10
 MAX_ACF_VERIFY_SECONDS = 10
@@ -54,6 +61,52 @@ def register_shutdown() -> None:
     """Signal all SLS background workers to stop. Call this on app exit."""
     _shutdown_flag.set()
     logger.info("SLSsteam integration: shutdown signalled — all retry workers will stop")
+
+
+# ---------------------------------------------------------------------------
+# Path helpers — resolved lazily via SteamEnv
+# ---------------------------------------------------------------------------
+
+def _get_sls_log_path() -> Path:
+    """Return the SLSsteam log file path for the current Steam installation.
+
+    - Flatpak: ~/.var/app/com.valvesoftware.Steam/.SLSsteam.log
+    - Native:  ~/.SLSsteam.log
+
+    Never raises — falls back to the native path if SteamEnv is unavailable.
+    """
+    try:
+        from core.steam_helpers import get_steam_env
+        return get_steam_env().sls_log_path
+    except Exception as e:
+        logger.warning(f"_get_sls_log_path: SteamEnv unavailable ({e}), using native fallback")
+        return Path.home() / ".SLSsteam.log"
+
+
+def _get_steamapps_paths() -> List[Path]:
+    """Return all steamapps directories to search for ACF manifests.
+
+    Includes the primary Steam library and any additional libraries from
+    libraryfolders.vdf, across both Flatpak and native installations.
+
+    Never raises — falls back to native default paths if SteamEnv is unavailable.
+    """
+    try:
+        from core.steam_helpers import get_steam_env
+        paths = get_steam_env().steamapps_paths
+        if paths:
+            return paths
+    except Exception as e:
+        logger.warning(f"_get_steamapps_paths: SteamEnv unavailable ({e}), using native fallback")
+
+    # Fallback: best-effort native + Flatpak defaults
+    fallback = []
+    native = Path.home() / ".local" / "share" / "Steam" / "steamapps"
+    flatpak = Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "steamapps"
+    for p in (native, flatpak):
+        if p.is_dir():
+            fallback.append(p)
+    return fallback
 
 
 def _experimental_mode_enabled() -> bool:
@@ -102,10 +155,17 @@ def _poll_sls_log_for(
 ) -> bool:
     """Poll SLSsteam log for a regex pattern in NEW content only.
 
+    The log path is resolved via SteamEnv (Flatpak or native).
     Returns True if found before deadline.
     Exits early if the global shutdown flag is set.
     """
-    if not SLSSTEAM_LOG_PATH.exists():
+    log_path = _get_sls_log_path()
+    if not log_path.exists():
+        if _experimental_mode_enabled():
+            logger.warning(
+                f"SLSsteam log not found at {log_path}. "
+                "Cannot poll for license events. Proceeding without confirmation."
+            )
         return False
 
     compiled = re.compile(pattern)
@@ -116,9 +176,9 @@ def _poll_sls_log_for(
             logger.debug("_poll_sls_log_for: shutdown flag set — aborting poll")
             return False
         try:
-            current_size = SLSSTEAM_LOG_PATH.stat().st_size
+            current_size = log_path.stat().st_size
             if current_size > start_offset:
-                with open(SLSSTEAM_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                     f.seek(start_offset)
                     for line in f:
                         if compiled.search(line):
@@ -133,8 +193,9 @@ def _poll_sls_log_for(
 
 def _get_sls_log_size() -> int:
     """Return current SLS log file size for offset-based polling."""
+    log_path = _get_sls_log_path()
     try:
-        return SLSSTEAM_LOG_PATH.stat().st_size if SLSSTEAM_LOG_PATH.exists() else 0
+        return log_path.stat().st_size if log_path.exists() else 0
     except (OSError, IOError):
         return 0
 
@@ -181,26 +242,26 @@ def _wait_for_sls_license(appid: str, log_offset: int) -> bool:
 
 
 def _verify_acf_created(appid: str, timeout: Optional[float] = None) -> bool:
-    """Poll for ACF manifest creation by Steam across all known library paths."""
+    """Poll for ACF manifest creation by Steam across all known library paths.
+
+    Searches all steamapps directories from SteamEnv, which covers:
+    - Primary Steam library (Flatpak or native)
+    - Any additional libraries from libraryfolders.vdf
+    Both native and Flatpak paths are handled automatically.
+    """
     acf_filename = f"appmanifest_{appid}.acf"
 
-    # Steam always creates ACFs in the primary library first
-    steam_home = Path.home() / ".local" / "share" / "Steam"
-    candidate_paths = [steam_home / "steamapps" / acf_filename]
+    # Get all steamapps paths from SteamEnv (Flatpak-aware, includes extra libraries)
+    steamapps_dirs = _get_steamapps_paths()
 
-    # Also check any external libraries
-    try:
-        vdf_path = steam_home / "steamapps" / "libraryfolders.vdf"
-        if vdf_path.exists():
-            with open(vdf_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    m = re.search(r'"path"\s+"([^"]+)"', line)
-                    if m:
-                        candidate_paths.append(
-                            Path(m.group(1)) / "steamapps" / acf_filename
-                        )
-    except (OSError, IOError):
-        pass
+    # Build candidate ACF paths
+    candidate_paths = [sa / acf_filename for sa in steamapps_dirs if sa.is_dir()]
+
+    if not candidate_paths:
+        logger.warning(
+            f"_verify_acf_created: no valid steamapps directories found to search for {appid}. "
+            "Steam may not be installed or SteamEnv detection failed."
+        )
 
     verify_seconds = timeout if timeout is not None else MAX_ACF_VERIFY_SECONDS
     deadline = time.time() + verify_seconds
@@ -222,7 +283,8 @@ def _verify_acf_created(appid: str, timeout: Optional[float] = None) -> bool:
 def _silent_background_retry_pipe(
     appid: str,
     library_index: int,
-    max_retries: int = 12,
+    max_retries: int = 5,
+    library_path: str = "",
 ) -> None:
     """Start a daemon thread that retries the install pipe command if Steam was slow.
 
@@ -266,6 +328,19 @@ def _silent_background_retry_pipe(
                         f"SLS retry worker for {appid}: SLSsteam pipe gone (Steam closed) — stopping"
                     )
                     return
+
+                if i >= 4 and library_path:
+                    try:
+                        from core.steam_api import get_depot_info_from_api
+                        from utils.steam_manifest import write_acf_file
+                        info = get_depot_info_from_api(appid)
+                        if info:
+                            acf_file = write_acf_file(library_path, info, size_on_disk=0, include_depots=True, logger=logger)
+                            logger.info(f"Fallback ACF file generated by ACCELA at {acf_file}")
+                            if _verify_acf_created(appid, timeout=1.0):
+                                return
+                    except Exception as acf_err:
+                        logger.warning(f"Fallback ACF generation failed for {appid}: {acf_err}")
 
                 logger.info(
                     f"Silent background retry ({i + 1}/{max_retries}): "
@@ -368,7 +443,7 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
             f"ACF creation delayed for {appid} — "
             "launching cancellable background retry worker..."
         )
-        _silent_background_retry_pipe(appid, library_index)
+        _silent_background_retry_pipe(appid, library_index, library_path=library_path)
 
     return True
 
@@ -460,3 +535,110 @@ def patch_acf_via_sls(appid: str, library_path: str = "") -> bool:
             logger.warning(f"Could not resolve library index for patch, defaulting to 0: {e}")
 
     return _slssteam_api_send(f"install|{appid}|{library_index}")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics & user-facing warnings
+# ---------------------------------------------------------------------------
+
+def get_sls_diagnostic() -> Dict[str, Any]:
+    """Return a structured dict describing the current SLS environment state.
+
+    Useful for surfacing issues in the UI, logs, or settings panel.
+
+    Keys:
+        is_flatpak        (bool)  True if Flatpak Steam was detected
+        steam_found       (bool)  True if a Steam installation was located
+        steam_path        (str|None)  Resolved Steam root, or None
+        steam_type        (str)   "Flatpak" or "Native"
+        config_exists     (bool)  True if config.yaml exists on disk
+        config_path       (str)   Resolved config.yaml path
+        log_exists        (bool)  True if .SLSsteam.log exists on disk
+        log_path          (str)   Resolved log path
+        pipe_available    (bool)  True if /tmp/SLSsteam.API exists (SLS running)
+        sls_installed     (bool)  True if SLSsteam.so found in install dir
+        sls_install_dir   (str)   Expected SLSsteam install directory
+        steamapps_paths   (list)  All steamapps dirs found
+    """
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        return {
+            "is_flatpak": env.is_flatpak,
+            "steam_found": env.steam_found(),
+            "steam_path": env.steam_path,
+            "steam_type": "Flatpak" if env.is_flatpak else "Native",
+            "config_exists": env.sls_config_exists(),
+            "config_path": str(env.sls_config_path),
+            "log_exists": env.sls_log_exists(),
+            "log_path": str(env.sls_log_path),
+            "pipe_available": _is_slssteam_available(),
+            "sls_installed": env.sls_installed(),
+            "sls_install_dir": str(env.sls_install_dir),
+            "steamapps_paths": [str(p) for p in env.steamapps_paths],
+        }
+    except Exception as e:
+        logger.error(f"get_sls_diagnostic: SteamEnv unavailable: {e}")
+        return {
+            "is_flatpak": False,
+            "steam_found": False,
+            "steam_path": None,
+            "steam_type": "Unknown",
+            "config_exists": False,
+            "config_path": str(Path.home() / ".config" / "SLSsteam" / "config.yaml"),
+            "log_exists": False,
+            "log_path": str(Path.home() / ".SLSsteam.log"),
+            "pipe_available": _is_slssteam_available(),
+            "sls_installed": False,
+            "sls_install_dir": str(Path.home() / ".local" / "share" / "SLSsteam"),
+            "steamapps_paths": [],
+        }
+
+
+def warn_sls_unavailable(context: str = "") -> str:
+    """Build and log a user-facing warning message when SLSsteam is unavailable.
+
+    Returns the warning text so callers can surface it via Qt signals or
+    status bar messages.  Also logs the full diagnostic at WARNING level.
+
+    Args:
+        context: short description of what operation triggered the check
+                 (e.g. "post-install", "patch ACF", "uninstall").
+    """
+    diag = get_sls_diagnostic()
+    ctx_prefix = f"[{context}] " if context else ""
+
+    issues = []
+    if not diag["steam_found"]:
+        issues.append("Steam installation not found")
+    if not diag["sls_installed"]:
+        issues.append(f"SLSsteam not installed (expected: {diag['sls_install_dir']})")
+    if not diag["config_exists"]:
+        issues.append(f"config.yaml missing (expected: {diag['config_path']})")
+    if not diag["pipe_available"]:
+        issues.append("SLSsteam API pipe not available — Steam may not be running with SLSsteam loaded")
+
+    if issues:
+        issues_text = "; ".join(issues)
+        msg = (
+            f"{ctx_prefix}SLSsteam not available — {issues_text}. "
+            "Falling back to manual ACF write. "
+            "Make sure Steam is launched with SLSsteam loaded."
+        )
+    else:
+        # Pipe just went away mid-operation
+        msg = (
+            f"{ctx_prefix}SLSsteam API pipe unexpectedly unavailable. "
+            "Steam may have closed. Config was written; Steam will register the game on next launch."
+        )
+
+    logger.warning(msg)
+    logger.warning(
+        f"SLS diagnostic ({diag['steam_type']} Steam): "
+        f"steam={diag['steam_path'] or 'NOT FOUND'}, "
+        f"config={'OK' if diag['config_exists'] else 'MISSING'}, "
+        f"log={'OK' if diag['log_exists'] else 'MISSING'}, "
+        f"pipe={'OK' if diag['pipe_available'] else 'MISSING'}, "
+        f"sls_so={'OK' if diag['sls_installed'] else 'MISSING'}"
+    )
+    return msg

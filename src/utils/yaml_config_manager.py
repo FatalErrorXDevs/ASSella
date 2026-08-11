@@ -186,18 +186,37 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
 
 
 def get_user_config_path() -> Path:
-    """Get the path to the user's SLSsteam config.yaml file."""
-    xdg_config_home_str = os.environ.get("XDG_CONFIG_HOME", "")
-    xdg_config_home = (
-        Path(xdg_config_home_str).expanduser() if xdg_config_home_str else Path()
-    )
+    """Get the path to the user's SLSsteam config.yaml file.
 
-    if xdg_config_home_str and xdg_config_home.is_absolute():
-        config_dir = xdg_config_home / "SLSsteam"
-    else:
-        config_dir = Path.home() / ".config" / "SLSsteam"
+    Delegates to SteamEnv for Flatpak-aware path resolution:
+      - Flatpak Steam: ~/.var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml
+      - Native Steam:  $XDG_CONFIG_HOME/SLSsteam/config.yaml  (or ~/.config/SLSsteam/config.yaml)
 
-    return config_dir / "config.yaml"
+    Emits a warning if the resolved config does not exist yet.
+    """
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        config_path = env.sls_config_path
+        if not config_path.exists():
+            logger.warning(
+                f"SLSsteam config.yaml not found at expected location: {config_path}. "
+                f"(Steam type: {'Flatpak' if env.is_flatpak else 'Native'}) "
+                "SLSsteam may not be installed or configured yet."
+            )
+        return config_path
+    except Exception as e:
+        # Graceful fallback: if SteamEnv fails for any reason, use the original native path
+        logger.warning(f"get_user_config_path: SteamEnv unavailable ({e}), falling back to native path")
+        xdg_config_home_str = os.environ.get("XDG_CONFIG_HOME", "")
+        xdg_config_home = (
+            Path(xdg_config_home_str).expanduser() if xdg_config_home_str else Path()
+        )
+        if xdg_config_home_str and Path(xdg_config_home_str).is_absolute():
+            config_dir = xdg_config_home / "SLSsteam"
+        else:
+            config_dir = Path.home() / ".config" / "SLSsteam"
+        return config_dir / "config.yaml"
 
 
 def _get_section_start(content: str, pattern: re.Pattern) -> Optional[int]:

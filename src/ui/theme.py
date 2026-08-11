@@ -382,49 +382,59 @@ def apply_font(
     """
     Applies the font to the application.
 
-    If font_file is provided, loads that font file and applies it.
-    If font is provided (with a family name), checks if it's a system font.
-    Otherwise, falls back to the default TrixieCyrG font.
+    Prioritizes Open Sans (or Google Sans) from local ACCELA fonts directory
+    if user hasn't specified a custom font override.
     """
-    default_font_file = "TrixieCyrG-Plain Regular.otf"
-    google_sans_path = Path.home() / ".local/share/ACCELA/fonts/Google_Sans/static/GoogleSans-Regular.ttf"
-    if google_sans_path.exists():
-        default_font_file = google_sans_path
+    # ── Auto-register bundled & local fonts into QFontDatabase ──
+    from utils.helpers import get_base_path
+    base_fonts = get_base_path() / "fonts"
+    candidate_font_files = [
+        Paths.resource("fonts/OpenSans-Regular.ttf"),
+        Paths.resource("fonts/OpenSans-Bold.ttf"),
+        Paths.resource("fonts/GoogleSans-Regular.ttf"),
+        base_fonts / "Opensans" / "static" / "OpenSans-Regular.ttf",
+        base_fonts / "Opensans" / "OpenSans-VariableFont_wdth,wght.ttf",
+        base_fonts / "Google_Sans" / "static" / "GoogleSans-Regular.ttf",
+        base_fonts / "Google_Sans" / "GoogleSans-VariableFont_GRAD,opsz,wght.ttf",
+    ]
+    for fp in candidate_font_files:
+        if fp and Path(fp).exists():
+            QFontDatabase.addApplicationFont(str(fp))
 
     # Case 1: Specific font file provided
     if font_file:
         path = _resolve_font_path(font_file)
         return _load_and_set_font(app, path, font)
 
-    # Case 2: System font provided
+    # Case 2: Custom user-selected font family provided
     if font and font.family():
         font_family = font.family()
         if font_family in QFontDatabase.families():
-            logger.debug(f"Using system font: {font_family}")
+            logger.debug(f"Using requested user font: {font_family}")
             app.setFont(font)
             return True, font_family
 
-        # System font not found, log and fall through to default
-        logger.debug(f"Font family '{font_family}' not found in system, using default")
-
-    # Case 3: Default - Check if Roboto is installed in the system
+    # Case 3: ACCELA Preferred Default Font — Open Sans
     families = QFontDatabase.families()
-    if "Roboto" in families:
-        logger.debug("Roboto font found in system database, using as default")
-        if font:
-            font.setFamily("Roboto")
-            new_font = font
-        else:
-            new_font = QFont("Roboto", 10)
+    if "Open Sans" in families:
+        logger.info("Using ACCELA preferred default font: Open Sans")
+        new_font = QFont("Open Sans", 10)
         app.setFont(new_font)
+        return True, "Open Sans"
+
+    if "Google Sans" in families:
+        logger.info("Using ACCELA preferred default font: Google Sans")
+        new_font = QFont("Google Sans", 10)
+        app.setFont(new_font)
+        return True, "Google Sans"
+
+    if "Roboto" in families:
+        logger.debug("Roboto font found in system database, using as fallback")
+        app.setFont(QFont("Roboto", 10))
         return True, "Roboto"
 
-    # Case 4: Fallback default file path if Roboto is not in the system
+    # Case 4: Fallback resource font file (TrixieCyrG-Plain)
     default_font_file = "TrixieCyrG-Plain Regular.otf"
-    google_sans_path = Path.home() / ".local/share/ACCELA/fonts/Google_Sans/static/GoogleSans-Regular.ttf"
-    if google_sans_path.exists():
-        default_font_file = google_sans_path
-
     path = _resolve_font_path(default_font_file)
     return _load_and_set_font(app, path, font)
 

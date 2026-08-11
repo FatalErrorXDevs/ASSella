@@ -18,9 +18,8 @@ MAX_HISTORY_ENTRIES = 10
 
 def _get_history_path() -> Path:
     """Return the path to the on-disk history cache JSON file."""
-    data_dir = Path.home() / ".local" / "share" / "ACCELA"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir / "install_history.json"
+    from utils.helpers import get_data_file_path
+    return get_data_file_path("install_history.json")
 
 
 class HistoryCache:

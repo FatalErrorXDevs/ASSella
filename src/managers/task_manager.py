@@ -199,10 +199,6 @@ class TaskManager(QObject):
         self.is_processing = True
         self.current_job = zip_path
         self.current_job_metadata = metadata or {}
-        fn = os.path.basename(zip_path)
-        b_match = re.search(r"_branch_([a-zA-Z0-9_-]+)\.zip$", fn)
-        if b_match and not self.current_job_metadata.get("branch"):
-            self.current_job_metadata["branch"] = b_match.group(1)
 
         self._job_steps_completed.clear()
 
@@ -924,10 +920,26 @@ class TaskManager(QObject):
 
                         if appid:
                             settings = get_settings()
-                            sel_b = (
-                                (self.current_job_metadata or {}).get("branch")
-                                or (self.game_data or {}).get("branch")
-                                or settings.value(f"selected_branch/{appid}", "public", type=str)
+                            # Priority for which branch to stamp as installed:
+                            #  1. job_metadata["branch"] — explicitly set by fetchmanifest /
+                            #     SmartUpdateTask / game details update button. Most authoritative.
+                            #  2. selected_branch/{appid} from QSettings — what the user chose
+                            #     in the UI combo/dialog for THIS operation. Beats game_data
+                            #     because game_data["branch"] can carry a stale value from a
+                            #     previous install on a different branch.
+                            #  3. game_data["branch"] — derived from ProcessZipTask filename
+                            #     parsing or PICS lookup. Last resort only.
+                            #  4. "public" — safe default.
+                            job_meta_branch = (self.current_job_metadata or {}).get("branch")
+                            qsettings_branch = settings.value(f"selected_branch/{appid}", "", type=str)
+                            game_data_branch = (self.game_data or {}).get("branch")
+                            sel_b = job_meta_branch or qsettings_branch or game_data_branch or "public"
+                            logger.info(
+                                f"Branch stamp for {appid}: "
+                                f"job_meta={job_meta_branch!r}, "
+                                f"qsettings={qsettings_branch!r}, "
+                                f"game_data={game_data_branch!r} "
+                                f"→ selected='{sel_b}'"
                             )
                             settings.setValue(f"selected_branch/{appid}", sel_b)
                             settings.setValue(f"installed_branch/{appid}", sel_b)
@@ -969,6 +981,15 @@ class TaskManager(QObject):
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 
             self.main_window.game_manager.scan_steam_libraries_async()
+
+            # Refresh title in the open game-details dialog immediately so the
+            # branch suffix (e.g. "(beta)") updates live without a close/reopen.
+            try:
+                details_dlg = getattr(self.main_window, "_details_dialog", None)
+                if details_dlg and str(getattr(details_dlg, "appid", "")) == str(appid):
+                    details_dlg.update_title()
+            except Exception as _dt_err:
+                logger.debug(f"Could not refresh details dialog title after install: {_dt_err}")
 
         self.job_finished()
 
@@ -1036,7 +1057,12 @@ class TaskManager(QObject):
         #    is preserved — the SLS pipe triggers Steam to fetch the latest PICS data, which would
         #    overwrite the pinned buildid and potentially queue an unwanted auto-update.
         try:
-            from utils.slssteam_integration import install_via_sls, _experimental_mode_enabled
+            from utils.slssteam_integration import (
+                install_via_sls,
+                _experimental_mode_enabled,
+                _is_slssteam_available,
+                warn_sls_unavailable,
+            )
             if _experimental_mode_enabled():
                 is_pinned = False
                 if appid and appid not in ("0", "N/A", "unknown"):
@@ -1054,6 +1080,13 @@ class TaskManager(QObject):
                     # Fall through to step 3 (write_acf_file with pinned buildid)
                 else:
                     logger.info("ACF-Independent Mode is active. Delegating manifest creation to Steam natively.")
+
+                    # Precondition check: warn the user if SLSsteam is not running
+                    if not _is_slssteam_available():
+                        warning_msg = warn_sls_unavailable(context="post-install")
+                        # Emit as a visible warning in the task progress output
+                        self.progress.emit(f"⚠️ WARNING: {warning_msg}")
+
                     job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
                     if job_type == "verify":
                         logger.info("Skipping SLS install API call for verify job — ACF already exists.")
@@ -1067,6 +1100,7 @@ class TaskManager(QObject):
                     return
         except Exception as e:
             logger.error(f"Error in SLSsteam install flow for {appid}: {e}")
+
 
         # 3. Fallback: Write standard Steam .acf manifest file when experimental mode is disabled
         #    or when the build is pinned (to lock the buildid/InstalledDepots).
