@@ -403,17 +403,16 @@ class SimplifiedTerminalWidget(QWidget):
         bg = getattr(self.main_window, "background_color", "#000000") or "#000000"
 
         from utils.color_utils import get_best_foreground_color, get_dark_container_color, make_svg_icon
-        from utils.helpers import get_base_path
+        from utils.paths import Paths
         from PyQt6.QtCore import QSize
 
-        icons_dir = str(get_base_path() / "media" / "icons")
         fg = get_best_foreground_color(accent, dark_color="#121214", light_color="#FFFFFF")
         disabled_bg = get_dark_container_color(accent)
 
         if hasattr(self, "update_all_btn") and self.update_all_btn:
             if total_updates > 0:
                 self.update_all_btn.setText(f" Update All ({total_updates})")
-                icon_cloud = make_svg_icon(f"{icons_dir}/dl_cloud.svg", fg, size=18)
+                icon_cloud = make_svg_icon(Paths.icon("dl_cloud.svg"), fg, size=18)
                 self.update_all_btn.setIcon(icon_cloud)
                 self.update_all_btn.setIconSize(QSize(18, 18))
 
@@ -465,7 +464,7 @@ class SimplifiedTerminalWidget(QWidget):
             else:
                 self.refresh_updates_btn.set_loading(False)
                 self.refresh_updates_btn.setText("")
-                icon_ref = make_svg_icon(f"{icons_dir}/ref3.svg", fg, size=20)
+                icon_ref = make_svg_icon(Paths.icon("ref3.svg"), fg, size=20)
                 self.refresh_updates_btn.setIcon(icon_ref)
                 self.refresh_updates_btn.setIconSize(QSize(20, 20))
                 self.refresh_updates_btn.setToolTip("Force re-check updates for all games")

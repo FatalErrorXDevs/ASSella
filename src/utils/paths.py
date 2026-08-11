@@ -28,6 +28,21 @@ class Paths:
         return cls.RES
 
     @classmethod
+    def icon(cls, filename: str) -> Path:
+        """Returns Path to an SVG icon from bundled /res/icons/ or user media/icons/ fallback."""
+        res_icon = cls.RES / "icons" / filename
+        if res_icon.exists():
+            return res_icon
+        try:
+            from utils.helpers import get_base_path
+            media_icon = get_base_path() / "media" / "icons" / filename
+            if media_icon.exists():
+                return media_icon
+        except Exception:
+            pass
+        return res_icon
+
+    @classmethod
     def base(cls, relative_path=None) -> Path:
         """Grabs a resource from the base path.
 

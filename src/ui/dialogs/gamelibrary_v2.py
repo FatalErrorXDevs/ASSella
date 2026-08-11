@@ -2665,9 +2665,8 @@ class GameDetailsDialogV2(QDialog):
 
                 # ── Action buttons (SVG icons, theme-coloured) ──────────────────
                 from utils.color_utils import make_svg_icon
-                from utils.helpers import get_base_path
+                from utils.paths import Paths
                 from PyQt6.QtCore import QSize as _QSize
-                _icons_dir = str(get_base_path() / "media" / "icons")
 
                 _UPD_COLOR  = "#E5A93C"           # amber — always warm update colour
                 _MUTED      = "rgba(255,255,255,0.70)"  # icon colour at rest
@@ -2708,7 +2707,7 @@ class GameDetailsDialogV2(QDialog):
                 # 1. Update button — ALWAYS reserve space, hide/show based on status
                 btn_upd = _mk_btn(
                     "Update mod to latest version",
-                    f"{_icons_dir}/up1.svg",
+                    Paths.icon("up1.svg"),
                     _UPD_COLOR,
                     "rgba(229,169,60,0.15)",
                     _UPD_COLOR,
@@ -2724,7 +2723,7 @@ class GameDetailsDialogV2(QDialog):
                 # 2. View on Steam Workshop
                 btn_view = _mk_btn(
                     "View on Steam Workshop",
-                    f"{_icons_dir}/link.svg",
+                    Paths.icon("link.svg"),
                     "rgba(255,255,255,0.70)",
                     "rgba(255,255,255,0.07)",
                     self.accent_color,
@@ -2739,7 +2738,7 @@ class GameDetailsDialogV2(QDialog):
                 # 3. Open local folder
                 btn_open = _mk_btn(
                     "Open local mod folder",
-                    f"{_icons_dir}/folder.svg",
+                    Paths.icon("folder.svg"),
                     "rgba(255,255,255,0.70)",
                     "rgba(255,255,255,0.07)",
                     "rgba(255,255,255,0.18)",
@@ -2754,7 +2753,7 @@ class GameDetailsDialogV2(QDialog):
                 # 4. Delete / uninstall
                 btn_del = _mk_btn(
                     "Uninstall / delete mod",
-                    f"{_icons_dir}/bin.svg",
+                    Paths.icon("bin.svg"),
                     _DEL_COLOR,
                     "rgba(239,68,68,0.12)",
                     "#EF4444",
