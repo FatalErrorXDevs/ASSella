@@ -1202,12 +1202,8 @@ class TaskManager(QObject):
         # Source: depotcache/ (manifests were just moved there)
         depotcache_dir = os.path.join(self.current_dest_path, "depotcache")
         # Derive the game install dir (steamapps/common/{installdir})
-        install_folder = self.game_data.get(
-            "installdir",
-            re.sub(r"[^\w\s-]", "", self.game_data.get("game_name", "")).strip().replace(" ", "_")
-        )
-        if not install_folder:
-            install_folder = f"App_{self.game_data.get('appid', 'unknown')}"
+        from utils.steam_manifest import get_install_folder_name
+        install_folder = get_install_folder_name(self.game_data)
         game_install_dir = os.path.join(
             self.current_dest_path, "steamapps", "common", install_folder
         )

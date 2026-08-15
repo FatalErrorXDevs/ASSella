@@ -8,7 +8,7 @@ _EMPTY_PLATFORM_CONFIG = '\t"UserConfig"\n\t{\n\t}\n\t"MountedConfig"\n\t{\n\t}'
 
 
 def sanitize_game_name(game_name: str) -> str:
-    return re.sub(r"[^\w\s-]", "", game_name or "").strip().replace(" ", "_")
+    return re.sub(r'[\\/:*?"<>|]', "", game_name or "").strip()
 
 
 def get_install_folder_name(game_data: Dict[str, Any]) -> str:

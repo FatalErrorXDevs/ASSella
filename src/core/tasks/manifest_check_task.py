@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import traceback
 from pathlib import Path
 
@@ -10,6 +11,42 @@ from utils.helpers import get_base_path
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Maximum age (in seconds) of a cached LUA file before it is considered too stale
+# to trust for update comparison. Default: 7 days.
+_LUA_CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600
+
+
+def _is_network_available() -> bool:
+    """Quick pre-flight check: probe Steam store to verify internet connectivity.
+    Returns True if network is reachable, False otherwise.
+    Uses lightweight HEAD requests with short 3s timeout.
+    """
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(
+            "https://store.steampowered.com",
+            method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status < 500
+    except urllib.error.HTTPError:
+        # Any HTTP response from Steam means connectivity is active
+        return True
+    except Exception:
+        # Secondary fallback probe
+        try:
+            req = urllib.request.Request(
+                "https://1.1.1.1",
+                method="HEAD",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=2):
+                return True
+        except Exception:
+            return False
 
 try:
     from core.steam_api import batched_get_product_info
@@ -118,7 +155,8 @@ class ManifestCheckTask(QObject):
                                 continue
                             parts = line.split(":", 2)
                             depot_id = parts[0].strip()
-                            additional_appids.add(depot_id)
+                            # Note: depot_id is a depot of this app, not a standalone appid.
+                            # It is already returned in the parent game's depots payload.
                             
                             if len(parts) >= 3 and parts[2].strip():
                                 token = parts[2].strip()
@@ -148,7 +186,24 @@ class ManifestCheckTask(QObject):
                 f"Will process {len(appid_list)} appids in {num_batches} batches"
             )
 
-            # 1. Fetch data concurrently via SteamCMD REST API (Fast 25-worker HTTP)
+            # 1. Pre-flight connectivity check — abort early if offline to avoid
+            #    25 concurrent worker threads all failing with timeout errors, which
+            #    wastes ~6s per game × 3 retries = significant UI freeze for large libraries.
+            if not _is_network_available():
+                logger.warning(
+                    "Update check aborted: network is not reachable (pre-flight check failed). "
+                    "Skipping API fetch — all games will retain their current update status."
+                )
+                # Emit cannot_determine only for games whose status is not already known
+                # (i.e. don't downgrade update_available to cannot_determine)
+                for game in valid_games:
+                    appid = game.get("appid")
+                    current_status = game.get("update_status", "")
+                    if current_status not in ("update_available",):
+                        self.game_update_checked.emit(appid, "cannot_determine")
+                return
+
+            # 2. Fetch data concurrently via SteamCMD REST API (Fast 25-worker HTTP)
             from core.steam_api import batched_fetch_steamcmd_info
             try:
                 logger.info(f"Starting SteamCMD REST API batch check for {len(appid_list)} games...")
@@ -158,7 +213,7 @@ class ManifestCheckTask(QObject):
 
                 batched_results = batched_fetch_steamcmd_info(
                     appid_list,
-                    max_workers=25,
+                    max_workers=50,
                     on_progress=on_fetch_progress,
                 )
             except Exception as cmd_err:
@@ -355,17 +410,28 @@ class ManifestCheckTask(QObject):
                             if not current_manifest_id:
                                 current_manifest_id = str(depot_info.get("manifest_id") or "")
 
-                    # 3. Fallback: Parse from cached Hubcap LUA file
+                    # 3. Fallback: Parse from cached Hubcap LUA file.
+                    #    IMPORTANT: Only use if the LUA cache is fresh enough (≤7 days).
+                    #    A stale LUA from a previous successful fetch could contain an old
+                    #    manifest GID that no longer matches the .depot file, causing a
+                    #    false-positive update_available when the network is unavailable.
                     if not current_manifest_id:
                         lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
                         if lua_file.exists():
                             try:
-                                lua_text = lua_file.read_text()
-                                pattern = r"setManifestid\(\s*" + re.escape(saved_depot_id) + r'\s*,\s*"([^"]+)"'
-                                m = re.search(pattern, lua_text)
-                                if m:
-                                    current_manifest_id = m.group(1).strip()
-                                    logger.debug(f"[DLC Update Check] Resolved latest manifest for depot {saved_depot_id} from cached LUA: {current_manifest_id}")
+                                lua_age = time.time() - lua_file.stat().st_mtime
+                                if lua_age > _LUA_CACHE_MAX_AGE_SECONDS:
+                                    logger.debug(
+                                        f"[UpdateCheck {appid}] Skipping stale LUA cache for depot {saved_depot_id} "
+                                        f"(age={lua_age/86400:.1f}d > {_LUA_CACHE_MAX_AGE_SECONDS/86400:.0f}d limit)"
+                                    )
+                                else:
+                                    lua_text = lua_file.read_text()
+                                    pattern = r"setManifestid\(\s*" + re.escape(saved_depot_id) + r'\s*,\s*"([^"]+)"'
+                                    m = re.search(pattern, lua_text)
+                                    if m:
+                                        current_manifest_id = m.group(1).strip()
+                                        logger.debug(f"[UpdateCheck {appid}] Resolved manifest for depot {saved_depot_id} from cached LUA: {current_manifest_id}")
                             except Exception as e:
                                 logger.error(f"Error parsing cached LUA for depot {saved_depot_id} manifest: {e}")
 

@@ -504,14 +504,8 @@ class DownloadDepotsTask(QObject):
                 if depot_id in game_data["depots"]:
                     f.write(f"{depot_id};{game_data['depots'][depot_id]['key']}\n")
 
-        safe_game_name_fallback = (
-            re.sub(r"[^\w\s-]", "", game_data.get("game_name", ""))
-            .strip()
-            .replace(" ", "_")
-        )
-        install_folder_name = game_data.get("installdir", safe_game_name_fallback)
-        if not install_folder_name:
-            install_folder_name = f"App_{game_data['appid']}"
+        from utils.steam_manifest import get_install_folder_name
+        install_folder_name = get_install_folder_name(game_data)
 
         download_dir = os.path.join(
             dest_path, "steamapps", "common", install_folder_name

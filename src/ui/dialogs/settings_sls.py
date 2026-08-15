@@ -263,6 +263,16 @@ def create_sls_tab(dialog) -> QWidget:
         )
         int_layout.addWidget(dialog.sls_mode_checkbox)
 
+    dialog.experimental_acf_independent_checkbox = create_checkbox_setting(
+        "SLSsteam API",
+        "experimental_acf_independent",
+        True,
+        dialog,
+        "Use slsteam native api for installtion/uninstallion with native acf generation.",
+    )
+    dialog.experimental_acf_independent_checkbox.stateChanged.connect(dialog._on_experimental_acf_toggled)
+    int_layout.addWidget(dialog.experimental_acf_independent_checkbox)
+
     dialog.sls_config_management_checkbox = create_checkbox_setting(
         f"{wrapper_name} Config Management",
         "sls_config_management",

@@ -141,21 +141,26 @@ class SimplifiedTerminalWidget(QWidget):
         self.settings = main_window.settings
         self.installation_history = []
 
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.setInterval(120)
+        self._stats_timer.timeout.connect(self._do_update_stats)
+
         self.setStyleSheet("background: transparent;")
         self.init_ui()
 
         # Connect signals from GameManager to update stats & loading state
         if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
             gm = self.main_window.game_manager
-            gm.library_updated.connect(self.update_stats)
+            gm.library_updated.connect(lambda: self.update_stats(immediate=True))
             gm.game_update_status_changed.connect(
-                lambda appid, status: self.update_stats()
+                lambda appid, status: self.update_stats(immediate=False)
             )
-            gm.scan_complete.connect(lambda _: self.update_stats())
+            gm.scan_complete.connect(lambda _: self.update_stats(immediate=True))
             gm.update_check_started.connect(self._on_update_check_started)
             gm.all_updates_checked.connect(self._on_update_check_finished)
 
-        self.update_stats()
+        self._do_update_stats()
         self.update_history_display()
         self.update_style()
 
@@ -168,7 +173,7 @@ class SimplifiedTerminalWidget(QWidget):
         if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
             self.refresh_updates_btn.set_loading(False)
             self.refresh_updates_btn.setToolTip("Force re-check updates for all games")
-        self.update_stats()
+        self.update_stats(immediate=True)
 
     def init_ui(self):
         self.layout = QStackedLayout(self)
@@ -359,7 +364,16 @@ class SimplifiedTerminalWidget(QWidget):
         # Set to Idle by default
         self.layout.setCurrentIndex(0)
 
-    def update_stats(self):
+    def update_stats(self, immediate: bool = False):
+        """Request stats update. Debounced by default to prevent UI freezes during batch checks."""
+        if immediate:
+            self._stats_timer.stop()
+            self._do_update_stats()
+        else:
+            if not self._stats_timer.isActive():
+                self._stats_timer.start(120)
+
+    def _do_update_stats(self):
         if not hasattr(self.main_window, "game_manager") or not self.main_window.game_manager:
             return
 
@@ -1249,9 +1263,6 @@ class MainWindow(QMainWindow):
         
         # Connect game manager signals to update the dashboard's elements & FAB loading state
         self.game_manager.library_updated.connect(self.update_dashboard_elements)
-        self.game_manager.game_update_status_changed.connect(
-            lambda appid, status: self.update_dashboard_elements()
-        )
         self.game_manager.update_check_started.connect(
             lambda: self.simplified_terminal._on_update_check_started() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
         )
@@ -1651,7 +1662,7 @@ class MainWindow(QMainWindow):
         hubcap_api_item.addWidget(self.hubcap_api_value)
         row1_layout.addLayout(hubcap_api_item)
 
-        # 2. SLS Config
+        # 2. SLS Config (hidden)
         self.sls_lbl = QLabel("SLS Config:")
         self.sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.sls_status_value = QLabel("Checking...")
@@ -1660,9 +1671,8 @@ class MainWindow(QMainWindow):
         sls_item.setSpacing(4)
         sls_item.addWidget(self.sls_lbl)
         sls_item.addWidget(self.sls_status_value)
-        # Note: Do not add sls_item to row1_layout to keep it hidden
 
-        # 3. SLSsteam
+        # 3. SLSsteam Status (Online/Offline)
         self.slssteam_lbl = QLabel("SLSsteam:")
         self.slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.slssteam_status_value = QLabel("Checking...")
@@ -1671,18 +1681,18 @@ class MainWindow(QMainWindow):
         slssteam_item.setSpacing(4)
         slssteam_item.addWidget(self.slssteam_lbl)
         slssteam_item.addWidget(self.slssteam_status_value)
-        # Note: Do not add slssteam_item to row1_layout to keep it hidden
+        row1_layout.addLayout(slssteam_item)
 
-        # 4. Steam Updates
-        steam_updates_lbl = QLabel("Steam Updates:")
-        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.steam_updates_value = QLabel("Checking...")
-        self.steam_updates_value.setStyleSheet(self._get_status_style("neutral"))
-        steam_updates_item = QHBoxLayout()
-        steam_updates_item.setSpacing(4)
-        steam_updates_item.addWidget(steam_updates_lbl)
-        steam_updates_item.addWidget(self.steam_updates_value)
-        row1_layout.addLayout(steam_updates_item)
+        # 4. Steam Client Process Status (Online/Offline)
+        steam_conn_lbl = QLabel("Steam:")
+        steam_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.steam_conn_value = QLabel("Checking...")
+        self.steam_conn_value.setStyleSheet(self._get_status_style("neutral"))
+        steam_conn_item = QHBoxLayout()
+        steam_conn_item.setSpacing(4)
+        steam_conn_item.addWidget(steam_conn_lbl)
+        steam_conn_item.addWidget(self.steam_conn_value)
+        row1_layout.addLayout(steam_conn_item)
 
         row1_layout.addStretch()
         dash_main_layout.addLayout(row1_layout)
@@ -1703,16 +1713,16 @@ class MainWindow(QMainWindow):
         hubcap_conn_item.addWidget(self.hubcap_conn_value)
         row2_layout.addLayout(hubcap_conn_item)
 
-        # 2. Steam Connection Status
-        steam_conn_lbl = QLabel("Steam Status:")
-        steam_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.steam_conn_value = QLabel("Connecting...")
-        self.steam_conn_value.setStyleSheet(self._get_status_style("neutral"))
-        steam_conn_item = QHBoxLayout()
-        steam_conn_item.setSpacing(4)
-        steam_conn_item.addWidget(steam_conn_lbl)
-        steam_conn_item.addWidget(self.steam_conn_value)
-        row2_layout.addLayout(steam_conn_item)
+        # 2. Steam Updates
+        steam_updates_lbl = QLabel("Steam Updates:")
+        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.steam_updates_value = QLabel("Checking...")
+        self.steam_updates_value.setStyleSheet(self._get_status_style("neutral"))
+        steam_updates_item = QHBoxLayout()
+        steam_updates_item.setSpacing(4)
+        steam_updates_item.addWidget(steam_updates_lbl)
+        steam_updates_item.addWidget(self.steam_updates_value)
+        row2_layout.addLayout(steam_updates_item)
 
         # 3. ASSella Status
         assella_lbl = QLabel("ASSella:")
@@ -1997,21 +2007,43 @@ class MainWindow(QMainWindow):
         version_file_exists = os.path.exists(sls_paths.get("version_file", "")) if sls_detected else False
         ignore_updater = self.settings.value("ignore_slssteam_updater", False, type=bool) if self.settings else False
 
-        # SLS Config Status (Disabled)
-        if hasattr(self, "sls_lbl") and self.sls_lbl:
-            self.sls_lbl.setEnabled(False)
-        if hasattr(self, "sls_status_value") and self.sls_status_value:
-            self.sls_status_value.setEnabled(False)
-            self.sls_status_value.setText("Disabled")
-            self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        # --- SLS Detection & API Integration ---
+        from utils.slssteam_integration import is_slssteam_process_active, is_steam_process_running
+        sls_active = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
 
-        # SLSsteam Status (Disabled)
+        # SLS Config Status (SLS Integration Status)
+        if hasattr(self, "sls_lbl") and self.sls_lbl:
+            self.sls_lbl.setEnabled(sls_active)
+        if hasattr(self, "sls_status_value") and self.sls_status_value:
+            self.sls_status_value.setEnabled(True)
+            if sls_active:
+                self.sls_status_value.setText("Active")
+                self.sls_status_value.setStyleSheet(self._get_status_style("success"))
+            else:
+                self.sls_status_value.setText("Disabled")
+                self.sls_status_value.setStyleSheet(self._get_status_style("neutral"))
+
+        # SLSsteam API Status (Active check of process)
         if hasattr(self, "slssteam_lbl") and self.slssteam_lbl:
-            self.slssteam_lbl.setEnabled(False)
+            self.slssteam_lbl.setEnabled(True)
         if hasattr(self, "slssteam_status_value") and self.slssteam_status_value:
-            self.slssteam_status_value.setEnabled(False)
-            self.slssteam_status_value.setText("Disabled")
-            self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.slssteam_status_value.setEnabled(True)
+            if sls_active and is_slssteam_process_active():
+                self.slssteam_status_value.setText("Online")
+                self.slssteam_status_value.setStyleSheet(self._get_status_style("success"))
+            else:
+                self.slssteam_status_value.setText("Offline")
+                self.slssteam_status_value.setStyleSheet(self._get_status_style("error"))
+
+        # Steam Client Process Status
+        if hasattr(self, "steam_conn_value") and self.steam_conn_value:
+            self.steam_conn_value.setEnabled(True)
+            if is_steam_process_running():
+                self.steam_conn_value.setText("Online")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
+            else:
+                self.steam_conn_value.setText("Offline")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
 
 
 
@@ -2145,14 +2177,7 @@ class MainWindow(QMainWindow):
                 self.hubcap_conn_value.setText("Offline")
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("error"))
 
-        # 2. Update Steam connection label
-        if hasattr(self, "steam_conn_value") and self.steam_conn_value:
-            if steam_ok:
-                self.steam_conn_value.setText("Online")
-                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
-            else:
-                self.steam_conn_value.setText("Offline")
-                self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
+
 
     def _on_user_stats_loaded(self, stats: dict) -> None:
         """Handle async hubcap stats load success."""
@@ -2368,6 +2393,7 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_do_update_all, daemon=True).start()
 
 
+    @pyqtSlot()
     def update_dashboard_elements(self) -> None:
         """Dynamically update dashboard elements and floating action button."""
         if hasattr(self, "simplified_terminal") and self.simplified_terminal:

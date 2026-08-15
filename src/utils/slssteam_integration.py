@@ -124,6 +124,75 @@ def _is_slssteam_available() -> bool:
     return os.path.exists(SLSSTEAM_API_PIPE)
 
 
+_proc_cache = {
+    "last_check": 0.0,
+    "steam_running": False,
+    "slssteam_active": False,
+}
+_PROC_CACHE_TTL = 2.0  # seconds
+
+
+def _update_proc_cache_if_needed():
+    """Scan /proc at most once every _PROC_CACHE_TTL seconds."""
+    import time
+    now = time.time()
+    if now - _proc_cache["last_check"] < _PROC_CACHE_TTL:
+        return
+
+    _proc_cache["last_check"] = now
+    _proc_cache["steam_running"] = False
+    _proc_cache["slssteam_active"] = False
+
+    if sys.platform != "linux":
+        return
+
+    try:
+        steam_pids = []
+        for pid_dir in os.listdir("/proc"):
+            if not pid_dir.isdigit():
+                continue
+            try:
+                comm_path = os.path.join("/proc", pid_dir, "comm")
+                with open(comm_path, "r", encoding="utf-8", errors="ignore") as f:
+                    comm = f.read().strip()
+                if comm == "steam":
+                    steam_pids.append(pid_dir)
+            except OSError:
+                continue
+
+        if steam_pids:
+            _proc_cache["steam_running"] = True
+            for pid in steam_pids:
+                maps_path = os.path.join("/proc", pid, "maps")
+                try:
+                    if os.path.exists(maps_path):
+                        with open(maps_path, "r", encoding="utf-8", errors="ignore") as f:
+                            for line in f:
+                                if "SLSsteam.so" in line:
+                                    _proc_cache["slssteam_active"] = True
+                                    return
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+
+def is_slssteam_process_active() -> bool:
+    """Check if SLSsteam.so is loaded in Steam's memory space using /proc maps.
+    Cached for 2 seconds to avoid freezing the UI on repeated calls.
+    """
+    _update_proc_cache_if_needed()
+    return _proc_cache["slssteam_active"]
+
+
+def is_steam_process_running() -> bool:
+    """Check if the steam process is currently running on the system.
+    Cached for 2 seconds to avoid freezing the UI on repeated calls.
+    """
+    _update_proc_cache_if_needed()
+    return _proc_cache["steam_running"]
+
+
 def _slssteam_api_send(command: str) -> bool:
     """Send a raw command to SLSsteam via the named pipe.
 

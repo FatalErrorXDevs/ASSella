@@ -26,7 +26,7 @@ def write_accela_metadata(
         # Fallback if get_install_folder_name is not importable
         install_folder_name = game_data.get("installdir")
         if not install_folder_name:
-            safe_game_name = re.sub(r"[^\w\s-]", "", game_data.get("game_name", "")).strip().replace(" ", "_")
+            safe_game_name = re.sub(r'[\\/:*?"<>|]', "", game_data.get("game_name", "")).strip()
             install_folder_name = safe_game_name or f"App_{game_data.get('appid')}"
 
     ddm_dir = os.path.join(

@@ -168,9 +168,8 @@ class CreditsDialog(QDialog):
         ver_row.setContentsMargins(0, 0, 0, 0)
         ver_row.setSpacing(8)
 
-        from datetime import date
-        today = date.today().strftime("%Y-%m-%d")
-        ver_lbl = QLabel(f"v{app_version}  ·  {today}")
+        build_date = "15/08/2026"
+        ver_lbl = QLabel(f"v{app_version}  ·  {build_date}")
         ver_lbl.setStyleSheet("font-size: 11px; color: #666666;")
 
         branch = _get_branch_from_version(app_version)

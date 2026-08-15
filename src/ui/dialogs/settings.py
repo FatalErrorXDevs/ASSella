@@ -45,6 +45,7 @@ from utils.helpers import (
     get_slscheevo_save_path,
     get_schema_grabber_path,
     get_venv_python,
+    FontSelectionDialog,
 )
 from utils.paths import Paths
 from utils.settings import get_settings
@@ -702,30 +703,6 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(assella_card)
 
-        # Section 2 Card: Experimental
-        exp_card, exp_lay = self._create_card_frame("Experimental")
-
-        self.experimental_acf_independent_checkbox = create_checkbox_setting(
-            "Let SLS handle ACF (Experimental)",
-            "experimental_acf_independent",
-            False,
-            self,
-            "Delegates .acf file creation and updates directly to Steam via SLSsteam API.",
-        )
-        self.experimental_acf_independent_checkbox.stateChanged.connect(self._on_experimental_acf_toggled)
-        
-        acf_box = QVBoxLayout()
-        acf_box.setContentsMargins(0, 0, 0, 0)
-        acf_box.setSpacing(2)
-        acf_box.addWidget(self.experimental_acf_independent_checkbox)
-        
-        _acf_desc = QLabel("Native SLS .acf generation via SLSsteam API. Fixes 'Content Encrypted' errors, removes need for Steam restart, and enables clean native uninstall.")
-        _acf_desc.setWordWrap(True)
-        _acf_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; margin-left: 6px; margin-right: 6px;")
-        acf_box.addWidget(_acf_desc)
-        exp_lay.addLayout(acf_box)
-
-        layout.addWidget(exp_card)
         layout.addStretch()
 
         # ── Uninstall (Linux only) ────────────────────────────────────────
@@ -1914,7 +1891,7 @@ class SettingsDialog(QDialog):
 
     # Font Handlers
     def choose_font(self) -> None:
-        font, ok = QFontDialog.getFont(self.current_font, self)
+        font, ok = FontSelectionDialog.get_font(self.current_font, self)
         if ok:
             self.current_font = font
             self.update_font_button_text()
@@ -2189,7 +2166,7 @@ class SettingsDialog(QDialog):
                 if not hasattr(self, "_saved_prompt_restart_pref"):
                     self._saved_prompt_restart_pref = self.prompt_steam_restart_checkbox.isChecked()
                 self.prompt_steam_restart_checkbox.setChecked(False)
-                self.prompt_steam_restart_checkbox.setLocked(True, "Disabled while 'Let SLS handle ACF' is active.")
+                self.prompt_steam_restart_checkbox.setLocked(True, "Disabled while 'SLSsteam API' is active.")
             else:
                 self.prompt_steam_restart_checkbox.setLocked(False)
                 if hasattr(self, "_saved_prompt_restart_pref"):
@@ -2201,7 +2178,7 @@ class SettingsDialog(QDialog):
                 if not hasattr(self, "_saved_library_mode_pref"):
                     self._saved_library_mode_pref = self.library_mode_checkbox.isChecked()
                 self.library_mode_checkbox.setChecked(True)
-                self.library_mode_checkbox.setLocked(True, "Must be enabled when 'Let SLS handle ACF' is active.")
+                self.library_mode_checkbox.setLocked(True, "Must be enabled when 'SLSsteam API' is active.")
             else:
                 self.library_mode_checkbox.setLocked(False)
                 if hasattr(self, "_saved_library_mode_pref"):
@@ -2213,7 +2190,7 @@ class SettingsDialog(QDialog):
                 if not hasattr(self, "_saved_sls_config_mgmt_pref"):
                     self._saved_sls_config_mgmt_pref = self.sls_config_management_checkbox.isChecked()
                 self.sls_config_management_checkbox.setChecked(True)
-                self.sls_config_management_checkbox.setLocked(True, "Must be enabled when 'Let SLS handle ACF' is active.")
+                self.sls_config_management_checkbox.setLocked(True, "Must be enabled when 'SLSsteam API' is active.")
             else:
                 is_sls_detected = False
                 try:

@@ -21,6 +21,12 @@ from PyQt6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QDialog,
+    QFontComboBox,
+    QComboBox,
+    QSpinBox,
+    QDialogButtonBox,
+    QFormLayout,
 )
 
 from utils.paths import Paths
@@ -1370,6 +1376,140 @@ def get_dotnet_env():
 
 
 from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode
+
+
+class FontSelectionDialog(QDialog):
+    def __init__(self, initial_font: QFont, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Font")
+        self.setMinimumWidth(380)
+        self.resize(380, 260)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #121214;
+            }
+            QLabel {
+                color: #FFFFFF;
+                font-size: 9.5pt;
+            }
+            QComboBox, QFontComboBox {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                color: #FFFFFF;
+                padding: 5px 8px;
+                font-size: 9.5pt;
+            }
+            QSpinBox {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                color: #FFFFFF;
+                padding: 5px 8px;
+                font-size: 9.5pt;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+
+        self.font_combo = QFontComboBox(self)
+        self.font_combo.setCurrentFont(initial_font)
+        form_layout.addRow("Font:", self.font_combo)
+
+        self.style_combo = QComboBox(self)
+        self.style_combo.addItems(["Normal", "Bold", "Italic", "Bold Italic"])
+        
+        if initial_font.bold() and initial_font.italic():
+            self.style_combo.setCurrentIndex(3)
+        elif initial_font.bold():
+            self.style_combo.setCurrentIndex(1)
+        elif initial_font.italic():
+            self.style_combo.setCurrentIndex(2)
+        else:
+            self.style_combo.setCurrentIndex(0)
+            
+        form_layout.addRow("Style:", self.style_combo)
+
+        self.size_spin = QSpinBox(self)
+        self.size_spin.setRange(6, 72)
+        self.size_spin.setValue(initial_font.pointSize() if initial_font.pointSize() > 0 else 10)
+        form_layout.addRow("Size (pt):", self.size_spin)
+
+        layout.addLayout(form_layout)
+
+        preview_group = QVBoxLayout()
+        preview_title = QLabel("Preview:", self)
+        preview_title.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt;")
+        self.preview_label = QLabel("Pack my box with five dozen liquor jugs. 1234567890", self)
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.04); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 12px; min-height: 40px; color: #FFFFFF;")
+        
+        preview_group.addWidget(preview_title)
+        preview_group.addWidget(self.preview_label)
+        layout.addLayout(preview_group)
+
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            self
+        )
+        self.button_box.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.09);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                color: #FFFFFF;
+                padding: 6px 16px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.18);
+            }
+        """)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+        self.font_combo.currentFontChanged.connect(self.update_preview)
+        self.style_combo.currentIndexChanged.connect(self.update_preview)
+        self.size_spin.valueChanged.connect(self.update_preview)
+
+        self.update_preview()
+
+    def update_preview(self):
+        font = self.get_selected_font()
+        self.preview_label.setFont(font)
+
+    def get_selected_font(self) -> QFont:
+        font = self.font_combo.currentFont()
+        font.setPointSize(self.size_spin.value())
+        style = self.style_combo.currentText()
+        if style == "Bold":
+            font.setBold(True)
+            font.setItalic(False)
+        elif style == "Italic":
+            font.setBold(False)
+            font.setItalic(True)
+        elif style == "Bold Italic":
+            font.setBold(True)
+            font.setItalic(True)
+        else:
+            font.setBold(False)
+            font.setItalic(False)
+        return font
+
+    @staticmethod
+    def get_font(initial_font: QFont, parent=None) -> Tuple[QFont, bool]:
+        dialog = FontSelectionDialog(initial_font, parent)
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted:
+            return dialog.get_selected_font(), True
+        return initial_font, False
 
 
 

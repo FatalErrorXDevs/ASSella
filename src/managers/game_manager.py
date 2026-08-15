@@ -384,8 +384,20 @@ class GameManager(QObject):
 
         if game is not None:
             old_status = game.get("update_status")
-            game["update_status"] = update_status
             game_title = game.get("name", f"AppID {appid}")
+
+            # Guard: never downgrade a confirmed update_available to cannot_determine.
+            # A transient network error during a re-check should NOT silently remove the
+            # update badge — the user would miss a real update until the next successful check.
+            if (update_status == UPDATE_STATUS["CANNOT_DETERMINE"]
+                    and old_status == UPDATE_STATUS["UPDATE_AVAILABLE"]):
+                logger.info(
+                    f"[UpdateCheck {appid}] ({game_title}): Keeping existing 'update_available' — "
+                    f"ignoring cannot_determine result (likely a transient network error)"
+                )
+                return
+
+            game["update_status"] = update_status
             if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
                 logger.info(f"Updated status for game {appid} ({game_title}): {update_status}")
             else:
