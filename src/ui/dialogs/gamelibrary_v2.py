@@ -233,15 +233,16 @@ class MaterialTile(QPushButton):
         text_layout.addWidget(self.sub_lbl)
         layout.addLayout(text_layout, 1)
         
-    def update_state(self, checked, accent_color, active_sub="Active", inactive_sub="Inactive"):
+    def update_state(self, checked, accent_color, active_sub="Active", inactive_sub="Inactive", custom_color=None):
         from utils.color_utils import get_best_foreground_color
-        text_color = get_best_foreground_color(accent_color, dark_color="#121214", light_color="#FFFFFF")
+        bg_color = custom_color if custom_color else accent_color
+        text_color = get_best_foreground_color(bg_color, dark_color="#121214", light_color="#FFFFFF")
         
         if checked:
             self.setChecked(True)
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {accent_color};
+                    background-color: {bg_color};
                     border: none;
                     border-radius: 8px;
                 }}
@@ -294,6 +295,10 @@ class GameDetailsDialogV2(QDialog):
         self.resize(580, 480)
         self.setModal(True)
 
+        # Check if game supports Steam Workshop in a resource-friendly way
+        from utils.workshop_helpers import check_game_has_workshop
+        self._has_workshop = check_game_has_workshop(self.appid, self.game_data)
+
         self._apply_stylesheet()
         self._setup_ui()
 
@@ -306,7 +311,8 @@ class GameDetailsDialogV2(QDialog):
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
 
-        self._scan_workshop_mods_async()
+        if self._has_workshop:
+            self._scan_workshop_mods_async()
 
     def _on_main_progress_changed(self, value):
         try:
@@ -457,7 +463,14 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setSpacing(0)
 
         self._tab_buttons = []
-        self._pages_info = [("Info", 0), ("Tools", 1), ("Workshop", 2), ("Tickets", 3)]
+        self._pages_info = [("Info", 0), ("Tools", 1)]
+        p_idx = 2
+        if self._has_workshop:
+            self._pages_info.append(("Workshop", p_idx))
+            p_idx += 1
+        self._tickets_tab_index = p_idx
+        self._pages_info.append(("Tickets", p_idx))
+
         for label, idx in self._pages_info:
             btn = QPushButton(label)
             btn.setFlat(True)
@@ -491,7 +504,8 @@ class GameDetailsDialogV2(QDialog):
         self.stacked.setStyleSheet("background: transparent;")
         self._init_info_tab()
         self._init_tools_tab()
-        self._init_workshop_tab()
+        if self._has_workshop:
+            self._init_workshop_tab()
         self._init_tickets_tab()
         root.addWidget(self.stacked, 1)
 
@@ -560,13 +574,22 @@ class GameDetailsDialogV2(QDialog):
         banner_layout.setContentsMargins(14, 8, 120, 8)
         banner_layout.setSpacing(4)
 
-        row1_layout = QHBoxLayout()
-        row1_layout.setContentsMargins(0, 0, 0, 0)
-        row1_layout.setSpacing(10)
-
         left_col = QVBoxLayout()
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(2)
+
+        # Top-left Ratings badges row (Denuvo + ProtonDB pills)
+        self._ratings_row = QHBoxLayout()
+        self._ratings_row.setSpacing(6)
+        self._ratings_row.setContentsMargins(0, 0, 0, 0)
+        self._denuvo_badge_lbl = QLabel()
+        self._denuvo_badge_lbl.hide()
+        self._proton_badge_lbl = QLabel()
+        self._proton_badge_lbl.hide()
+        self._ratings_row.addWidget(self._denuvo_badge_lbl)
+        self._ratings_row.addWidget(self._proton_badge_lbl)
+        self._ratings_row.addStretch()
+        left_col.addLayout(self._ratings_row)
 
         self.name_lbl = QLabel()
         self.name_lbl.setStyleSheet(
@@ -580,27 +603,9 @@ class GameDetailsDialogV2(QDialog):
             "font-size: 8.5pt; color: rgba(255, 255, 255, 0.706); background: transparent; font-weight: bold;")
         left_col.addWidget(self.appid_lbl)
 
-        row1_layout.addLayout(left_col, 1)
-
-        right_col = QVBoxLayout()
-        right_col.setContentsMargins(0, 2, 0, 2)
-        right_col.setSpacing(4)
-        right_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        self._denuvo_badge_lbl = QLabel()
-        self._denuvo_badge_lbl.hide()
-        self._proton_badge_lbl = QLabel()
-        self._proton_badge_lbl.hide()
-
-        right_col.addWidget(self._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignRight)
-        right_col.addWidget(self._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignRight)
-        right_col.addStretch(1)
-
-        row1_layout.addLayout(right_col)
-        banner_layout.addLayout(row1_layout)
+        banner_layout.addLayout(left_col)
 
         self.update_title()
-
 
         # Stats row — horizontal labels under name
         stats_row = QHBoxLayout()
@@ -655,20 +660,15 @@ class GameDetailsDialogV2(QDialog):
     # ──────────────────────────────────────────
     def _init_hero_legacy(self, root):
         self.hero = HeroBanner(bg_hex=self.background_color)
-        self.hero.setFixedHeight(65)
+        self.hero.setMinimumHeight(70)
         banner_layout = QHBoxLayout(self.hero)
         banner_layout.setContentsMargins(14, 6, 180, 6)
         banner_layout.setSpacing(0)
 
         name_col = QVBoxLayout()
         name_col.setSpacing(2)
-        self.name_lbl = QLabel()
-        self.name_lbl.setStyleSheet(
-            "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        self.name_lbl.setWordWrap(True)
-        name_col.addWidget(self.name_lbl)
 
-        # Ratings badges row (Denuvo + ProtonDB pills, populated by update_title)
+        # Top-left Ratings badges row (Denuvo + ProtonDB pills)
         self._ratings_row = QHBoxLayout()
         self._ratings_row.setSpacing(6)
         self._ratings_row.setContentsMargins(0, 0, 0, 0)
@@ -678,16 +678,24 @@ class GameDetailsDialogV2(QDialog):
         self._proton_badge_lbl.hide()
         self._ratings_row.addWidget(self._denuvo_badge_lbl)
         self._ratings_row.addWidget(self._proton_badge_lbl)
+        self._ratings_row.addStretch()
+        name_col.addLayout(self._ratings_row)
+
+        self.name_lbl = QLabel()
+        self.name_lbl.setStyleSheet(
+            "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
+        self.name_lbl.setWordWrap(True)
+        name_col.addWidget(self.name_lbl)
+
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
         self.appid_lbl.setStyleSheet(
-            "font-size: 8pt; color: rgba(255, 255, 255, 0.235); background: transparent;")
+            "font-size: 8pt; color: rgba(255, 255, 255, 0.4); background: transparent;")
         name_col.addWidget(self.appid_lbl)
         name_col.addStretch()
         banner_layout.addLayout(name_col)
         banner_layout.addStretch()
 
         self.update_title()
-
 
         self._load_hero_image()
         root.addWidget(self.hero)
@@ -729,20 +737,22 @@ class GameDetailsDialogV2(QDialog):
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)
 
-        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "", type=str)
+        if not installed_branch:
+            installed_branch = self.game_data.get("installed_branch", "public")
         installed_bid = self.settings.value(
             f"installed_buildid/{self.appid}/{installed_branch}",
             self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str),
             type=str)
 
-        # Default the selected branch to whatever the user has chosen or installed
+        # Default the selected branch to whatever the user has chosen or installed (prioritize non-public branch)
         saved_b = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
-        if not saved_b:
+        if not saved_b or (installed_branch and installed_branch != "public" and saved_b == "public"):
             saved_b = installed_branch or "public"
         self.settings.setValue(f"selected_branch/{self.appid}", saved_b)
 
         self.branch_combo = CenteredComboBox()
-        self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
+        self.branch_combo.addItem(f"{saved_b} ({installed_bid})" if installed_bid else saved_b, saved_b)
         self.branch_combo.setFixedHeight(26)
         self.branch_combo.setFixedWidth(200) # Comfortable dropdown width
         self.branch_combo.setMaxVisibleItems(5)
@@ -1239,9 +1249,11 @@ class GameDetailsDialogV2(QDialog):
             self.branch_combo.clear()
 
             sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
-            installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+            installed_branch = self.settings.value(f"installed_branch/{self.appid}", "", type=str)
+            if not installed_branch:
+                installed_branch = self.game_data.get("installed_branch", "public")
             saved_branch = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
-            if not saved_branch:
+            if not saved_branch or (installed_branch and installed_branch != "public" and saved_branch == "public"):
                 saved_branch = installed_branch or "public"
             select_idx = 0
 
@@ -1738,32 +1750,82 @@ class GameDetailsDialogV2(QDialog):
             self._uninstall_content.addWidget(confirm)
         else:
             warn = QLabel(
-                f"Permanently removes all files for '{self.game_data.get('game_name','this game')}'.")
+                f"Permanently removes files for '{self.game_data.get('game_name','this game')}'.")
             warn.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent;")
             warn.setWordWrap(True)
             self._uninstall_content.addWidget(warn)
+
             self._uninstall_opts = {}
+            options = [("wipe_sls_only", "I bought the game")]
             if platform.system() == "Linux":
-                for key, text in [("compat", "Remove Proton/Wine prefix"),
-                                   ("saves", "Remove local cloud saves"),
-                                   ("wipe_sls_only", "Wipe SLS (you own the game) — removes from config + .DepotDownloader")]:
-                    cb = QCheckBox(text)
-                    cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
-                    self._uninstall_opts[key] = cb
-                    self._uninstall_content.addWidget(cb)
+                options.extend([
+                    ("compat", "Remove Proton/Wine prefix"),
+                    ("saves", "Remove local cloud saves"),
+                ])
+
+            for key, text in options:
+                cb = QCheckBox(text)
+                cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
+                self._uninstall_opts[key] = cb
+                self._uninstall_content.addWidget(cb)
+
             confirm = QPushButton("Confirm Uninstall")
-            confirm.setFixedHeight(25)
-            confirm.setStyleSheet("""
-                QPushButton { background: rgba(160, 40, 30, 0.235); color: #ff8a7a;
-                    border: none; font-size: 9.5pt; font-weight: bold; }
-                QPushButton:hover { background: rgba(180, 50, 35, 0.314); }
-            """)
+            confirm.setFixedHeight(28)
+            confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._uninstall_content.addWidget(confirm)
+
+            def _update_uninstall_ui():
+                is_bought_mode = bool(self._uninstall_opts.get("wipe_sls_only") and self._uninstall_opts["wipe_sls_only"].isChecked())
+
+                # Disable and uncheck prefix / save deletion if "I bought the game" is checked
+                for k in ("compat", "saves"):
+                    if k in self._uninstall_opts:
+                        self._uninstall_opts[k].setEnabled(not is_bought_mode)
+                        if is_bought_mode:
+                            self._uninstall_opts[k].setChecked(False)
+
+                if is_bought_mode:
+                    confirm.setText("Take away my sins")
+                    confirm.setStyleSheet("""
+                        QPushButton {
+                            background: rgba(34, 197, 94, 0.25);
+                            color: #4ADE80;
+                            border: 1px solid rgba(34, 197, 94, 0.4);
+                            border-radius: 4px;
+                            font-size: 9.5pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background: rgba(34, 197, 94, 0.35);
+                        }
+                    """)
+                else:
+                    confirm.setText("Confirm Uninstall")
+                    confirm.setStyleSheet("""
+                        QPushButton {
+                            background: rgba(160, 40, 30, 0.235);
+                            color: #ff8a7a;
+                            border: none;
+                            border-radius: 4px;
+                            font-size: 9.5pt;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background: rgba(180, 50, 35, 0.314);
+                        }
+                    """)
+
+            # Connect all checkboxes to update the dynamic UI
+            for cb in self._uninstall_opts.values():
+                cb.toggled.connect(lambda _: _update_uninstall_ui())
+
+            _update_uninstall_ui()
+
             confirm.clicked.connect(
                 lambda: self.parent_window._uninstall_game(
                     self.game_data, self, {
                         key: cb.isChecked() for key, cb in getattr(self, "_uninstall_opts", {}).items()
                     }))
-            self._uninstall_content.addWidget(confirm)
 
     def _do_standard_uninstall(self):
         from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
@@ -1817,29 +1879,33 @@ class GameDetailsDialogV2(QDialog):
         self._build_uninstall_panel()
 
     def _update_eos_btn_state(self):
-        # Phase 1: File Detection
+        # Phase 1: File Detection & Hash-based State Resolution
         install_path = self.game_data.get("install_path")
         if not install_path or not os.path.exists(install_path):
             self.eos_tile.setVisible(False)
             return
 
         from utils.eos_detector import EOSDetector
-        dll_paths = EOSDetector.get_eos_dll_paths(install_path)
-        
-        if not dll_paths:
+        status = EOSDetector.get_proxy_status(install_path)
+
+        if status == "none":
             self.eos_tile.setVisible(False)
             return
 
-        # Phase 2: SLSonline Dependency Check & Active Proxy Detection
+        # Phase 2: SLSonline Dependency Check & Status Handling
         self.eos_tile.setVisible(True)
         is_sls_active = self.sls_tile.isChecked() if hasattr(self, "sls_tile") else False
-        has_yes = any(p.name.lower() == "eossdk-win64-shipping.yes" or p.suffix.lower() == ".yes" for p in dll_paths)
 
-        if has_yes:
-            # Proxy is currently applied (.yes exists) -> Active state
+        if status == "active":
+            # Proxy is currently applied and hash matches -> Active state
             self.eos_tile.setEnabled(True)  # Allow removing proxy regardless of SLS state
             self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
             self.eos_tile.setToolTip("Epic Online Services proxy is active. Click to remove proxy and restore original DLL.")
+        elif status == "stale":
+            # Game was updated: .yes exists, but .dll was replaced with unpatched version -> Warning state
+            self.eos_tile.setEnabled(True)
+            self.eos_tile.update_state(True, self.accent_color, active_sub="Reapply Proxy", inactive_sub="Reapply Proxy", custom_color="#F59E0B")
+            self.eos_tile.setToolTip("Game was updated with unpatched EOS binaries. Click to reapply Epic Online Services proxy.")
         else:
             # Proxy is not applied (original DLL present)
             if not is_sls_active:
@@ -1857,53 +1923,37 @@ class GameDetailsDialogV2(QDialog):
             return
 
         from utils.eos_detector import EOSDetector
-        dll_paths = EOSDetector.get_eos_dll_paths(install_path)
-        if not dll_paths:
+        status = EOSDetector.get_proxy_status(install_path)
+        if status == "none":
             return
 
-        has_yes = any(p.name.lower() == "eossdk-win64-shipping.yes" or p.suffix.lower() == ".yes" for p in dll_paths)
-        from utils.paths import Paths
-        proxy_src = Paths.deps("EOSSDK-Win64-Shipping.dll")
-
         try:
-            if has_yes:
+            if status == "active":
                 # Disable/Remove EOS Proxy
-                for root, _, files in os.walk(install_path):
-                    if ".DepotDownloader" in Path(root).parts:
-                        continue
-                    for file in files:
-                        if file.lower() == "eossdk-win64-shipping.yes":
-                            yes_path = Path(root) / file
-                            dll_path = Path(root) / "EOSSDK-Win64-Shipping.dll"
-                            if dll_path.exists():
-                                dll_path.unlink()
-                            yes_path.rename(dll_path)
-                QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy removed successfully.")
+                success = EOSDetector.remove_proxy(install_path)
+                if success:
+                    QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy removed successfully.")
+                else:
+                    QMessageBox.warning(self, "EOS Proxy", "Failed to remove Epic Online Services proxy.")
+            elif status == "stale":
+                # Reapply EOS Proxy after game update
+                success = EOSDetector.apply_proxy(install_path)
+                if success:
+                    QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy reapplied successfully.")
+                else:
+                    QMessageBox.warning(self, "EOS Proxy", "Failed to reapply Epic Online Services proxy.")
             else:
                 # Enable/Apply EOS Proxy
-                if not proxy_src.exists():
-                    QMessageBox.critical(self, "Error", "Bundled proxy file EOSSDK-Win64-Shipping.dll not found in deps folder.")
-                    return
-                
-                applied = False
-                for root, _, files in os.walk(install_path):
-                    if ".DepotDownloader" in Path(root).parts:
-                        continue
-                    for file in files:
-                        if file.lower() == "eossdk-win64-shipping.dll":
-                            dll_path = Path(root) / file
-                            yes_path = Path(root) / "EOSSDK-Win64-Shipping.yes"
-                            if not yes_path.exists():
-                                dll_path.rename(yes_path)
-                            else:
-                                dll_path.unlink()
-                            import shutil
-                            shutil.copy2(proxy_src, dll_path)
-                            applied = True
-                if applied:
+                success = EOSDetector.apply_proxy(install_path)
+                if success:
                     QMessageBox.information(self, "EOS Proxy", "Epic Online Services proxy enabled successfully.")
                 else:
-                    QMessageBox.warning(self, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
+                    from utils.paths import Paths
+                    proxy_src = Paths.deps("EOSSDK-Win64-Shipping.dll")
+                    if not proxy_src.exists():
+                        QMessageBox.critical(self, "Error", "Bundled proxy file EOSSDK-Win64-Shipping.dll not found in deps folder.")
+                    else:
+                        QMessageBox.warning(self, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
         except Exception as e:
             logger.error(f"Failed to toggle EOS Proxy: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to toggle EOS Proxy:\n{e}")
@@ -2897,21 +2947,26 @@ class GameDetailsDialogV2(QDialog):
         if t_status["exists"]:
             if v_status.get("sls_active"):
                 st_color = "#4CAF50"
-                st_badge = "Active & Verified Working in SLSsteam"
+                st_badge = "Active (Verified in SLSsteam)"
             elif v_status.get("base64_valid"):
                 st_color = "#FFC107"
-                st_badge = "Ticket File Installed (Base64 Valid — Pending SLS Launch)"
+                st_badge = "Installed (Ready for SLSsteam)"
             else:
                 st_color = "#FF9800"
-                st_badge = "Ticket File Installed (Invalid Base64)"
+                st_badge = "Installed (Invalid Format)"
 
             st_text = f"<b>Status:</b> <span style='color: {st_color}; font-weight: bold;'>{st_badge}</span>"
             if t_status.get("steam_id"):
-                st_text += f"<br><b>Ticket SteamID:</b> {t_status['steam_id']}"
+                raw_sid = str(t_status["steam_id"]).strip()
+                if len(raw_sid) > 6:
+                    blurred_sid = raw_sid[:4] + "••••••••" + raw_sid[-2:]
+                else:
+                    blurred_sid = "••••••••••••"
+                st_text += f"<br><b>Holder SteamID:</b> <span style='font-family: monospace; color: rgba(255, 255, 255, 0.7);'>{blurred_sid}</span>"
             if t_status.get("updated_at"):
-                st_text += f"<br><b>Last Updated:</b> {t_status['updated_at']}"
+                st_text += f"<br><b>Last Updated:</b> <span style='color: rgba(255, 255, 255, 0.7);'>{t_status['updated_at']}</span>"
         else:
-            st_text = f"<b>Status:</b> <span style='color: #ff8a7a;'>No Ticket file registered for AppID {self.appid}</span>"
+            st_text = f"<b>Status:</b> <span style='color: #ff8a7a;'>No Ticket file installed</span>"
 
         status_lbl = QLabel(st_text)
         status_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; line-height: 1.4;")
@@ -2951,7 +3006,7 @@ class GameDetailsDialogV2(QDialog):
         ok, msg = import_ticket(file_path, self.appid)
         if ok:
             QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
-            self._switch_tab(3)
+            self._switch_tab(getattr(self, "_tickets_tab_index", 2))
         else:
             QMessageBox.critical(self, "Import Failed", msg)
 
@@ -2965,7 +3020,7 @@ class GameDetailsDialogV2(QDialog):
         ok, msg = import_ticket(raw_text, self.appid)
         if ok:
             QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
-            self._switch_tab(3)
+            self._switch_tab(getattr(self, "_tickets_tab_index", 2))
         else:
             QMessageBox.critical(self, "Import Failed", msg)
 
@@ -2974,8 +3029,8 @@ class GameDetailsDialogV2(QDialog):
         res = verify_ticket_activation(self.appid)
         msg = f"Ticket Verification for AppID {self.appid}:\n\n"
         msg += f"• File Installed: {'Yes' if res['installed'] else 'No'}\n"
-        msg += f"• Base64 Payload Valid: {'Yes' if res['base64_valid'] else 'No'}\n"
-        msg += f"• Active in SLSsteam Log: {'Yes' if res['sls_active'] else 'No'}\n\n"
+        msg += f"• Payload Valid: {'Yes' if res['base64_valid'] else 'No'}\n"
+        msg += f"• Active in SLSsteam: {'Yes' if res['sls_active'] else 'No'}\n\n"
         msg += f"Status: {res['message']}"
 
         if res["working"]:
@@ -3009,7 +3064,7 @@ class GameDetailsDialogV2(QDialog):
             ok, msg = remove_ticket(self.appid)
             if ok:
                 QMessageBox.information(self, "Ticket Removed", f"✓ {msg}")
-                self._switch_tab(3)
+                self._switch_tab(getattr(self, "_tickets_tab_index", 2))
             else:
                 QMessageBox.critical(self, "Removal Failed", msg)
 
@@ -3024,7 +3079,7 @@ class GameDetailsDialogV2(QDialog):
                 self.gb_remove_btn.setEnabled(False)
 
     def _update_depot_label(self):
-        btn_text = "Choose (All)"
+        btn_text = "Depots: Default"
         if self.settings:
             val = self.settings.value(f"depot_selection/{self.appid}", "", type=str)
             if val:
@@ -3033,7 +3088,12 @@ class GameDetailsDialogV2(QDialog):
                     data = json.loads(val)
                     sel = data.get("selected", [])
                     tot = len(data.get("all_available", []))
-                    btn_text = f"Choose ({len(sel)} of {tot} Selected)"
+                    if sel and tot and len(sel) < tot:
+                        btn_text = f"Depots: {len(sel)} of {tot}"
+                    elif sel and tot and len(sel) == tot:
+                        btn_text = "Depots: Default"
+                    elif sel:
+                        btn_text = f"Depots: {len(sel)} Selected"
                 except Exception:
                     pass
         if hasattr(self, "choose_depots_btn") and self.choose_depots_btn:

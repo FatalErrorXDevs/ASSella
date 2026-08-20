@@ -1,5 +1,6 @@
 import atexit
 import logging
+import os
 import random
 import re
 import sys
@@ -51,7 +52,7 @@ from queue import Queue
 from utils.web_server import WebServerManager, get_local_ip
 from utils.settings import get_settings
 from utils.task_runner import TaskRunner
-from core.morrenus_api import get_user_stats
+from core.morrenus_api import get_all_hubcap_stats, get_user_stats
 from datetime import datetime, timezone
 from utils.version import app_version
 
@@ -132,6 +133,179 @@ class ResizeHandle(QWidget):
         }
         return edge_map.get(self.edge_name, Qt.Edge.RightEdge)
 
+class ActiveGameCard(QFrame):
+    """Hero game banner card displayed during active downloads with thumbnail background."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.appid = None
+        self.game_name = "Installing Game..."
+        self.pixmap = None
+        self.accent_color = "#C06C84"
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumHeight(70)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(4)
+        lay.addStretch()
+
+        self.title_lbl = QLabel(self.game_name)
+        self.title_lbl.setStyleSheet(
+            "color: #FFFFFF; font-size: 11pt; font-weight: bold; background: transparent; border: none;"
+        )
+        self.title_lbl.setWordWrap(True)
+        lay.addWidget(self.title_lbl)
+
+        self.sub_lbl = QLabel("Downloading game files...")
+        self.sub_lbl.setStyleSheet(
+            "color: rgba(255, 255, 255, 0.65); font-size: 8.5pt; font-weight: 500; background: transparent; border: none;"
+        )
+        lay.addWidget(self.sub_lbl)
+        lay.addStretch()
+
+    def set_game(self, appid: str, game_name: str, accent_color: str = None):
+        self.appid = str(appid) if appid else None
+        self.game_name = game_name or "Installing Game..."
+        if accent_color:
+            self.accent_color = accent_color
+        self.title_lbl.setText(self.game_name)
+
+        from utils.image_fetcher import ImageFetcher
+        from PyQt6.QtGui import QPixmap
+        self.pixmap = None
+        if self.appid and self.appid not in ("0", "unknown", "N/A"):
+            cache_path = ImageFetcher.get_cache_path(self.appid)
+            if cache_path.exists():
+                self.pixmap = QPixmap(str(cache_path))
+        self.update()
+
+    def set_sub_status(self, text: str):
+        self.sub_lbl.setText(text)
+
+    def paintEvent(self, event):
+        from PyQt6.QtGui import QPainter, QLinearGradient, QColor, QBrush, QPainterPath, QPen
+        from PyQt6.QtCore import QRect, Qt
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        bg_color = QColor(25, 25, 25)
+
+        path = QPainterPath()
+        path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
+        painter.setClipPath(path)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRect(rect)
+
+        if self.pixmap and not self.pixmap.isNull():
+            img_h = rect.height()
+            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
+            target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
+            painter.drawPixmap(target_rect, self.pixmap)
+
+            # Gradient scrim overlay across the image
+            fade_w = min(img_w, max(140, int(rect.width() * 0.75)))
+            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width(), 0)
+            gradient.setColorAt(0.0, bg_color)
+            gradient.setColorAt(0.45, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 215))
+            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 50))
+
+            painter.setBrush(QBrush(gradient))
+            painter.drawRect(rect)
+
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
+
+
+class UpdatesPanel(QFrame):
+    """Container panel for pending updates with optional animated Wired background when empty."""
+
+    def __init__(self, terminal_widget, parent=None):
+        super().__init__(parent)
+        self.terminal_widget = terminal_widget
+        self._origins_movie = None
+        self._setup_origins_movie()
+
+    def _setup_origins_movie(self):
+        try:
+            settings = getattr(self.terminal_widget, "settings", None)
+            if not settings:
+                from utils.settings import get_settings
+                settings = get_settings()
+            if settings and settings.value("remember_origins", False, type=bool):
+                from utils.paths import get_jumpscare_gif
+                gif_path = (
+                    get_jumpscare_gif("171258.gif")
+                    or get_jumpscare_gif("lain4.gif")
+                    or get_jumpscare_gif("lain3.gif")
+                )
+                if gif_path and os.path.exists(gif_path):
+                    from PyQt6.QtGui import QMovie
+                    if not self._origins_movie or self._origins_movie.fileName() != gif_path:
+                        self._origins_movie = QMovie(gif_path)
+                        self._origins_movie.frameChanged.connect(self.update)
+                        self._origins_movie.start()
+                    return
+            if self._origins_movie:
+                self._origins_movie.stop()
+                self._origins_movie = None
+        except Exception:
+            self._origins_movie = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._setup_origins_movie()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        from PyQt6.QtGui import QPainter, QMovie, QPainterPath, QColor, QLinearGradient, QBrush
+        from PyQt6.QtCore import Qt, QRectF
+        if hasattr(self, "_origins_movie") and self._origins_movie and self._origins_movie.state() == QMovie.MovieState.Running:
+            if getattr(self.terminal_widget, "_total_updates", 0) == 0:
+                painter = QPainter(self)
+                current_pixmap = self._origins_movie.currentPixmap()
+                if not current_pixmap.isNull():
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+                    rect = self.rect()
+                    # Clip to rounded card corners so image fills seamlessly
+                    path = QPainterPath()
+                    path.addRoundedRect(QRectF(rect), 6.0, 6.0)
+                    painter.setClipPath(path)
+
+                    # Scale using KeepAspectRatioByExpanding (Cover mode) to eliminate cut-off side gaps
+                    scaled_pixmap = current_pixmap.scaled(
+                        self.size(),
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    x = (self.width() - scaled_pixmap.width()) // 2
+                    y = (self.height() - scaled_pixmap.height()) // 2
+
+                    painter.setOpacity(0.20)
+                    painter.drawPixmap(x, y, scaled_pixmap)
+
+                    # Soft horizontal edge vignette for smooth card blending
+                    vignette = QLinearGradient(0, 0, self.width(), 0)
+                    bg_col = QColor(30, 30, 30)
+                    vignette.setColorAt(0.0, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 90))
+                    vignette.setColorAt(0.12, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 0))
+                    vignette.setColorAt(0.88, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 0))
+                    vignette.setColorAt(1.0, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 90))
+
+                    painter.setOpacity(0.4)
+                    painter.fillPath(path, QBrush(vignette))
+
+
 class SimplifiedTerminalWidget(QWidget):
     """A simplified terminal widget that displays stats and quotes when idle, and a job progress checklist when active."""
 
@@ -140,6 +314,7 @@ class SimplifiedTerminalWidget(QWidget):
         self.main_window = main_window
         self.settings = main_window.settings
         self.installation_history = []
+        self._total_updates = 0
 
         self._stats_timer = QTimer(self)
         self._stats_timer.setSingleShot(True)
@@ -177,8 +352,8 @@ class SimplifiedTerminalWidget(QWidget):
 
     def init_ui(self):
         self.layout = QStackedLayout(self)
-        self.layout.setContentsMargins(10, 5, 10, 5)
-        self.layout.setSpacing(2)
+        self.layout.setContentsMargins(5, 0, 0, 0)
+        self.layout.setSpacing(4)
 
         # --- VIEW 0: IDLE STATE (3-Column Dashboard) ---
         self.idle_widget = QWidget()
@@ -220,7 +395,7 @@ class SimplifiedTerminalWidget(QWidget):
         """
 
         # Column 1: Available Updates (formerly Column 2)
-        self.panel_mid = QFrame()
+        self.panel_mid = UpdatesPanel(self)
         self.panel_mid.setFrameShape(QFrame.Shape.StyledPanel)
         self.panel_mid.setStyleSheet(panel_style)
         mid_layout = QVBoxLayout(self.panel_mid)
@@ -283,7 +458,7 @@ class SimplifiedTerminalWidget(QWidget):
 
         right_layout.addWidget(self.history_title)
         right_layout.addWidget(self.history_scroll, 1)
-        
+
         self.update_history_display()
 
         # Add panels to idle layout (now 2 columns instead of 3)
@@ -294,69 +469,15 @@ class SimplifiedTerminalWidget(QWidget):
         self.active_widget = QWidget()
         active_layout = QVBoxLayout(self.active_widget)
         active_layout.setContentsMargins(0, 0, 0, 0)
-        active_layout.setSpacing(0)
+        active_layout.setSpacing(4)
 
-        # --- ACTIVE 2.0 LAYOUT (Now Permanent) ---
-        self.active_2_0_widget = QWidget()
-        active_2_0_layout = QVBoxLayout(self.active_2_0_widget)
-        active_2_0_layout.setContentsMargins(5, 5, 5, 5)
-        active_2_0_layout.setSpacing(6)
+        # Header aligned with "Download Queue" on the left
+        self.active_title = QLabel("Active Download")
+        active_layout.addWidget(self.active_title)
 
-        # Header card/frame for game info
-        self.game_info_card = QFrame()
-        game_info_layout = QVBoxLayout(self.game_info_card)
-        game_info_layout.setContentsMargins(10, 8, 10, 8)
-        game_info_layout.setSpacing(2)
-
-        self.game_title_label = QLabel("Installing Game...")
-        self.game_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.game_title_label.setWordWrap(True)
-        game_info_layout.addWidget(self.game_title_label)
-
-        active_2_0_layout.addWidget(self.game_info_card)
-
-        # Stage cards
-        # 1. Download Card
-        self.dl_card = QFrame()
-        dl_card_layout = QHBoxLayout(self.dl_card)
-        dl_card_layout.setContentsMargins(12, 6, 12, 6)
-        self.dl_text_2_0 = QLabel("Downloading Game Files")
-        self.dl_text_2_0.setObjectName("dlTextLabel")
-        self.dl_badge_2_0 = QLabel("Pending")
-        self.dl_badge_2_0.setMinimumWidth(60)
-        self.dl_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        dl_card_layout.addWidget(self.dl_text_2_0, 1)
-        dl_card_layout.addWidget(self.dl_badge_2_0)
-        active_2_0_layout.addWidget(self.dl_card)
-
-        # 2. Achievements Card
-        self.ach_card = QFrame()
-        ach_card_layout = QHBoxLayout(self.ach_card)
-        ach_card_layout.setContentsMargins(12, 6, 12, 6)
-        self.ach_text_2_0 = QLabel("Generating Achievements")
-        self.ach_badge_2_0 = QLabel("Pending")
-        self.ach_badge_2_0.setMinimumWidth(60)
-        self.ach_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ach_card_layout.addWidget(self.ach_text_2_0, 1)
-        ach_card_layout.addWidget(self.ach_badge_2_0)
-        self.ach_card.hide()
-        active_2_0_layout.addWidget(self.ach_card)
-
-        # 3. DRM Card
-        self.drm_card = QFrame()
-        drm_card_layout = QHBoxLayout(self.drm_card)
-        drm_card_layout.setContentsMargins(12, 6, 12, 6)
-        self.drm_text_2_0 = QLabel("Removing Steam DRM")
-        self.drm_badge_2_0 = QLabel("Pending")
-        self.drm_badge_2_0.setMinimumWidth(60)
-        self.drm_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drm_card_layout.addWidget(self.drm_text_2_0, 1)
-        drm_card_layout.addWidget(self.drm_badge_2_0)
-        active_2_0_layout.addWidget(self.drm_card)
-
-        active_2_0_layout.addStretch()
-
-        active_layout.addWidget(self.active_2_0_widget)
+        # Hero Game Banner Card with Thumbnail Background
+        self.active_game_card = ActiveGameCard(self)
+        active_layout.addWidget(self.active_game_card, 1)
 
         self.layout.addWidget(self.idle_widget)
         self.layout.addWidget(self.active_widget)
@@ -514,6 +635,10 @@ class SimplifiedTerminalWidget(QWidget):
             if child.widget():
                 child.widget().deleteLater()
 
+        self._total_updates = total_updates
+        if hasattr(self, "panel_mid") and self.panel_mid:
+            self.panel_mid.update()
+
         if total_updates == 0:
             lbl = QLabel("All games up-to-date")
             lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
@@ -653,139 +778,29 @@ class SimplifiedTerminalWidget(QWidget):
             self.updates_title.setStyleSheet(title_style)
         if hasattr(self, "history_title") and self.history_title:
             self.history_title.setStyleSheet(title_style)
-
-        if hasattr(self, "game_title_label") and self.game_title_label:
-            self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
-
-        # 2.0 active layout styling
-        if hasattr(self, "game_info_card") and self.game_info_card:
-            self.game_info_card.setStyleSheet("""
-                QFrame {
-                    background-color: rgba(30, 30, 30, 120);
-                    border: 1px solid rgba(255, 255, 255, 12);
-                    border-radius: 6px;
-                }
-            """)
-        if hasattr(self, "dl_text_2_0") and self.dl_text_2_0:
-            self.dl_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
-        if hasattr(self, "ach_text_2_0") and self.ach_text_2_0:
-            self.ach_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
-        if hasattr(self, "drm_text_2_0") and self.drm_text_2_0:
-            self.drm_text_2_0.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
-
-        # Re-apply 2.0 stages style if statuses exist
-        if hasattr(self, "_stage_statuses"):
-            for stage, val in self._stage_statuses.items():
-                if isinstance(val, tuple):
-                    self.set_stage_status(stage, val[0], val[1])
-                else:
-                    self.set_stage_status(stage, val)
-
-    def update_stage_style(self, icon_label: QLabel, status: str):
-        # Green for completed, yellow/orange for active, red for error, gray/accent for pending/skipped
-        if status == "✓":
-            color = "#2ECC71"  # Nice flat green
-        elif status == "▶":
-            color = "#F1C40F"  # Nice flat yellow
-        elif status == "✗":
-            color = "#E74C3C"  # Nice flat red
-        elif status == "~":
-            color = "#95A5A6"  # Dim gray
-        else:  # "○"
-            color = "#7F8C8D"  # Darker gray
-
-        icon_label.setText(status)
-        icon_label.setFixedWidth(25)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; color: {color};")
-
-    def update_2_0_stage_style(self, card_widget: QFrame, badge_widget: QLabel, status: str, count: Optional[int] = None):
-        accent = self.main_window.accent_color or "#C06C84"
-        
-        def hex_to_rgba(hex_color, alpha):
-            hex_color = hex_color.lstrip('#')
-            if len(hex_color) == 3:
-                hex_color = ''.join([c*2 for c in hex_color])
-            try:
-                r = int(hex_color[0:2], 16)
-                g = int(hex_color[2:4], 16)
-                b = int(hex_color[4:6], 16)
-                return f"rgba({r}, {g}, {b}, {alpha})"
-            except Exception:
-                return f"rgba(255, 255, 255, {alpha})"
-
-        accent_alpha = hex_to_rgba(accent, 20)
-
-        if status == "completed":
-            badge_text = f"Done ({count})" if count is not None else "Done"
-            badge_style = "background-color: #2ECC71; color: #FFFFFF; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
-            card_style = "background-color: rgba(46, 204, 113, 15); border: 1px solid rgba(46, 204, 113, 40); border-radius: 6px;"
-        elif status == "in_progress":
-            badge_text = f"Active ({count})" if count is not None else "Active"
-            badge_style = f"background-color: {accent}; color: #000000; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
-            card_style = f"background-color: {accent_alpha}; border: 1px solid {accent}; border-radius: 6px;"
-        elif status == "error":
-            badge_text = "Failed"
-            badge_style = "background-color: #E74C3C; color: #FFFFFF; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
-            card_style = "background-color: rgba(231, 76, 60, 15); border: 1px solid rgba(231, 76, 60, 40); border-radius: 6px;"
-        elif status == "skipped":
-            badge_text = "Skipped"
-            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
-            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
-        elif status == "skipped_linux":
-            badge_text = "Linux Skip"
-            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
-            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
-        elif status == "skipped_no_achievements":
-            badge_text = "N/A"
-            badge_style = "background-color: rgba(255, 255, 255, 12); color: #888888; font-weight: bold; font-size: 7pt; border-radius: 4px; padding: 2px 6px; border: none;"
-            card_style = "background-color: rgba(255, 255, 255, 3); border: 1px solid rgba(255, 255, 255, 6); border-radius: 6px;"
-        else:  # "pending"
-            badge_text = "Queued"
-            badge_style = "background-color: rgba(255, 255, 255, 20); color: #BBBBBB; font-weight: bold; font-size: 8pt; border-radius: 4px; padding: 2px 8px; border: none;"
-            card_style = "background-color: rgba(255, 255, 255, 5); border: 1px solid rgba(255, 255, 255, 10); border-radius: 6px;"
-
-        badge_widget.setText(badge_text)
-        badge_widget.setStyleSheet(badge_style)
-        card_widget.setStyleSheet(card_style)
+        if hasattr(self, "active_title") and self.active_title:
+            self.active_title.setStyleSheet(title_style)
 
     def set_stage_status(self, stage: str, status: str, count: Optional[int] = None):
         if not hasattr(self, "_stage_statuses"):
             self._stage_statuses = {}
         self._stage_statuses[stage] = (status, count)
 
-        if stage == "download":
-            if hasattr(self, "dl_card") and self.dl_card:
-                self.update_2_0_stage_style(self.dl_card, self.dl_badge_2_0, status, count)
-        elif stage == "achievements":
-            if hasattr(self, "ach_card") and self.ach_card:
-                if status == "skipped":
-                    self.ach_card.hide()
-                else:
-                    self.ach_card.show()
-                self.update_2_0_stage_style(self.ach_card, self.ach_badge_2_0, status, count)
-        elif stage == "steamless":
-            if hasattr(self, "drm_card") and self.drm_card:
-                self.update_2_0_stage_style(self.drm_card, self.drm_badge_2_0, status, count)
+        # Update subtitle text on active game card
+        if hasattr(self, "active_game_card") and self.active_game_card:
+            if stage == "download":
+                if status == "in_progress":
+                    self.active_game_card.set_sub_status("Downloading game files...")
+                elif status == "completed":
+                    self.active_game_card.set_sub_status("Download complete · Post-processing...")
+            elif stage == "achievements" and status == "in_progress":
+                self.active_game_card.set_sub_status("Generating achievements...")
+            elif stage == "steamless" and status == "in_progress":
+                self.active_game_card.set_sub_status("Applying game fixes...")
 
     def reset_stages(self):
-        self.set_stage_status("download", "pending")
-        
-        # Hide achievements status card if achievements generation is disabled in Settings
-        from utils.settings import get_settings
-        settings = get_settings()
-        gen_ach = settings.value("generate_achievements", False, type=bool)
-        
-        if gen_ach:
-            if hasattr(self, "ach_card") and self.ach_card:
-                self.ach_card.show()
-            self.set_stage_status("achievements", "pending")
-        else:
-            if hasattr(self, "ach_card") and self.ach_card:
-                self.ach_card.hide()
-            self.set_stage_status("achievements", "skipped")
-            
-        self.set_stage_status("steamless", "pending")
+        if hasattr(self, "active_game_card") and self.active_game_card:
+            self.active_game_card.set_sub_status("Preparing download...")
 
     def show_idle(self):
         self.layout.setCurrentIndex(0)
@@ -795,8 +810,16 @@ class SimplifiedTerminalWidget(QWidget):
         if hasattr(self.main_window, "_update_tool_update_visibility"):
             self.main_window._update_tool_update_visibility()
 
-    def show_active_job(self, game_name: str = "Installing Game..."):
-        self.game_title_label.setText(game_name)
+    def show_active_job(self, game_name: str = "Installing Game...", appid: str = ""):
+        if not appid and hasattr(self.main_window, "task_manager") and self.main_window.task_manager:
+            gd = getattr(self.main_window.task_manager, "game_data", {}) or {}
+            meta = getattr(self.main_window.task_manager, "current_job_metadata", {}) or {}
+            appid = str(gd.get("appid") or meta.get("appid") or "")
+
+        accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+        if hasattr(self, "active_game_card") and self.active_game_card:
+            self.active_game_card.set_game(appid, game_name, accent)
+
         self.layout.setCurrentIndex(1)
         # Hide FABs while active — they live inside panel_mid (idle-only view)
         if hasattr(self, "update_all_btn") and self.update_all_btn:
@@ -925,16 +948,46 @@ class MainWindow(QMainWindow):
             ("You Died.", "Dark Souls"),
             ("Do you know the definition of insanity?", "Far Cry 3"),
             ("Protocol 3: Protect the Pilot.", "Titanfall 2"),
-            ("A hunter must hunt.", "The Witcher 3"),
+            ("A hunter must hunt.", "Bloodborne"),
             ("Hey, you. You're finally awake.", "The Elder Scrolls V: Skyrim"),
             ("Determination.", "Undertale"),
             ("The world fears the inevitable plummet into the abyss.", "NieR: Automata"),
             ("Stay a while and listen.", "Diablo II"),
             ("It's not about the money, it's about sending a message.", "Batman: Arkham City"),
             ("What is a man? A miserable little pile of secrets!", "Castlevania: Symphony of the Night"),
-            ("A famous explorer once said that the extraordinary is in what we do, not who we are.", "Tomb Raider"),
             ("I used to be an adventurer like you. Then I took an arrow in the knee.", "The Elder Scrolls V: Skyrim"),
             ("The right man in the wrong place can make all the difference in the world.", "Half-Life 2"),
+            ("Wake the fuck up, Samurai. We have a city to burn.", "Cyberpunk 2077"),
+            ("Don't be sorry. Be better.", "God of War"),
+            ("Hesitation is defeat.", "Sekiro: Shadows Die Twice"),
+            ("I am Malenia, Blade of Miquella.", "Elden Ring"),
+            ("Rip and tear, until it is done.", "DOOM"),
+            ("Had to be me. Someone else might have gotten it wrong.", "Mass Effect 3"),
+            ("I'm Commander Shepard, and this is my favorite store on the Citadel.", "Mass Effect 2"),
+            ("Truth is... the game was rigged from the start.", "Fallout: New Vegas"),
+            ("Patrolling the Mojave almost makes you wish for a nuclear winter.", "Fallout: New Vegas"),
+            ("There is no escape.", "Hades"),
+            ("When life gives you lemons, don't make lemonade. Make life take the lemons back!", "Portal 2"),
+            ("Nanomachines, son.", "Metal Gear Rising: Revengeance"),
+            ("Memes, the DNA of the soul.", "Metal Gear Rising: Revengeance"),
+            ("No cost too great. No mind to think. No will to break.", "Hollow Knight"),
+            ("Mankind is dead. Blood is fuel. Hell is full.", "ULTRAKILL"),
+            ("Sunrise, Parabellum.", "Disco Elysium"),
+            ("There's always a lighthouse, there's always a man, there's always a city.", "BioShock Infinite"),
+            ("Ah shit, here we go again.", "Grand Theft Auto: San Andreas"),
+            ("I never asked for this.", "Deus Ex: Human Revolution"),
+            ("What is better – to be born good, or to overcome your evil nature through great effort?", "The Elder Scrolls V: Skyrim"),
+            ("You are a worm through time.", "Control"),
+            ("Good hunting, Stalker.", "S.T.A.L.K.E.R."),
+            ("If not us, then who?", "Metro 2033"),
+            ("Keep on keeping on!", "Death Stranding"),
+            ("I need a weapon.", "Halo 2"),
+            ("In my restless dreams, I see that town. Silent Hill.", "Silent Hill 2"),
+            ("Make us whole again.", "Dead Space"),
+            ("We can't change what's done, we can only move on.", "Red Dead Redemption 2"),
+            ("Foul Tarnished, in search of the Elden Ring.", "Elden Ring"),
+            ("Fear the old blood.", "Bloodborne"),
+            ("Tonight, Gehrman joins the hunt.", "Bloodborne"),
         ]
         self.quote_timer = None
         self.quote_label = None
@@ -960,8 +1013,7 @@ class MainWindow(QMainWindow):
         self.denuvo_sync_value = None
         self._denuvo_sync_status = "Idle"
 
-        self.cloudr_lbl = None
-        self.cloudr_value = None
+
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -979,8 +1031,10 @@ class MainWindow(QMainWindow):
         self._autofetch_runner = None
 
         self.update_check_timer = None
+        self._tool_update_status = "checking"
         self._tool_update_available_flag = False
         self._tool_update_check_running = False
+        self._latest_remote_version = ""
         # Track appids whose manifests have already been auto-fetched in this session
         self._autofetched_appids: set = set()
 
@@ -1154,6 +1208,12 @@ class MainWindow(QMainWindow):
             if res == QDialog.DialogCode.Accepted:
                 self.settings.setValue("isp_bypass_hubcap", chk_isp.isChecked())
                 self.settings.setValue("experimental_acf_independent", chk_acf.isChecked())
+                if chk_acf.isChecked():
+                    try:
+                        from utils.yaml_config_manager import ensure_slssteam_prerequisites
+                        ensure_slssteam_prerequisites()
+                    except Exception:
+                        pass
 
 
     def _setup_window_properties(self) -> None:
@@ -1407,6 +1467,9 @@ class MainWindow(QMainWindow):
 
     def _on_update_timer_timeout(self) -> None:
         if self.game_manager:
+            if getattr(self, "task_manager", None) and getattr(self.task_manager, "is_processing", False):
+                logger.info("Download in progress — deferring periodic game update check")
+                return
             logger.info("Running periodic game update check")
             # On a periodic check, reset 'up_to_date' games so they get re-verified.
             # 'update_available' games are left as-is (status won't change until downloaded).
@@ -1438,7 +1501,7 @@ class MainWindow(QMainWindow):
         self.footer_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.footer_widget.setFixedHeight(24)
+        self.footer_widget.setFixedHeight(28)
         self.footer_widget.setStyleSheet("background: transparent; border: none;")
         
         footer_layout = QHBoxLayout(self.footer_widget)
@@ -1446,10 +1509,10 @@ class MainWindow(QMainWindow):
         footer_layout.setSpacing(8)
         
         self.quote_label = QLabel(self.quotes[0][0])
-        self.quote_label.setStyleSheet("font-style: italic; font-size: 11px; color: #FFFFFF; background: transparent; border: none;")
+        self.quote_label.setStyleSheet("font-style: italic; font-size: 12px; color: rgba(255, 255, 255, 0.92); background: transparent; border: none;")
         
         self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
-        self.quote_source_label.setStyleSheet("font-size: 10px; color: #888888; background: transparent; border: none;")
+        self.quote_source_label.setStyleSheet("font-size: 11px; font-weight: bold; color: rgba(255, 255, 255, 0.55); background: transparent; border: none;")
         
         footer_layout.addStretch()
         footer_layout.addWidget(self.quote_label)
@@ -1562,6 +1625,10 @@ class MainWindow(QMainWindow):
 
     def force_check_all_updates(self):
         """Forces a clean re-check of updates for all games, ignoring cache."""
+        # Guard: don't allow update check while Update All is actively queueing
+        if getattr(self, "_update_all_running", False):
+            logger.info("Update All is running — ignoring manual update check request")
+            return
         if self.game_manager:
             logger.info("Forcing full updates check for all games (bypassing cache)")
             if hasattr(self, "simplified_terminal") and self.simplified_terminal:
@@ -1652,9 +1719,9 @@ class MainWindow(QMainWindow):
         row1_layout.addStretch()
 
         # 1. Hubcap API Stats
-        hubcap_api_lbl = QLabel("Hubcap API:")
+        hubcap_api_lbl = QLabel("Hubcap:")
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.hubcap_api_value = QLabel("-- / -- [ --d ]")
+        self.hubcap_api_value = QLabel("api: --, bundle: --, single: -- [--d]")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
@@ -1746,16 +1813,7 @@ class MainWindow(QMainWindow):
         library_item.addWidget(self.library_size_value)
         row2_layout.addLayout(library_item)
 
-        # 5. CloudR (New)
-        self.cloudr_lbl = QLabel("CloudR:")
-        self.cloudr_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.cloudr_value = QLabel("Checking...")
-        self.cloudr_value.setStyleSheet(self._get_status_style("neutral"))
-        cloudr_item = QHBoxLayout()
-        cloudr_item.setSpacing(4)
-        cloudr_item.addWidget(self.cloudr_lbl)
-        cloudr_item.addWidget(self.cloudr_value)
-        row2_layout.addLayout(cloudr_item)
+
 
         row2_layout.addStretch()
         dash_main_layout.addLayout(row2_layout)
@@ -2049,51 +2107,29 @@ class MainWindow(QMainWindow):
 
 
 
-        # CloudR (Check DisableCloud in ~/.config/SLSsteam/config.yaml)
-        if hasattr(self, "cloudr_value") and self.cloudr_value:
-            cloudr_config_path = os.path.expanduser("~/.config/SLSsteam/config.yaml")
-            cloudr_present = False
-            cloudr_status_str = "Missing"
-            
-            if os.path.exists(cloudr_config_path):
-                try:
-                    with open(cloudr_config_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            if ":" in line:
-                                parts = line.split(":", 1)
-                                k = parts[0].strip().lower()
-                                v = parts[1].strip().strip('"').strip("'").lower()
-                                if k == "disablecloud":
-                                    cloudr_present = True
-                                    if v in ("yes", "true", "1"):
-                                        cloudr_status_str = "Off"
-                                    else:
-                                        cloudr_status_str = "On"
-                                    break
-                except Exception as ex:
-                    logger.error(f"Error parsing SLS config for CloudR: {ex}")
-            
-            if cloudr_present:
-                self.cloudr_lbl.setEnabled(True)
-                self.cloudr_value.setEnabled(True)
-                self.cloudr_value.setText(cloudr_status_str)
-                if cloudr_status_str == "On":
-                    self.cloudr_value.setStyleSheet(self._get_status_style("success"))
-                else:
-                    self.cloudr_value.setStyleSheet(self._get_status_style("error"))
-            else:
-                self.cloudr_lbl.setEnabled(False)
-                self.cloudr_value.setEnabled(False)
-                self.cloudr_value.setText("")
-
         # ASSella Status
         if hasattr(self, "assella_status_value") and self.assella_status_value:
-            if getattr(self, "_tool_update_available_flag", False):
+            tool_status = getattr(self, "_tool_update_status", "checking")
+            if tool_status == "update_available":
                 self.assella_status_value.setText("Update Available")
                 self.assella_status_value.setStyleSheet(self._get_status_style("warning"))
-            else:
+                self.assella_status_value.setToolTip(
+                    f"New version available: {getattr(self, '_latest_remote_version', '')}"
+                )
+            elif tool_status == "up_to_date":
                 self.assella_status_value.setText("Up to Date")
                 self.assella_status_value.setStyleSheet(self._get_status_style("success"))
+                self.assella_status_value.setToolTip(f"ASSella is up to date (v{app_version})")
+            elif tool_status == "offline":
+                self.assella_status_value.setText("Offline")
+                self.assella_status_value.setStyleSheet(self._get_status_style("error"))
+                self.assella_status_value.setToolTip(
+                    f"Could not check for ASSella updates (Offline or GitHub unreachable)\nCurrent version: v{app_version}"
+                )
+            else:
+                self.assella_status_value.setText("Checking...")
+                self.assella_status_value.setStyleSheet(self._get_status_style("neutral"))
+                self.assella_status_value.setToolTip("Checking GitHub for tool updates...")
 
         # Library Size Stats
         if hasattr(self, "library_size_value") and self.library_size_value:
@@ -2133,9 +2169,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
             self.hubcap_api_value.setText("Loading...")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText("Hubcap stats: Loading...")
+            self.active_hubcap_label.setText("Hubcap: Loading...")
 
-        worker = self.stats_task_runner.run(get_user_stats)
+        worker = self.stats_task_runner.run(get_all_hubcap_stats)
         worker.finished.connect(self._on_user_stats_loaded)
         worker.error.connect(self._on_user_stats_error)
 
@@ -2177,10 +2213,21 @@ class MainWindow(QMainWindow):
                 self.hubcap_conn_value.setText("Offline")
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("error"))
 
+        # If online and tool update check is in checking/offline state, trigger check
+        if (steam_ok or hubcap_ok) and getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
+            if not getattr(self, "_tool_update_check_running", False):
+                self.check_tool_updates()
 
 
-    def _on_user_stats_loaded(self, stats: dict) -> None:
+
+    def _on_user_stats_loaded(self, result: dict) -> None:
         """Handle async hubcap stats load success."""
+        if not isinstance(result, dict):
+            return
+
+        stats = result.get("user_stats", {})
+        gen_usage = result.get("gen_usage", {})
+
         if not isinstance(stats, dict) or "error" in stats:
             err_msg = stats.get("error", "Unknown error") if isinstance(stats, dict) else "Invalid response"
             logger.warning(f"Failed to load Hubcap user stats: {err_msg}")
@@ -2188,12 +2235,22 @@ class MainWindow(QMainWindow):
             if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
                 self.hubcap_api_value.setText(val)
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-                self.active_hubcap_label.setText(f"Hubcap stats: {val}")
+                self.active_hubcap_label.setText(f"Hubcap: {val}")
             return
 
-        # Daily usage
+        # 1. Daily usage (Manifests)
         usage = stats.get("daily_usage", 0)
-        limit = stats.get("daily_limit", 45)
+        limit = stats.get("daily_limit", 55)
+
+        # 2. Bundle generation (Full Game / Updates)
+        bundle_info = gen_usage.get("bundle", {}) if isinstance(gen_usage, dict) else {}
+        b_usage = bundle_info.get("usage", 0)
+        b_limit = bundle_info.get("limit", 100)
+
+        # 3. Single depot generation
+        single_info = gen_usage.get("single", {}) if isinstance(gen_usage, dict) else {}
+        s_usage = single_info.get("usage", 0)
+        s_limit = single_info.get("limit", 1500)
 
         # Key Expiry
         expires_str = stats.get("api_key_expires_at")
@@ -2219,10 +2276,21 @@ class MainWindow(QMainWindow):
         else:
             expiry_text = "Never"
 
+        quota_str = f"api: {usage}/{limit}, bundle: {b_usage}/{b_limit}, single: {s_usage}/{s_limit} [{expiry_text}]"
+        tooltip_str = (
+            f"Hubcap API Quotas & Limits:\n"
+            f"• api (Daily Manifest Downloads): {usage} / {limit}\n"
+            f"• bundle (App Bundle Generations): {b_usage} / {b_limit}\n"
+            f"• single (Single Depot Generations): {s_usage} / {s_limit}\n"
+            f"• API Key Expiry: {expiry_text}"
+        )
+
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-            self.hubcap_api_value.setText(f"{usage} / {limit} [ {expiry_text} ]")
+            self.hubcap_api_value.setText(quota_str)
+            self.hubcap_api_value.setToolTip(tooltip_str)
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText(f"Hubcap stats: {usage} / {limit}")
+            self.active_hubcap_label.setText(f"Hubcap: api: {usage}/{limit}, bundle: {b_usage}/{b_limit}, single: {s_usage}/{s_limit}")
+            self.active_hubcap_label.setToolTip(tooltip_str)
 
     def _on_user_stats_error(self, err_tuple: tuple) -> None:
         """Handle async hubcap stats load error."""
@@ -2230,12 +2298,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
             self.hubcap_api_value.setText("Error")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText("Hubcap stats: Error")
+            self.active_hubcap_label.setText("Hubcap: Error")
 
     def run_update_all_flow(self) -> None:
         """Flow for updating all games that have update_available status."""
         # Guard: prevent re-entrancy if a cycle is already running
         if getattr(self, "_update_all_running", False):
+            return
+        # Guard: don't start Update All while an update check is still running
+        gm = self.game_manager
+        if gm and (getattr(gm, "manifest_check_task", None) is not None or getattr(gm, "manifest_check_runner", None) is not None):
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Update Check Running", "Please wait for the update check to finish before queuing updates.")
             return
         self._update_all_running = True
 
@@ -2263,12 +2337,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        total = len(updateable_games)
+
+        # --- Immediate feedback: update button before the thread even starts ---
+        self._set_update_all_btn_preparing(0, total)
+
         # Enqueue all updates directly on a background thread (no intermediate dialog)
-        from ui.dialogs.gamelibrary import GameLibraryDialog
         import threading
 
-        # Create a temporary GameLibraryDialog-like enqueue helper
-        # by reusing the standalone enqueue logic
         def _do_update_all():
             from pathlib import Path
             from utils.helpers import get_base_path
@@ -2280,6 +2356,7 @@ class MainWindow(QMainWindow):
 
             settings = get_settings()
             queued = 0
+            skipped_names = []
 
             for game_data in updateable_games:
                 appid = str(game_data.get("appid", "0"))
@@ -2288,38 +2365,38 @@ class MainWindow(QMainWindow):
                 try:
                     local_path = None
                     branch = settings.value(f"selected_branch/{appid}", "public", type=str)
-                    
+
                     if branch and branch != "public":
                         fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}_branch_{branch}.zip"
                     else:
                         fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-                        
+
                     is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
                     if fpath.exists() and (update_status != "update_available" or is_fresh):
                         local_path = str(fpath)
-                    
+
                     parsed_data = None
                     from managers.depot_key_manager import DepotKeyManager
                     dkm = DepotKeyManager()
-                    
+
                     # 1. Try Smart Update Path
                     if dkm.has_depot_keys(appid):
                         from core.tasks.smart_update_task import SmartUpdateTask
                         task = SmartUpdateTask(appid, name, branch=branch)
-                        
+
                         def on_finished(assembled):
                             nonlocal parsed_data
                             parsed_data = assembled
-                            
+
                         task.finished.connect(on_finished)
                         try:
                             task.run()
                         except Exception as e:
                             logger.error(f"Smart update failed in Update All: {e}")
-                            
+
                         if parsed_data:
                             local_path = str(fpath)
-                    
+
                     # 2. Fallback to Classic Path if Smart failed or no keys
                     if not parsed_data:
                         # Ensure we have a valid classic zip (must contain .lua)
@@ -2330,14 +2407,15 @@ class MainWindow(QMainWindow):
                                     return any(f.endswith(".lua") for f in z.namelist())
                             except Exception:
                                 return False
-                                
+
                         if not local_path or not has_lua(local_path):
                             logger.info(f"Update All: Fetching classic manifest for {name} (branch={branch})")
                             if local_path and Path(local_path).exists():
-                                Path(local_path).unlink() # Delete bad/lua-less zip
+                                Path(local_path).unlink()  # Delete bad/lua-less zip
                             fpath_val, error = _api.download_manifest(appid, branch=branch)
                             if error or not fpath_val:
                                 logger.warning(f"Update All: manifest download failed for {name}: {error}")
+                                skipped_names.append(name)
                                 continue
                             local_path = str(fpath_val)
                             settings.setValue(f"manifest_is_fresh/{appid}", True)
@@ -2347,7 +2425,9 @@ class MainWindow(QMainWindow):
                             parsed_data = zip_task.run(local_path)
                         except Exception as e:
                             logger.error(f"Update All: Failed to process zip for {name}: {e}")
+                            skipped_names.append(name)
                             continue
+
                     metadata = {
                         "appid": appid,
                         "library_path": game_data.get("library_path"),
@@ -2358,14 +2438,18 @@ class MainWindow(QMainWindow):
                     if parsed_data and parsed_data.get("depots"):
                         depots = parsed_data.get("depots")
                         selected_depots = None
-                        smart_active = settings.value("smart_depot_selection", False, type=bool)
                         val = settings.value(f"depot_selection/{appid}", "", type=str)
-                        if smart_active and val:
+                        if val:
                             try:
                                 data = json.loads(val)
                                 cached_selected = data.get("selected", [])
                                 cached_all = data.get("all_available", [])
-                                if not any(d not in cached_all for d in depots):
+                                has_new_depot = any(d not in cached_all for d in depots)
+                                if has_new_depot:
+                                    # New depot added since last selection — clear cache and force re-prompt
+                                    logger.info(f"Update All: new depot detected for {name} (appid={appid}), clearing cache")
+                                    settings.remove(f"depot_selection/{appid}")
+                                else:
                                     selected_depots = [d for d in cached_selected if d in depots]
                             except Exception:
                                 pass
@@ -2374,24 +2458,98 @@ class MainWindow(QMainWindow):
                             if auto_skip or len(depots) == 1:
                                 selected_depots = list(depots.keys())
                             else:
-                                logger.info(f"Update All: skipping {name} — depot selection required")
+                                logger.info(f"Update All: skipping {name} — depot selection required (new depots or no saved selection)")
+                                skipped_names.append(name)
                                 continue
                         metadata["selected_depots_list"] = selected_depots
 
                     self.job_queue.add_job(local_path, metadata)
                     queued += 1
                     logger.info(f"Update All queued: {name}")
+
+                    # Update button progress after each successful queue
+                    self._set_update_all_btn_preparing(queued, total)
+
                 except Exception as e:
                     logger.error(f"Update All failed for {name}: {e}", exc_info=True)
+                    skipped_names.append(name)
 
-            logger.info(f"Update All: queued {queued} of {len(updateable_games)} games.")
-            # Release guard so user can trigger another cycle after this one finishes
+            logger.info(f"Update All: queued {queued} of {total} games.")
+
+            # Release guard and refresh UI
             self._update_all_running = False
             from PyQt6.QtCore import QMetaObject, Qt
+            from PyQt6.QtCore import Q_ARG
             QMetaObject.invokeMethod(self, "update_dashboard_elements", Qt.ConnectionType.QueuedConnection)
+
+            # Notify user about any skipped games
+            if skipped_names and queued == 0:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_show_update_all_skip_notice",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
+                    Q_ARG(bool, True),
+                )
+            elif skipped_names:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_show_update_all_skip_notice",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
+                    Q_ARG(bool, False),
+                )
 
         threading.Thread(target=_do_update_all, daemon=True).start()
 
+    def _set_update_all_btn_preparing(self, done: int, total: int) -> None:
+        """Thread-safe: update the Update All button to show preparation progress."""
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            QMetaObject.invokeMethod(
+                self,
+                "_set_update_all_btn_preparing_slot",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(int, done),
+                Q_ARG(int, total),
+            )
+        else:
+            self._set_update_all_btn_preparing_slot(done, total)
+
+    @pyqtSlot(int, int)
+    def _set_update_all_btn_preparing_slot(self, done: int, total: int) -> None:
+        """Main-thread slot: update the Update All button text to show preparation progress."""
+        try:
+            ui = getattr(self, "ui_state", None)
+            btn = getattr(ui, "update_all_btn", None) if ui else None
+            if btn:
+                if done < total:
+                    btn.setText(f" Preparing... ({done}/{total})")
+                else:
+                    btn.setText(f" Queued ({done}/{total})")
+                btn.setEnabled(False)
+                btn.setToolTip(f"Preparing updates... ({done} of {total} ready)")
+        except Exception:
+            pass
+
+    @pyqtSlot(str, bool)
+    def _show_update_all_skip_notice(self, names_text: str, all_skipped: bool) -> None:
+        """Show a non-blocking notice when some games were skipped in Update All."""
+        from PyQt6.QtWidgets import QMessageBox
+        if all_skipped:
+            QMessageBox.warning(
+                self,
+                "Update All — Manual Action Required",
+                f"All pending updates were skipped because they require manual depot selection.\n\n"
+                f"Please update these games individually:\n{names_text}",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Update All — Some Games Skipped",
+                f"Updates were queued, but the following game(s) need manual depot selection:\n\n"
+                f"{names_text}\n\nOpen them individually to install the update.",
+            )
 
     @pyqtSlot()
     def update_dashboard_elements(self) -> None:
@@ -2535,6 +2693,8 @@ class MainWindow(QMainWindow):
             logger.debug("Tool update check already in progress, skipping.")
             return
         self._tool_update_check_running = True
+        self._tool_update_status = "checking"
+        self.refresh_system_status()
 
         def _extract_semver(raw: str) -> str:
             """Strip build-date prefix (e.g. '20260608+ASSella-') returning just the version tag."""
@@ -2574,51 +2734,93 @@ class MainWindow(QMainWindow):
             return tuple(main_numbers) + (pre_release_val, pre_release_num)
 
         def _check_sync():
+            status = "offline"
+            remote_clean = None
             try:
-                # Check beta branch if local version is pre-release/beta
+                import json
                 local_clean = _extract_semver(app_version)
-                if "alpha" in local_clean.lower():
-                    branch = "alpha"
-                elif any(x in local_clean.lower() for x in ("beta", "rc")):
-                    branch = "beta"
-                else:
-                    branch = "main"
-                url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
-                logger.info(f"Checking for tool updates from branch: {branch}")
-                req = urllib.request.Request(
-                    url,
-                    headers={"User-Agent": "ASSella-Updater"}
-                )
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    remote_raw = response.read().decode("utf-8").strip()
-                    remote_clean = _extract_semver(remote_raw)
-                    logger.info(
-                        f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
+
+                # 1. Primary check: GitHub Releases API (detects full releases + pre-releases with AppImage)
+                try:
+                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
+                    req = urllib.request.Request(
+                        api_url,
+                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
                     )
-                    if remote_clean:
-                        # Only notify update if remote is strictly newer than local
-                        if _parse_version(remote_clean) > _parse_version(local_clean):
-                            QMetaObject.invokeMethod(
-                                self,
-                                "_on_tool_update_available",
-                                Qt.ConnectionType.QueuedConnection,
-                                Q_ARG(str, remote_clean)
-                            )
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        releases = json.loads(response.read().decode("utf-8"))
+                        for r in releases:
+                            tag = r.get("tag_name", "").strip()
+                            assets = [a.get("name", "") for a in r.get("assets", [])]
+                            if any(a.endswith(".AppImage") for a in assets):
+                                remote_clean = _extract_semver(tag)
+                                break
+                except Exception as api_err:
+                    logger.debug(f"GitHub Releases API check error: {api_err}")
+
+                # 2. Fallback check: raw version file on GitHub branch
+                if not remote_clean:
+                    if "alpha" in local_clean.lower():
+                        branch = "alpha"
+                    elif any(x in local_clean.lower() for x in ("beta", "rc")):
+                        branch = "beta"
+                    else:
+                        branch = "main"
+                    url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
+                    logger.info(f"Checking for tool updates from raw branch: {branch}")
+                    req = urllib.request.Request(
+                        url,
+                        headers={"User-Agent": "ASSella-Updater"}
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        remote_raw = response.read().decode("utf-8").strip()
+                        remote_clean = _extract_semver(remote_raw)
+
+                logger.info(
+                    f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
+                )
+                if remote_clean:
+                    # Only notify update if remote is strictly newer than local
+                    if _parse_version(remote_clean) > _parse_version(local_clean):
+                        logger.info(f"Tool update available: {remote_clean} (current: {local_clean})")
+                        status = "update_available"
+                    else:
+                        logger.info(f"Tool is up to date ({local_clean})")
+                        status = "up_to_date"
+                else:
+                    status = "offline"
             except Exception as e:
                 logger.warning(f"Failed to check tool updates from GitHub: {e}")
+                status = "offline"
             finally:
                 self._tool_update_check_running = False
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_tool_update_result",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, status),
+                    Q_ARG(str, remote_clean or "")
+                )
 
         t = threading.Thread(target=_check_sync, daemon=True)
         t.start()
 
+    @pyqtSlot(str, str)
+    def _on_tool_update_result(self, status: str, remote_version: str = "") -> None:
+        """Slot triggered when tool self-update check finishes."""
+        self._tool_update_status = status
+        if status == "update_available":
+            self._latest_remote_version = remote_version
+            self._tool_update_available_flag = True
+        else:
+            self._tool_update_available_flag = False
+        self._update_tool_update_visibility()
+        self.refresh_system_status()
+
     @pyqtSlot(str)
     def _on_tool_update_available(self, remote_version: str = "") -> None:
-        """Slot triggered when a tool update is available."""
-        if remote_version:
-            self._latest_remote_version = remote_version
-        self._tool_update_available_flag = True
-        self._update_tool_update_visibility()
+        """Slot triggered when a tool update is available (backward-compatibility)."""
+        self._on_tool_update_result("update_available", remote_version)
 
     def _update_tool_update_visibility(self) -> None:
         """Only show the update label when we are on the main/idle screen (layout index 0)."""
@@ -2682,30 +2884,36 @@ class MainWindow(QMainWindow):
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Fetching release info from GitHub..."))
 
                 if tag == "latest":
-                    api_url = "https://api.github.com/repos/niwia/ASSella/releases/latest"
+                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
+                    req = urllib.request.Request(
+                        api_url,
+                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        releases_list = json.loads(resp.read().decode("utf-8"))
+                        release_data = releases_list[0] if releases_list else {}
                 else:
                     api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
-
-                req = urllib.request.Request(
-                    api_url,
-                    headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        release_data = json.loads(resp.read().decode("utf-8"))
-                except urllib.error.HTTPError as err:
-                    if err.code == 404 and tag != "latest":
-                        alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
-                        alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
-                        logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
-                        req_alt = urllib.request.Request(
-                            alt_api_url,
-                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                        )
-                        with urllib.request.urlopen(req_alt, timeout=15) as resp:
+                    req = urllib.request.Request(
+                        api_url,
+                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as resp:
                             release_data = json.loads(resp.read().decode("utf-8"))
-                    else:
-                        raise
+                    except urllib.error.HTTPError as err:
+                        if err.code == 404 and tag != "latest":
+                            alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
+                            alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
+                            logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
+                            req_alt = urllib.request.Request(
+                                alt_api_url,
+                                headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                            )
+                            with urllib.request.urlopen(req_alt, timeout=15) as resp:
+                                release_data = json.loads(resp.read().decode("utf-8"))
+                        else:
+                            raise
 
                 download_url = None
                 for asset in release_data.get("assets", []):

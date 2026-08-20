@@ -43,6 +43,7 @@ Options:
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -57,7 +58,7 @@ from typing import Optional, List, Dict, Tuple, Set
 # Version
 # ──────────────────────────────────────────────────────────────
 
-VERSION = "3.2.0"
+VERSION = "3.2.2"
 
 boot_status = None
 boot_issues = []
@@ -66,12 +67,17 @@ boot_issues = []
 # Path / URL constants
 # ──────────────────────────────────────────────────────────────
 
+FLATPAK_STEAM_INSTALL_DIR = (
+    Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "steam"
+)
 FLATPAK_CONFIG_PATH = (
     Path.home() / ".var" / "app" / "com.valvesoftware.Steam"
     / ".config" / "SLSsteam" / "config.yaml"
 )
 NATIVE_CONFIG_PATH  = Path.home() / ".config" / "SLSsteam" / "config.yaml"
-DEFAULT_CONFIG_PATH = FLATPAK_CONFIG_PATH if FLATPAK_CONFIG_PATH.exists() else NATIVE_CONFIG_PATH
+DEFAULT_CONFIG_PATH = (
+    FLATPAK_CONFIG_PATH if FLATPAK_STEAM_INSTALL_DIR.exists() else NATIVE_CONFIG_PATH
+)
 
 # C++ source that embeds the YAML default template as a raw string literal.
 TEMPLATE_SOURCE_URL = (
@@ -1082,51 +1088,191 @@ def run_boot_config_check() -> None:
         boot_issues = [str(e)]
 
 
-def run_asshead_migration(config_path: Path, template_url: str = TEMPLATE_SOURCE_URL) -> tuple[bool, str, Optional[Path]]:
+def check_config_status(config_path: Optional[Path] = None, online: bool = True) -> Tuple[bool, str, List[str]]:
+    """Check config health against local rules and upstream template.
+
+    Returns:
+        (needs_repair, summary_message, details_list)
+    """
+    if config_path is None:
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+        except Exception:
+            config_path = DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        return False, f"Config file not found at {config_path}", [f"File does not exist: {config_path}"]
+
     try:
-        if not config_path.exists():
-            return False, f"Config file not found at {config_path}", None
+        config_text = config_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return True, f"Failed to read config: {e}", [str(e)]
 
-        raw_hpp = _fetch_url(template_url, TEMPLATE_TIMEOUT)
-        key_types = infer_key_types(raw_hpp)
+    raw_hpp = ""
+    template_yaml = ""
+    key_types = {}
 
-        m = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-        template_yaml = m.group(1) if m else ""
+    if online:
+        try:
+            raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+            key_types = infer_key_types(raw_hpp)
+            m_tmpl = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
+            if m_tmpl:
+                template_yaml = m_tmpl.group(1)
+        except Exception:
+            pass
+
+    # Fallback to local template if online fetch failed or offline
+    if not template_yaml:
+        local_tmpl_path = Path("/home/aiwin/.local/share/ACCELA/SLSsteam/res/config.yaml")
+        if not local_tmpl_path.exists():
+            local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
+        if local_tmpl_path.exists():
+            try:
+                template_yaml = local_tmpl_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+    reader = SimpleYAMLReader(key_types, lenient=True)
+    try:
+        old_data = reader.parse(config_text)
+    except Exception as parse_err:
+        return True, "Config has syntax/parse errors", [f"Parse error: {parse_err}"]
+
+    issues = validate_config(config_path, key_types)
+    new_keys = set()
+    if template_yaml:
+        try:
+            tmpl_reader = SimpleYAMLReader(key_types, lenient=False)
+            template_data = tmpl_reader.parse(template_yaml)
+            new_keys = set(template_data) - set(old_data)
+        except Exception:
+            pass
+
+    details = []
+    if new_keys:
+        details.append(f"Missing {len(new_keys)} upstream default setting(s): {', '.join(sorted(new_keys))}")
+    if issues:
+        details.extend(issues)
+
+    if details:
+        summary = f"Issues detected ({len(details)} item{'s' if len(details) != 1 else ''})"
+        if new_keys and not issues:
+            summary = f"{len(new_keys)} new upstream setting{'s' if len(new_keys) != 1 else ''} available"
+        return True, summary, details
+    else:
+        return False, "Config is up to date and healthy!", []
+
+
+def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = True) -> Tuple[bool, str, Optional[Path]]:
+    """Repair and synchronize config with upstream template in-place."""
+    if config_path is None:
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+        except Exception:
+            config_path = DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        return False, f"Config file not found at {config_path}", None
+
+    try:
+        raw_hpp = ""
+        template_yaml = ""
+        key_types = {}
+
+        if online:
+            try:
+                raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+                key_types = infer_key_types(raw_hpp)
+                m = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
+                if m:
+                    template_yaml = m.group(1)
+            except Exception:
+                pass
+
+        if not template_yaml:
+            local_tmpl_path = Path("/home/aiwin/.local/share/ACCELA/SLSsteam/res/config.yaml")
+            if not local_tmpl_path.exists():
+                local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
+            if local_tmpl_path.exists():
+                template_yaml = local_tmpl_path.read_text(encoding="utf-8")
+
+        if not template_yaml:
+            return False, "Could not obtain a valid SLSsteam template.", None
+
+        if not key_types:
+            key_types = infer_key_types(raw_hpp) if raw_hpp else {}
 
         config_text = config_path.read_text(encoding="utf-8")
         reader = SimpleYAMLReader(key_types, lenient=True)
         old_data = reader.parse(config_text)
-        
+
         tmpl_reader = SimpleYAMLReader(key_types, lenient=False)
         template_data = tmpl_reader.parse(template_yaml)
 
         issues = validate_config(config_path, key_types)
         new_keys = set(template_data) - set(old_data)
 
-        if not issues and not new_keys:
-            return True, "No changes needed. SLSsteam config is already optimal!", None
-
-        resolve_missing_names(old_data)
-
+        # Merge
         merged = merge_config(template_yaml, old_data, key_types)
         bak_path = make_backup_with_rotation(config_path)
-        config_path.write_text(merged, encoding="utf-8")
 
-        msg = "Successfully updated config.yaml to the latest template."
+        # In-place write to preserve file inode for live SLS inotify
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(merged)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Ensure ASSella prerequisites (API: yes, LogLevels: 0x2)
+        try:
+            from utils.yaml_config_manager import ensure_slssteam_prerequisites
+            ensure_slssteam_prerequisites(config_path)
+        except Exception:
+            pass
+
+        msg = "Successfully repaired and synchronized config.yaml."
         if new_keys:
             msg += f" Added {len(new_keys)} new key(s)."
         if issues:
-            msg += f" Fixed {len(issues)} formatting issue(s)."
+            msg += f" Fixed {len(issues)} issue(s)."
 
         return True, msg, bak_path
-
     except Exception as e:
-        return False, f"Error: {e}", None
+        return False, f"Repair failed: {e}", None
+
+
+def restore_config_backup(config_path: Optional[Path] = None) -> Tuple[bool, str, Optional[Path]]:
+    """Restore latest backup for config.yaml."""
+    if config_path is None:
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+        except Exception:
+            config_path = DEFAULT_CONFIG_PATH
+    return restore_latest_backup(config_path)
+
+
+def has_config_backup(config_path: Optional[Path] = None) -> bool:
+    """Check if a .bak backup exists for config.yaml."""
+    if config_path is None:
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            config_path = get_user_config_path()
+        except Exception:
+            config_path = DEFAULT_CONFIG_PATH
+    return get_latest_backup_path(config_path) is not None
+
+
+def run_asshead_migration(config_path: Path, template_url: str = TEMPLATE_SOURCE_URL) -> tuple[bool, str, Optional[Path]]:
+    return repair_and_sync_config(config_path, online=True)
 
 
 # ──────────────────────────────────────────────────────────────
 # CLI entry point
 # ──────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

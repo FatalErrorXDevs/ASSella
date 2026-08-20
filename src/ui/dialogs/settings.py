@@ -5,10 +5,10 @@ import subprocess
 import sys
 import webbrowser
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -56,80 +56,145 @@ logger = logging.getLogger(__name__)
 
 
 class MorrenusStatsWidget(QWidget):
-    """Widget displaying Morrenus API user statistics."""
+    """Widget displaying Hubcap API user statistics and cloud generation quotas."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.settings = get_settings()
         self.username_label = None
-        self.daily_usage_bar = None
         self.expiration_label = None
         self.total_calls_label = None
-        self.status_label = None
+        self.account_status_lbl = None
+        self.steam_service_lbl = None
         self.refresh_button = None
         self._setup_ui()
 
-    def _setup_ui(self) -> None:
-        """Initialize the UI components."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 5, 0, 5)
+    def _create_stat_bar(self, title: str, is_muted: bool = False):
+        """Helper to create a titled progress bar row with value label."""
+        container = QVBoxLayout()
+        container.setSpacing(3)
+        container.setContentsMargins(0, 2, 0, 2)
 
-        # Row 1: Username & Legible Usage Label
-        row1 = QHBoxLayout()
-        self.username_label = QLabel("User: --")
-        self.username_label.setStyleSheet("font-weight: bold; color: #FFFFFF;")
-        
-        self.usage_label = QLabel("Daily Usage: --")
-        self.usage_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9pt;")
-        
-        row1.addWidget(self.username_label)
-        row1.addStretch()
-        row1.addWidget(self.usage_label)
-        main_layout.addLayout(row1)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Progress Bar (Clean M3 style)
-        self.daily_usage_bar = QProgressBar()
-        self.daily_usage_bar.setRange(0, 100)
-        self.daily_usage_bar.setValue(0)
-        self.daily_usage_bar.setTextVisible(False)  # Keep the bar clean and thin!
-        self.daily_usage_bar.setFixedHeight(8)
+        title_lbl = QLabel(title)
+        if is_muted:
+            title_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 8.5pt;")
+        else:
+            title_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
+
+        val_lbl = QLabel("--")
+        if is_muted:
+            val_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.35); font-size: 8.5pt;")
+        else:
+            val_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
+
+        header_layout.addWidget(title_lbl)
+        header_layout.addStretch()
+        header_layout.addWidget(val_lbl)
+        container.addLayout(header_layout)
+
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(8)
 
         accent_color = self.settings.value("accent_color", "#C06C84")
         from utils.color_utils import get_dark_container_color
         track_bg = get_dark_container_color(accent_color)
 
-        self.daily_usage_bar.setStyleSheet(
-            f"""
-            QProgressBar {{
-                background-color: {track_bg};
-                border: none;
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {accent_color};
-                border-radius: 4px;
-            }}
-            """
-        )
-        main_layout.addWidget(self.daily_usage_bar)
+        if is_muted:
+            bar.setStyleSheet("""
+                QProgressBar {
+                    background-color: rgba(255, 255, 255, 0.05);
+                    border: none;
+                    border-radius: 4px;
+                }
+                QProgressBar::chunk {
+                    background-color: rgba(255, 255, 255, 0.2);
+                    border-radius: 4px;
+                    margin: 0px;
+                }
+            """)
+        else:
+            bar.setStyleSheet(
+                f"""
+                QProgressBar {{
+                    background-color: {track_bg};
+                    border: none;
+                    border-radius: 4px;
+                }}
+                QProgressBar::chunk {{
+                    background-color: {accent_color};
+                    border-radius: 4px;
+                    margin: 0px;
+                }}
+                """
+            )
 
-        # Row 2: Stats
-        row2 = QHBoxLayout()
-        row2.setSpacing(10)
+        container.addWidget(bar)
+        return container, title_lbl, val_lbl, bar
+
+    def _setup_ui(self) -> None:
+        """Initialize the UI components."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 5, 0, 5)
+        main_layout.setSpacing(8)
+
+        # Row 1: User info row (Username, Expires, Total API Calls)
+        info_row = QHBoxLayout()
+        info_row.setContentsMargins(0, 0, 0, 2)
+        info_row.setSpacing(12)
+
+        self.username_label = QLabel("User: --")
+        self.username_label.setStyleSheet("font-weight: bold; color: #FFFFFF; font-size: 9pt;")
+        info_row.addWidget(self.username_label)
+        info_row.addStretch()
 
         self.expiration_label = QLabel("Expires: --")
-        self.expiration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row2.addWidget(self.expiration_label)
+        self.expiration_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
+        info_row.addWidget(self.expiration_label)
 
         self.total_calls_label = QLabel("Total: --")
-        self.total_calls_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row2.addWidget(self.total_calls_label)
+        self.total_calls_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
+        info_row.addWidget(self.total_calls_label)
 
-        self.status_label = QLabel("Status: --")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row2.addWidget(self.status_label)
+        main_layout.addLayout(info_row)
 
-        main_layout.addLayout(row2)
+        # Progress Bars Section
+        # 1. Daily API Usage (Manifests)
+        c1, self.daily_title_lbl, self.daily_val_lbl, self.daily_usage_bar = self._create_stat_bar("Daily API Usage (Manifests):")
+        main_layout.addLayout(c1)
+
+        # 2. Bundle Generation / Updates Quota
+        c2, self.bundle_title_lbl, self.bundle_val_lbl, self.bundle_bar = self._create_stat_bar("Bundle Generation / Updates Quota:")
+        main_layout.addLayout(c2)
+
+        # 3. Workshop Generation Quota
+        c3, self.workshop_title_lbl, self.workshop_val_lbl, self.workshop_bar = self._create_stat_bar("Workshop Generation Quota:")
+        main_layout.addLayout(c3)
+
+        # 4. Single Generation Quota
+        c4, self.single_title_lbl, self.single_val_lbl, self.single_bar = self._create_stat_bar("Single Generation:")
+        main_layout.addLayout(c4)
+
+        # Bottom status row (Account Status on left, Steam Gen Service on right)
+        status_bottom_row = QHBoxLayout()
+        status_bottom_row.setContentsMargins(0, 4, 0, 0)
+
+        self.account_status_lbl = QLabel("● Account: --")
+        self.account_status_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.6);")
+        status_bottom_row.addWidget(self.account_status_lbl)
+
+        status_bottom_row.addStretch()
+
+        self.steam_service_lbl = QLabel("● Steam Gen Service: --")
+        self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.6);")
+        status_bottom_row.addWidget(self.steam_service_lbl)
+
+        main_layout.addLayout(status_bottom_row)
 
         # Refresh button
         self.refresh_button = QPushButton("Refresh")
@@ -140,22 +205,22 @@ class MorrenusStatsWidget(QWidget):
         main_layout.addWidget(self.refresh_button)
 
     def refresh_stats(self) -> None:
-        """Fetch and display latest stats from the API in a background thread."""
+        """Fetch and display latest stats from both user/stats and generate/usage."""
         self.refresh_button.setEnabled(False)
         self.refresh_button.setText("Loading...")
 
         from utils.task_runner import TaskRunner
         self._stats_runner = TaskRunner(self)
-        worker = self._stats_runner.run(morrenus_api.get_user_stats)
-        
-        def on_stats_finished(stats):
+        worker = self._stats_runner.run(morrenus_api.get_all_hubcap_stats)
+
+        def on_stats_finished(result):
             self.refresh_button.setEnabled(True)
             self.refresh_button.setText("Refresh")
-            if not stats or stats.get("error"):
+            if not result:
                 self._display_error_state()
             else:
-                self._display_stats(stats)
-                
+                self._display_all_stats(result.get("user_stats", {}), result.get("gen_usage", {}))
+
         def on_stats_error(err_tuple):
             self.refresh_button.setEnabled(True)
             self.refresh_button.setText("Refresh")
@@ -168,29 +233,98 @@ class MorrenusStatsWidget(QWidget):
         """Update UI to show error state."""
         self.username_label.setText("User: Error")
         self.total_calls_label.setText("Total: --")
-        self.usage_label.setText("Daily Usage: Error")
-        self.daily_usage_bar.setValue(0)
         self.expiration_label.setText("Expires: --")
-        self.status_label.setText("Status: Error")
+        self.expiration_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
+        self.account_status_lbl.setText("● Account: Error")
+        self.account_status_lbl.setStyleSheet("font-size: 8pt; color: #e57373;")
+        self.daily_val_lbl.setText("Error")
+        self.daily_usage_bar.setValue(0)
+        self.bundle_val_lbl.setText("Error")
+        self.bundle_bar.setValue(0)
+        self.workshop_val_lbl.setText("Error")
+        self.workshop_bar.setValue(0)
+        self.single_val_lbl.setText("Error")
+        self.single_bar.setValue(0)
+        self.steam_service_lbl.setText("● Steam Gen Service: --")
+        self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
-    def _display_stats(self, stats: dict) -> None:
-        """Update UI with fetched statistics."""
-        self.username_label.setText(f"User: {stats.get('username', 'Unknown')}")
-        self.total_calls_label.setText(f"Total: {stats.get('api_key_usage_count', 0)}")
+    def _display_all_stats(self, user_stats: dict, gen_usage: dict) -> None:
+        """Update UI with fetched statistics and quotas."""
+        accent_color = self.settings.value("accent_color", "#C06C84")
+        from utils.color_utils import get_semantic_colors
+        semantic = get_semantic_colors(accent_color)
 
-        daily_usage = MorrenusStatsWidget._parse_int(stats.get("daily_usage", 0))
-        daily_limit = MorrenusStatsWidget._parse_int(stats.get("daily_limit", 100))
-        if daily_limit == 0:
-            daily_limit = 100
+        # 1. User stats
+        if user_stats and not user_stats.get("error"):
+            self.username_label.setText(f"User: {user_stats.get('username', 'Unknown')}")
+            self.total_calls_label.setText(f"Total: {user_stats.get('api_key_usage_count', 0)}")
 
-        self.daily_usage_bar.setRange(0, daily_limit)
-        self.daily_usage_bar.setValue(daily_usage)
-        self.usage_label.setText(f"Daily Usage: {daily_usage} / {daily_limit}")
+            daily_usage = MorrenusStatsWidget._parse_int(user_stats.get("daily_usage", 0))
+            daily_limit = MorrenusStatsWidget._parse_int(user_stats.get("daily_limit", 55))
+            if daily_limit <= 0:
+                daily_limit = 55
 
-        self._update_expiration_label(stats.get("api_key_expires_at", ""))
+            self.daily_usage_bar.setRange(0, daily_limit)
+            self.daily_usage_bar.setValue(daily_usage)
+            self.daily_val_lbl.setText(f"{daily_usage} / {daily_limit}")
 
-        status = "Active" if stats.get("can_make_requests", False) else "Blocked"
-        self.status_label.setText(f"Status: {status}")
+            self._update_expiration_label(user_stats.get("api_key_expires_at", ""))
+
+            can_req = user_stats.get("can_make_requests", False)
+            if can_req:
+                self.account_status_lbl.setText("● Account: Active")
+                self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('success', '#81c784')}; font-weight: bold;")
+            else:
+                self.account_status_lbl.setText("● Account: Inactive")
+                self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')}; font-weight: bold;")
+        else:
+            self.username_label.setText("User: Error")
+            self.daily_val_lbl.setText("Error")
+            self.account_status_lbl.setText("● Account: Error")
+            self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')}; font-weight: bold;")
+
+        # 2. Generation usage limits
+        if gen_usage and not gen_usage.get("error"):
+            bundle = gen_usage.get("bundle", {})
+            b_usage = MorrenusStatsWidget._parse_int(bundle.get("usage", 0))
+            b_limit = MorrenusStatsWidget._parse_int(bundle.get("limit", 100))
+            if b_limit <= 0:
+                b_limit = 100
+            self.bundle_bar.setRange(0, b_limit)
+            self.bundle_bar.setValue(b_usage)
+            self.bundle_val_lbl.setText(f"{b_usage} / {b_limit}")
+
+            workshop = gen_usage.get("workshop", {})
+            w_usage = MorrenusStatsWidget._parse_int(workshop.get("usage", 0))
+            w_limit = MorrenusStatsWidget._parse_int(workshop.get("limit", 500))
+            if w_limit <= 0:
+                w_limit = 500
+            self.workshop_bar.setRange(0, w_limit)
+            self.workshop_bar.setValue(w_usage)
+            self.workshop_val_lbl.setText(f"{w_usage} / {w_limit}")
+
+            single = gen_usage.get("single", {})
+            s_usage = MorrenusStatsWidget._parse_int(single.get("usage", 0))
+            s_limit = MorrenusStatsWidget._parse_int(single.get("limit", 1500))
+            if s_limit <= 0:
+                s_limit = 1500
+            self.single_bar.setRange(0, s_limit)
+            self.single_bar.setValue(s_usage)
+            self.single_val_lbl.setText(f"{s_usage} / {s_limit}")
+
+            ready = gen_usage.get("steam_service_ready", True)
+            if ready:
+                self.steam_service_lbl.setText("● Steam Gen Service: Ready")
+                self.steam_service_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('success', '#81c784')};")
+            else:
+                self.steam_service_lbl.setText("● Steam Gen Service: Offline")
+                self.steam_service_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')};")
+        else:
+            self.bundle_val_lbl.setText("--")
+            self.workshop_val_lbl.setText("--")
+            self.single_val_lbl.setText("--")
+            self.steam_service_lbl.setText("● Steam Gen Service: --")
+            self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
     @staticmethod
     def _parse_int(value: Any, default: int = 0) -> int:
@@ -201,16 +335,55 @@ class MorrenusStatsWidget(QWidget):
             return default
 
     def _update_expiration_label(self, expires_at: str) -> None:
-        """Format and update the expiration label."""
+        """Format and update the expiration label with theme-adaptive warning colors."""
         if not expires_at:
             self.expiration_label.setText("Expires: Never")
+            self.expiration_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
             return
 
+        formatted_date = expires_at[:10]
+        days_left = None
         try:
-            dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            self.expiration_label.setText(f"Expires: {dt.strftime('%d/%m/%Y')}")
-        except ValueError:
-            self.expiration_label.setText(f"Expires: {expires_at[:10]}")
+            exp_clean = expires_at.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(exp_clean)
+            formatted_date = dt.strftime("%d/%m/%Y")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            days_left = (dt - now).days
+        except Exception as e:
+            logger.debug(f"Failed to parse expiry date: {e}")
+
+        accent_color = self.settings.value("accent_color", "#C06C84")
+        from utils.color_utils import get_semantic_colors
+        semantic = get_semantic_colors(accent_color)
+
+        if days_left is not None:
+            if days_left < 0:
+                color = semantic.get("error", "#e57373")
+                status_text = f"Expires: {formatted_date} (Expired)"
+            elif days_left <= 7:
+                # Urgent warning
+                color = semantic.get("error", "#e57373")
+                status_text = f"Expires: {formatted_date} ({days_left}d left)"
+            elif days_left <= 30:
+                # Moderate warning (~70% through validity or <30 days remaining)
+                color = semantic.get("warning", "#ffd54f")
+                status_text = f"Expires: {formatted_date} ({days_left}d left)"
+            elif days_left <= 60:
+                # Light advisory warning
+                color = semantic.get("warning", "#ffd54f")
+                status_text = f"Expires: {formatted_date}"
+            else:
+                # Plenty of time left -> standard theme-harmonized muted text
+                color = "rgba(255, 255, 255, 0.75)"
+                status_text = f"Expires: {formatted_date}"
+        else:
+            color = "rgba(255, 255, 255, 0.75)"
+            status_text = f"Expires: {formatted_date}"
+
+        self.expiration_label.setText(status_text)
+        self.expiration_label.setStyleSheet(f"color: {color}; font-size: 8.5pt; font-weight: 500;")
 
 
 class SettingsDialog(QDialog):
@@ -1193,27 +1366,131 @@ class SettingsDialog(QDialog):
         # Tools Card
         tools_card, tools_layout = self._create_card_frame("Tools")
 
-        self.configure_achievements_btn = SettingsDialog._add_tool_button(
-            tools_layout,
-            "Configure Achievements",
-            "Perform one-time setup and authenticate Steam for achievements.",
-            self.run_schema_grabber_manually,
-        )
+        tools_desc = QLabel("Run Steam achievement configurator or Steamless DRM removal utilities.")
+        tools_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+        tools_desc.setWordWrap(True)
+        tools_layout.addWidget(tools_desc)
 
-        SettingsDialog._add_tool_button(
-            tools_layout,
-            "Steamless (Python)",
-            "Run Steamless-AIO manually on a game .exe.",
-            self.run_steamless_aio_manually,
-        )
+        tools_btn_row = QHBoxLayout()
+        tools_btn_row.setContentsMargins(0, 4, 0, 4)
+        tools_btn_row.setSpacing(10)
 
-        SettingsDialog._add_tool_button(
-            tools_layout,
-            "Steamless (Legacy)",
-            "Run Steamless manually on a game .exe.",
-            self.run_steamless_manually,
-        )
+        tool_btn_style = """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                color: #FFFFFF;
+                padding: 7px 14px;
+                font-size: 9.5pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.32);
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.03) !important;
+                border: 1px solid rgba(255, 255, 255, 0.08) !important;
+                color: rgba(255, 255, 255, 0.3) !important;
+            }
+        """
+
+        self.configure_achievements_btn = QPushButton("Achievements")
+        self.configure_achievements_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.configure_achievements_btn.setStyleSheet(tool_btn_style)
+        self.configure_achievements_btn.setToolTip("Perform one-time setup and authenticate Steam for achievements.")
+        self.configure_achievements_btn.clicked.connect(self.run_schema_grabber_manually)
+        tools_btn_row.addWidget(self.configure_achievements_btn)
+
+        self.steamless_py_btn = QPushButton("Steamless (Py)")
+        self.steamless_py_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steamless_py_btn.setStyleSheet(tool_btn_style)
+        self.steamless_py_btn.setToolTip("Run Steamless-AIO (Python) manually on a game .exe.")
+        self.steamless_py_btn.clicked.connect(self.run_steamless_aio_manually)
+        tools_btn_row.addWidget(self.steamless_py_btn)
+
+        self.steamless_legacy_btn = QPushButton("Steamless (Old)")
+        self.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steamless_legacy_btn.setStyleSheet(tool_btn_style)
+        self.steamless_legacy_btn.setToolTip("Run Steamless (.NET Legacy) manually on a game .exe.")
+        self.steamless_legacy_btn.clicked.connect(self.run_steamless_manually)
+        tools_btn_row.addWidget(self.steamless_legacy_btn)
+
+        tools_btn_row.addStretch()
+        tools_layout.addLayout(tools_btn_row)
+
         layout.addWidget(tools_card)
+
+        # ASSfixer Card (Linux/Steam Deck)
+        if sys.platform == "linux":
+            assfixer_card, assfixer_layout = self._create_card_frame("ASSfixer")
+
+            assfixer_desc = QLabel("Validate, repair, and synchronize your SLSsteam config with the latest upstream template.")
+            assfixer_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+            assfixer_desc.setWordWrap(True)
+            assfixer_layout.addWidget(assfixer_desc)
+
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 4, 0, 4)
+            btn_row.setSpacing(10)
+
+            btn_style = """
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 8px;
+                    color: #FFFFFF;
+                    padding: 7px 16px;
+                    font-size: 9.5pt;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.16);
+                    border-color: rgba(255, 255, 255, 0.32);
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.03) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+                    color: rgba(255, 255, 255, 0.3) !important;
+                }
+            """
+
+            self.assfixer_check_btn = QPushButton("Check")
+            self.assfixer_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.assfixer_check_btn.setStyleSheet(btn_style)
+            self.assfixer_check_btn.clicked.connect(self._run_assfixer_check)
+            btn_row.addWidget(self.assfixer_check_btn)
+
+            self.assfixer_repair_btn = QPushButton("Repair / Resync")
+            self.assfixer_repair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.assfixer_repair_btn.setStyleSheet(btn_style)
+            self.assfixer_repair_btn.setEnabled(False)
+            self.assfixer_repair_btn.clicked.connect(self._run_assfixer_repair)
+            btn_row.addWidget(self.assfixer_repair_btn)
+
+            self.assfixer_restore_btn = QPushButton("Restore Backup")
+            self.assfixer_restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.assfixer_restore_btn.setStyleSheet(btn_style)
+
+            try:
+                from utils.assfixer import has_config_backup
+                self.assfixer_restore_btn.setEnabled(has_config_backup())
+            except Exception:
+                self.assfixer_restore_btn.setEnabled(False)
+            self.assfixer_restore_btn.clicked.connect(self._run_assfixer_restore)
+            btn_row.addWidget(self.assfixer_restore_btn)
+
+            btn_row.addStretch()
+            assfixer_layout.addLayout(btn_row)
+
+            self.assfixer_status_lbl = QLabel("")
+            self.assfixer_status_lbl.setStyleSheet("color: #a9b1d6; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+            self.assfixer_status_lbl.setWordWrap(True)
+            self.assfixer_status_lbl.hide()
+            assfixer_layout.addWidget(self.assfixer_status_lbl)
+
+            layout.addWidget(assfixer_card)
 
         # Windows Registry Card
         if sys.platform == "win32":
@@ -1424,6 +1701,113 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(row_box)
         return btn
+
+
+    def _run_assfixer_check(self) -> None:
+        self.assfixer_check_btn.setEnabled(False)
+        self.assfixer_status_lbl.setText("Checking config against upstream template...")
+        self.assfixer_status_lbl.setStyleSheet("color: #7aa2f7; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+        self.assfixer_status_lbl.show()
+
+        import threading
+        def _target():
+            try:
+                from utils.assfixer import check_config_status
+                res = check_config_status(online=True)
+            except Exception as e:
+                res = (False, f"Check failed: {e}", [str(e)])
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_assfixer_check_done",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(object, res),
+            )
+
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+
+    @pyqtSlot(object)
+    def _handle_assfixer_check_done(self, result) -> None:
+        needs_repair, summary, details = result
+        self.assfixer_check_btn.setEnabled(True)
+        if needs_repair:
+            self.assfixer_repair_btn.setEnabled(True)
+            self.assfixer_status_lbl.setText(f"🟡 {summary}")
+            self.assfixer_status_lbl.setStyleSheet("color: #e0af68; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+            if details:
+                self.assfixer_status_lbl.setToolTip("\n".join(details))
+        else:
+            self.assfixer_repair_btn.setEnabled(True)
+            self.assfixer_status_lbl.setText(f"🟢 {summary}")
+            self.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+            self.assfixer_status_lbl.setToolTip("")
+
+    def _run_assfixer_repair(self) -> None:
+        self.assfixer_repair_btn.setEnabled(False)
+        self.assfixer_status_lbl.setText("Repairing and synchronizing config...")
+        self.assfixer_status_lbl.setStyleSheet("color: #7aa2f7; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+        self.assfixer_status_lbl.show()
+
+        import threading
+        def _target():
+            try:
+                from utils.assfixer import repair_and_sync_config, has_config_backup
+                success, msg, bak_path = repair_and_sync_config(online=True)
+                has_bak = has_config_backup()
+                res = (success, msg, has_bak)
+            except Exception as e:
+                res = (False, f"Repair error: {e}", False)
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_assfixer_repair_done",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(object, res),
+            )
+
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+
+    @pyqtSlot(object)
+    def _handle_assfixer_repair_done(self, result) -> None:
+        success, msg, has_bak = result
+        self.assfixer_repair_btn.setEnabled(True)
+        self.assfixer_restore_btn.setEnabled(has_bak)
+        if success:
+            self.assfixer_status_lbl.setText(f"🟢 {msg}")
+            self.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+            QMessageBox.information(self, "ASSfixer", msg)
+        else:
+            self.assfixer_status_lbl.setText(f"🔴 {msg}")
+            self.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+            QMessageBox.warning(self, "ASSfixer", msg)
+
+    def _run_assfixer_restore(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Restore Config Backup",
+            "Are you sure you want to restore the latest config backup?\nThis will overwrite current config.yaml.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from utils.assfixer import restore_config_backup, has_config_backup
+            success, msg, bak_path = restore_config_backup()
+            self.assfixer_restore_btn.setEnabled(has_config_backup())
+            if success:
+                self.assfixer_status_lbl.setText(f"🟢 {msg}")
+                self.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+                self.assfixer_status_lbl.show()
+                QMessageBox.information(self, "Backup Restored", msg)
+            else:
+                self.assfixer_status_lbl.setText(f"🔴 {msg}")
+                self.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+                self.assfixer_status_lbl.show()
+                QMessageBox.warning(self, "Restore Failed", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Restore Error", str(e))
 
 
 
@@ -2133,7 +2517,14 @@ class SettingsDialog(QDialog):
                     pass
 
         if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox is not None:
-            self.settings.setValue("experimental_acf_independent", self.experimental_acf_independent_checkbox.isChecked())
+            is_enabled = self.experimental_acf_independent_checkbox.isChecked()
+            self.settings.setValue("experimental_acf_independent", is_enabled)
+            if is_enabled:
+                try:
+                    from utils.yaml_config_manager import ensure_slssteam_prerequisites
+                    ensure_slssteam_prerequisites()
+                except Exception:
+                    pass
 
     def _on_isp_bypass_toggled(self, state) -> None:
         """Stops background Tor process if user unchecks ISP Bypass."""
@@ -2206,15 +2597,15 @@ class SettingsDialog(QDialog):
                     if hasattr(self, "_saved_sls_config_mgmt_pref"):
                         self.sls_config_management_checkbox.setChecked(self._saved_sls_config_mgmt_pref)
 
-        # 4. Write API: yes to config.yaml if checked
+        # 4. Silently ensure SLS prerequisites (API: yes, LogLevels: 0x2) in config.yaml if checked
         if is_checked:
             try:
-                from utils.yaml_config_manager import get_user_config_path, update_yaml_boolean_value
+                from utils.yaml_config_manager import get_user_config_path, ensure_slssteam_prerequisites
                 config_path = get_user_config_path()
                 if config_path.exists():
-                    update_yaml_boolean_value(config_path, "API", True)
+                    ensure_slssteam_prerequisites(config_path)
             except Exception as e:
-                logger.warning(f"Failed to update API value to yes in config.yaml: {e}")
+                logger.warning(f"Failed to ensure SLS prerequisites in config.yaml: {e}")
 
 
 

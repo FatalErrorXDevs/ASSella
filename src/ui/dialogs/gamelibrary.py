@@ -2867,11 +2867,33 @@ class GameLibraryDialog(QDialog):
             return
 
         parent = dialog if dialog else self
-        msg = self.game_manager.get_uninstall_confirmation_message(game_data)
+        c_wipe_sls_only = opts.get("wipe_sls_only", False)
+        game_name = game_data.get("game_name", "this game")
+
+        is_dlc_only = False
+        appid = str(game_data.get("appid", "0"))
+        if appid and appid not in ("0", "N/A", "unknown"):
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(appid)
+
+        if c_wipe_sls_only:
+            confirm_title = "Take away my sins"
+            confirm_msg = (
+                f"Are you sure you want to remove SLS integrations for '{game_name}'?\n\n"
+                "• Removes game from SLS config (SLS Online and EOS Proxy integrations will be reset as well)\n"
+                "• Removes AppTokens, .DepotDownloader folder, and .depot tracking\n\n"
+                "🛡️ Game files, saves, achievements, and Proton prefix will NOT be deleted."
+            )
+            progress_title = "Removing integrations..."
+        else:
+            confirm_title = "Confirm Uninstall"
+            confirm_msg = self.game_manager.get_uninstall_confirmation_message(game_data)
+            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
+
         reply = QMessageBox.question(
             parent,
-            "Confirm Uninstall",
-            msg,
+            confirm_title,
+            confirm_msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -2881,15 +2903,7 @@ class GameLibraryDialog(QDialog):
         c_data = opts.get("compat", False)
         c_saves = opts.get("saves", False)
         c_wipe_sls = opts.get("wipe_sls", False)
-        c_wipe_sls_only = opts.get("wipe_sls_only", False)
 
-        is_dlc_only = False
-        appid = str(game_data.get("appid", "0"))
-        if appid and appid not in ("0", "N/A", "unknown"):
-            from utils.dlc_helpers import is_dlc_only_mode
-            is_dlc_only = is_dlc_only_mode(appid)
-
-        progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
         self._uninstall_progress_dialog = QProgressDialog(
             progress_title, None, 0, 0, parent
         )
@@ -2936,20 +2950,31 @@ class GameLibraryDialog(QDialog):
 
     @staticmethod
     def _wipe_sls_only(game_data: dict) -> tuple:
-        """Remove from SLS config and delete .DepotDownloader folder, leave everything else."""
+        """
+        'I bought the game': Cleans all ACCELA & SLS modifications, leaving game files,
+        saves, achievements, and Proton prefix 100% intact.
+        """
         import shutil
+        from pathlib import Path
         appid = str(game_data.get("appid", ""))
         install_path = game_data.get("install_path", "")
         errors = []
 
-        # 1. Remove from SLSsteam config and notify SLSsteam
+        # 1. SLSsteam config cleanups (AdditionalApps, FakeAppIds, AppTokens)
         try:
-            from utils.yaml_config_manager import remove_additional_app
+            from utils.paths import get_user_config_path
+            from utils.yaml_config_manager import (
+                remove_additional_app,
+                remove_fake_app_id,
+                remove_app_token,
+            )
             config_path = get_user_config_path()
             if config_path.exists():
                 remove_additional_app(config_path, appid)
-                logger.info(f"Wipe SLS: removed AppID {appid} from SLS config")
-            
+                remove_fake_app_id(config_path, appid)
+                remove_app_token(config_path, appid)
+                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, and AppTokens")
+
             import platform
             if platform.system() == "Linux":
                 try:
@@ -2958,24 +2983,53 @@ class GameLibraryDialog(QDialog):
                 except Exception as api_err:
                     logger.warning(f"Failed to send SLSsteam uninstall API trigger: {api_err}")
         except Exception as e:
+            logger.error(f"Error cleaning SLS config for {appid}: {e}", exc_info=True)
             errors.append(f"SLS config: {e}")
 
-        # 2. Remove .DepotDownloader folder
+        # 2. Restore original EOS binaries and remove EOS proxy (if applied)
+        if install_path and os.path.isdir(install_path):
+            try:
+                from utils.eos_detector import EOSDetector
+                status = EOSDetector.get_proxy_status(install_path)
+                if status in ("active", "stale"):
+                    EOSDetector.remove_proxy(install_path)
+                    logger.info(f"I bought the game: Removed EOS proxy and restored original DLL in {install_path}")
+            except Exception as e:
+                logger.error(f"Error removing EOS proxy for {appid}: {e}", exc_info=True)
+                errors.append(f"EOS proxy: {e}")
+
+        # 3. Remove .DepotDownloader folder (leave game files intact)
         if install_path and os.path.isdir(install_path):
             ddm = os.path.join(install_path, ".DepotDownloader")
             if os.path.exists(ddm):
                 try:
                     shutil.rmtree(ddm)
-                    logger.info(f"Wipe SLS: removed .DepotDownloader from {install_path}")
+                    logger.info(f"I bought the game: Removed .DepotDownloader from {install_path}")
                 except Exception as e:
+                    logger.error(f"Error removing .DepotDownloader: {e}")
                     errors.append(f".DepotDownloader: {e}")
 
-        # 3. Remove from game manager list (no file deletion!)
+        # 4. Remove .depot tracking file
         try:
-            from managers.game_manager import GameManager
-            # Access via parent window — we're a static method, skip for now
-        except Exception:
-            pass
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+            if depot_file.exists():
+                depot_file.unlink()
+                logger.info(f"I bought the game: Removed depot file {depot_file}")
+        except Exception as e:
+            logger.error(f"Error removing depot file for {appid}: {e}")
+            errors.append(f".depot tracking: {e}")
+
+        # 5. Clean up ACCELA settings / cached flags for this appid
+        try:
+            from utils.settings import get_settings
+            settings = get_settings()
+            settings.remove(f"fetched_buildid/{appid}")
+            settings.remove(f"manifest_is_fresh/{appid}")
+            settings.remove(f"latest_steam_manifest_id/{appid}")
+            settings.remove(f"dlc_only_mode/{appid}")
+        except Exception as e:
+            logger.debug(f"Non-critical settings cleanup error for {appid}: {e}")
 
         if errors:
             return False, "; ".join(errors)

@@ -456,6 +456,13 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
         logger.debug(f"install_via_sls: shutdown in progress — skipping for {appid}")
         return False
 
+    # 0. Just-in-time check: ensure API: yes and LogLevels (0x2) if externally modified
+    try:
+        from utils.yaml_config_manager import ensure_slssteam_prerequisites
+        ensure_slssteam_prerequisites()
+    except Exception as e:
+        logger.debug(f"install_via_sls: prerequisites check error: {e}")
+
     # 1. Write to config in-place (always, even if Steam is closed)
     try:
         written = _write_appid_to_config(appid, game_name)
@@ -586,6 +593,13 @@ def patch_acf_via_sls(appid: str, library_path: str = "") -> bool:
 
     if not appid or appid in ("0", "N/A", "unknown"):
         return False
+
+    # Just-in-time check: ensure API: yes and LogLevels (0x2) if externally modified
+    try:
+        from utils.yaml_config_manager import ensure_slssteam_prerequisites
+        ensure_slssteam_prerequisites()
+    except Exception as e:
+        logger.debug(f"patch_acf_via_sls: prerequisites check error: {e}")
 
     if not _is_slssteam_available():
         logger.warning(

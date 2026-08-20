@@ -93,6 +93,20 @@ class UpdateStatusCache:
 
             return status
 
+    def get_raw_status(self, appid: str) -> Optional[str]:
+        """
+        Return the last known persistent status regardless of age/TTL,
+        used for UI display fallback when no active update check is running.
+        """
+        with self._lock:
+            entry = self._cache.get(str(appid))
+            if entry is None:
+                return None
+            status = entry.get("status")
+            if status in PERSISTENT_STATUSES:
+                return status
+            return None
+
     def set_status(self, appid: str, status: str, metadata: dict = None) -> None:
         """
         Update the cache for *appid*.  Only PERSISTENT_STATUSES are stored;

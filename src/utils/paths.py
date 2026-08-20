@@ -57,3 +57,16 @@ class Paths:
         """Return the absolute, expanded path as a Path object."""
         return Path(path).expanduser().resolve()
 
+
+def get_jumpscare_gif(filename: str) -> str:
+    """Resolve path to a jumpscare GIF from bundled /res/jumpscare/ or ~/.local/share/ACCELA/jumpscare/."""
+    # 1. Bundled in AppImage / source tree
+    bundled = Paths.resource(f"jumpscare/{filename}")
+    if bundled.exists():
+        return str(bundled)
+    # 2. User directory fallback
+    user_path = Path.home() / ".local" / "share" / "ACCELA" / "jumpscare" / filename
+    if user_path.exists():
+        return str(user_path)
+    return ""
+

@@ -134,6 +134,147 @@ def ensure_slssteam_api_enabled(config_path: Path) -> bool:
     return update_yaml_boolean_value(config_path, "API", True)
 
 
+def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
+    """Ensure SLSsteam has the Once (0x2) log level enabled in config.yaml.
+
+    Checks both:
+      - New SLS bitmask format (LogLevels): ensures bit 1 (0x2 / Once) is set via bitwise OR.
+      - Old SLS enum format (LogLevel): ensures level is 0 (Once).
+
+    Preserves indentation, surrounding lines, comments, and file inode.
+    """
+    if not is_slssteam_mode_enabled():
+        logger.debug("Steam integration is disabled, skipping logging enable check")
+        return False
+    if not is_slssteam_config_management_enabled():
+        logger.debug("SLSsteam config management disabled, skipping logging enable check")
+        return False
+
+    try:
+        if not config_path.exists():
+            logger.warning(f"Config file not found at {config_path}")
+            return False
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 1. Check for new bitmask format: "LogLevels: <value>"
+        pattern_new = re.compile(
+            r"^(\s*)LogLevels\s*:\s*([^\r\n#]+)(.*)$",
+            re.MULTILINE,
+        )
+        match_new = pattern_new.search(content)
+        if match_new:
+            indent = match_new.group(1)
+            raw_val = match_new.group(2).strip().strip('"').strip("'")
+            comment = match_new.group(3)
+
+            try:
+                if raw_val.lower().startswith("0x"):
+                    current_val = int(raw_val, 16)
+                else:
+                    current_val = int(raw_val, 10)
+            except ValueError:
+                current_val = 0
+
+            # Check if Once bit (0x2) is already enabled
+            if (current_val & 0x2) != 0:
+                logger.debug(f"LogLevels in {config_path} already has Once flag enabled (0x{current_val:X})")
+                return False
+
+            new_val = current_val | 0x2
+            hex_str = f"0x{new_val:X}"
+            comment_str = f" {comment.strip()}" if comment.strip() else ""
+            replacement = f"{indent}LogLevels: {hex_str}{comment_str}"
+            new_content = pattern_new.sub(replacement, content, count=1)
+
+            if not _atomic_write(config_path, new_content):
+                return False
+
+            logger.info(f"Updated SLSsteam LogLevels from 0x{current_val:X} to {hex_str} in {config_path}")
+            return True
+
+        # 2. Check for old enum format: "LogLevel: <value>"
+        pattern_old = re.compile(
+            r"^(\s*)LogLevel\s*:\s*([^\r\n#]+)(.*)$",
+            re.MULTILINE,
+        )
+        match_old = pattern_old.search(content)
+        if match_old:
+            indent = match_old.group(1)
+            raw_val = match_old.group(2).strip().strip('"').strip("'")
+            comment = match_old.group(3)
+
+            try:
+                if raw_val.lower().startswith("0x"):
+                    current_val = int(raw_val, 16)
+                else:
+                    current_val = int(raw_val, 10)
+            except ValueError:
+                current_val = 0
+
+            # In old enum: Once = 0, Debug = 1, Info = 2, NotifyShort = 3, NotifyLong = 4, Warn = 5, None = 6
+            if current_val != 0:
+                comment_str = f" {comment.strip()}" if comment.strip() else ""
+                replacement = f"{indent}LogLevel: 0{comment_str}"
+                new_content = pattern_old.sub(replacement, content, count=1)
+
+                if not _atomic_write(config_path, new_content):
+                    return False
+
+                logger.info(f"Updated old SLSsteam LogLevel from {current_val} to 0 in {config_path}")
+                return True
+            else:
+                logger.debug(f"Old LogLevel in {config_path} is already 0 (Once)")
+                return False
+
+        logger.debug(f"No LogLevels/LogLevel key found in {config_path} (default enables all)")
+        return False
+
+    except OSError as e:
+        logger.error(f"Failed to ensure SLSsteam logging in {config_path}: {e}", exc_info=True)
+        return False
+
+
+def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
+    """Silently ensure all SLSsteam configuration prerequisites are met.
+
+    Specifically ensures:
+      1. API: yes (for communication via /tmp/SLSsteam.API)
+      2. LogLevels has 0x2 / Once flag enabled (or old LogLevel: 0)
+
+    Creates a backup before applying any modifications and performs in-place atomic writes.
+    Never shows disruptive UI popups — logs actions at INFO/DEBUG level.
+    """
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        logger.debug(f"ensure_slssteam_prerequisites: Config not found at {config_path}")
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        logger.debug("ensure_slssteam_prerequisites: SLS config management disabled in settings")
+        return False
+
+    changed = False
+    _create_backup(config_path)
+
+    try:
+        if ensure_slssteam_api_enabled(config_path):
+            changed = True
+            logger.info("Silently ensured SLSsteam API is enabled in config.yaml")
+
+        if ensure_slssteam_logging_enabled(config_path):
+            changed = True
+            logger.info("Silently ensured SLSsteam LogLevels includes 0x2 (Once) in config.yaml")
+    except Exception as e:
+        logger.warning(f"Error ensuring SLSsteam prerequisites: {e}")
+
+    return changed
+
+
+
 def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
     """Update a boolean value in YAML config using regex pattern matching."""
     try:
@@ -682,6 +823,20 @@ def get_app_tokens(config_path: Path) -> Dict[str, str]:
     return tokens
 
 
+def remove_app_token(config_path: Path, app_id: str) -> bool:
+    """Remove an AppID entry from the AppTokens section in SLSsteam config.yaml."""
+    app_id_pattern = re.compile(
+        rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
+        re.MULTILINE,
+    )
+    return _remove_matching_entry(
+        config_path,
+        app_id_pattern,
+        f"Removed AppID '{app_id}' from AppTokens in {config_path}",
+        f"Failed to remove AppToken for '{app_id}': {{e}}",
+    )
+
+
 def get_fake_app_ids(config_path: Path, fake_appid: str = "") -> Set[str]:
     """Get all FakeAppIds from SLSsteam config.yaml."""
     fake_app_ids = set()
@@ -860,13 +1015,17 @@ def add_fake_app_id(
 
 def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> bool:
     """Remove an AppID from the FakeAppIds list in SLSsteam config.yaml."""
-    if not fake_appid:
-        fake_appid = get_fake_appid_for_online()
-
-    app_id_pattern = re.compile(
-        rf"^\s*{re.escape(app_id)}\s*:\s*{re.escape(fake_appid)}" r"(?:\s*#.*)?$",
-        re.MULTILINE,
-    )
+    if fake_appid:
+        app_id_pattern = re.compile(
+            rf"^\s*{re.escape(app_id)}\s*:\s*{re.escape(fake_appid)}" r"(?:\s*#.*)?$",
+            re.MULTILINE,
+        )
+    else:
+        # Match any fake_appid entry for this app_id
+        app_id_pattern = re.compile(
+            rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
+            re.MULTILINE,
+        )
     return _remove_matching_entry(
         config_path,
         app_id_pattern,

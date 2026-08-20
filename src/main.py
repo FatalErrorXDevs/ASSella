@@ -15,7 +15,7 @@ from utils.logger import setup_logging
 from utils.settings import get_settings
 from utils.yaml_config_manager import (
     backup_config_on_startup,
-    ensure_slssteam_api_enabled,
+    ensure_slssteam_prerequisites,
     get_user_config_path,
 )
 from utils.version import app_version
@@ -247,8 +247,7 @@ def main():
             logger.info("SLSsteam config backup created at startup")
 
         if config_path.exists():
-            if ensure_slssteam_api_enabled(config_path):
-                logger.info("SLSsteam API enabled in config")
+            ensure_slssteam_prerequisites(config_path)
             
             try:
                 from utils.yaml_config_manager import check_and_merge_fakeappid_db

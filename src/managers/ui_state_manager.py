@@ -15,9 +15,85 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.helpers import get_base_path
-from utils.paths import Paths
+from utils.paths import Paths, get_jumpscare_gif
 
 logger = logging.getLogger(__name__)
+
+
+class QueueListWidget(QListWidget):
+    """QListWidget for the download queue with optional animated Wired background."""
+
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self._origins_movie = None
+        self._setup_origins_movie()
+
+    def _setup_origins_movie(self):
+        try:
+            from utils.settings import get_settings
+            settings = getattr(self.main_window, "settings", None) or get_settings()
+            if settings and settings.value("remember_origins", False, type=bool):
+                gif_path = (
+                    get_jumpscare_gif("171258.gif")
+                    or get_jumpscare_gif("lain4.gif")
+                    or get_jumpscare_gif("lain3.gif")
+                )
+                if gif_path and os.path.exists(gif_path):
+                    from PyQt6.QtGui import QMovie
+                    if not self._origins_movie or self._origins_movie.fileName() != gif_path:
+                        self._origins_movie = QMovie(gif_path)
+                        self._origins_movie.frameChanged.connect(self.viewport().update)
+                        self._origins_movie.start()
+                    return
+            if self._origins_movie:
+                self._origins_movie.stop()
+                self._origins_movie = None
+        except Exception:
+            self._origins_movie = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._setup_origins_movie()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        from PyQt6.QtGui import QPainter, QMovie, QPainterPath, QColor, QLinearGradient, QBrush
+        from PyQt6.QtCore import Qt, QRectF
+        if hasattr(self, "_origins_movie") and self._origins_movie and self._origins_movie.state() == QMovie.MovieState.Running:
+            viewport = self.viewport()
+            painter = QPainter(viewport)
+            current_pixmap = self._origins_movie.currentPixmap()
+            if not current_pixmap.isNull():
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+                rect = viewport.rect()
+                path = QPainterPath()
+                path.addRoundedRect(QRectF(rect), 6.0, 6.0)
+                painter.setClipPath(path)
+
+                scaled_pixmap = current_pixmap.scaled(
+                    viewport.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                x = (viewport.width() - scaled_pixmap.width()) // 2
+                y = (viewport.height() - scaled_pixmap.height()) // 2
+
+                painter.setOpacity(0.18)
+                painter.drawPixmap(x, y, scaled_pixmap)
+
+                # Soft vignette blend
+                vignette = QLinearGradient(0, 0, viewport.width(), 0)
+                bg_col = QColor(20, 20, 20)
+                vignette.setColorAt(0.0, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 80))
+                vignette.setColorAt(0.12, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 0))
+                vignette.setColorAt(0.88, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 0))
+                vignette.setColorAt(1.0, QColor(bg_col.red(), bg_col.green(), bg_col.blue(), 80))
+
+                painter.setOpacity(0.4)
+                painter.fillPath(path, QBrush(vignette))
 
 
 class UIStateManager:
@@ -51,11 +127,12 @@ class UIStateManager:
 
         # Queue label
         queue_label = QLabel("Download Queue")
-        queue_label.setStyleSheet(f"color: {self.main_window.accent_color};")
+        accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+        queue_label.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 8pt;")
         queue_layout.addWidget(queue_label)
 
         # Queue list
-        self.queue_list_widget = QListWidget()
+        self.queue_list_widget = QueueListWidget(self.main_window)
         self.queue_list_widget.setToolTip(
             "Current download queue. Select an item to move it."
         )

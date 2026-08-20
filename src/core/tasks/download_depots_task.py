@@ -393,6 +393,7 @@ class DownloadDepotsTask(QObject):
             self._is_validating = False
             try:
                 percentage = float(match.group(1))
+                current_time = time.time()
 
                 if self.total_download_size_for_this_job > 0:
                     progress_of_current_depot = (
@@ -414,69 +415,86 @@ class DownloadDepotsTask(QObject):
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
 
-                    current_time = time.time()
+                    # Real network chunk downloading phase
+                    if self._last_speed_calc_time == 0.0:
+                        self._last_speed_calc_time = current_time
+                        self._last_downloaded_bytes = total_progress_bytes
+                        self.speed_update.emit("Speed: 0.00 B/s | ETA: Calculating...")
+                    elif current_time - self._last_speed_calc_time >= 1.0:
+                        elapsed = current_time - self._last_speed_calc_time
+                        bytes_diff = total_progress_bytes - self._last_downloaded_bytes
+                        self._last_downloaded_bytes = total_progress_bytes
+                        self._last_speed_calc_time = current_time
 
-                    if self._is_validating:
-                        if current_time - self._last_speed_calc_time >= 1.0:
-                            self._last_speed_calc_time = current_time
-                            self._last_downloaded_bytes = total_progress_bytes
-                            self._smooth_speed_bps = 0.0
-                            self.speed_update.emit("Validating local files... | ETA: Calculating...")
-                    else:
-                        # Real network chunk downloading phase
-                        if self._last_speed_calc_time == 0.0:
-                            self._last_speed_calc_time = current_time
-                            self._last_downloaded_bytes = total_progress_bytes
-                            self.speed_update.emit("Speed: 0.00 B/s | ETA: Calculating...")
-                        elif current_time - self._last_speed_calc_time >= 1.0:
-                            elapsed = current_time - self._last_speed_calc_time
-                            bytes_diff = total_progress_bytes - self._last_downloaded_bytes
-                            self._last_downloaded_bytes = total_progress_bytes
-                            self._last_speed_calc_time = current_time
+                        # Guard against negative diffs (e.g. depot switch or validation transition)
+                        if bytes_diff < 0:
+                            bytes_diff = 0.0
 
-                            # Guard against negative diffs (e.g. depot switch or validation transition)
-                            if bytes_diff < 0:
-                                bytes_diff = 0.0
+                        inst_speed_bps = bytes_diff / elapsed
 
-                            inst_speed_bps = bytes_diff / elapsed
+                        # Exponential moving average for smooth speed display (alpha = 0.35)
+                        if self._smooth_speed_bps == 0.0:
+                            self._smooth_speed_bps = inst_speed_bps
+                        else:
+                            self._smooth_speed_bps = 0.35 * inst_speed_bps + 0.65 * self._smooth_speed_bps
 
-                            # Exponential moving average for smooth speed display (alpha = 0.35)
-                            if self._smooth_speed_bps == 0.0:
-                                self._smooth_speed_bps = inst_speed_bps
+                        speed_bps = self._smooth_speed_bps
+                        remaining_bytes = max(0.0, float(self.total_download_size_for_this_job - total_progress_bytes))
+
+                        # Format Speed
+                        if speed_bps < 1024:
+                            speed_str = f"{speed_bps:.2f} B/s"
+                        elif speed_bps < 1024**2:
+                            speed_str = f"{(speed_bps / 1024):.2f} KB/s"
+                        else:
+                            speed_str = f"{(speed_bps / (1024**2)):.2f} MB/s"
+
+                        # Format ETA (always included, never hidden)
+                        if speed_bps > 1024:  # At least 1 KB/s to give meaningful ETA
+                            eta_seconds = int(remaining_bytes / speed_bps)
+                            if eta_seconds < 60:
+                                eta_str = f"{eta_seconds}s remaining"
+                            elif eta_seconds < 3600:
+                                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
                             else:
-                                self._smooth_speed_bps = 0.35 * inst_speed_bps + 0.65 * self._smooth_speed_bps
+                                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
+                        else:
+                            eta_str = "Calculating..."
 
-                            speed_bps = self._smooth_speed_bps
-                            remaining_bytes = max(0.0, float(self.total_download_size_for_this_job - total_progress_bytes))
-
-                            # Format Speed
-                            if speed_bps < 1024:
-                                speed_str = f"{speed_bps:.2f} B/s"
-                            elif speed_bps < 1024**2:
-                                speed_str = f"{(speed_bps / 1024):.2f} KB/s"
-                            else:
-                                speed_str = f"{(speed_bps / (1024**2)):.2f} MB/s"
-
-                            # Format ETA (always included, never hidden)
-                            if speed_bps > 1024:  # At least 1 KB/s to give meaningful ETA
-                                eta_seconds = int(remaining_bytes / speed_bps)
-                                if eta_seconds < 60:
-                                    eta_str = f"{eta_seconds}s remaining"
-                                elif eta_seconds < 3600:
-                                    eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
-                                else:
-                                    eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
-                            else:
-                                eta_str = "Calculating..."
-
-                            speed_display = f"Speed: {speed_str} | ETA: {eta_str}"
-                            self.speed_update.emit(speed_display)
-                            logger.debug(f"Download Progress: {total_percentage}% | {speed_display} | Completed: {total_progress_bytes:.0f} bytes")
+                        speed_display = f"Speed: {speed_str} | ETA: {eta_str}"
+                        self.speed_update.emit(speed_display)
+                        logger.debug(f"Download Progress: {total_percentage}% | {speed_display} | Completed: {total_progress_bytes:.0f} bytes")
                 else:
+                    # Fallback when total download size is unannounced
                     int_percentage = int(percentage)
                     if int_percentage != self.last_percentage:
                         self.progress_percentage.emit(int_percentage)
                         self.last_percentage = int_percentage
+
+                    if self._last_speed_calc_time == 0.0:
+                        self._last_speed_calc_time = current_time
+                        self._last_downloaded_bytes = percentage
+                        self.speed_update.emit("Downloading game files... | ETA: Calculating...")
+                    elif current_time - self._last_speed_calc_time >= 1.0:
+                        elapsed = current_time - self._last_speed_calc_time
+                        pct_diff = percentage - self._last_downloaded_bytes
+                        self._last_downloaded_bytes = percentage
+                        self._last_speed_calc_time = current_time
+
+                        if pct_diff > 0:
+                            pct_per_sec = pct_diff / elapsed
+                            remaining_pct = max(0.0, 100.0 - percentage)
+                            eta_seconds = int(remaining_pct / pct_per_sec) if pct_per_sec > 0 else 0
+                            if eta_seconds < 60:
+                                eta_str = f"{eta_seconds}s remaining"
+                            elif eta_seconds < 3600:
+                                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
+                            else:
+                                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
+                        else:
+                            eta_str = "Calculating..."
+
+                        self.speed_update.emit(f"Downloading... ({percentage:.1f}%) | ETA: {eta_str}")
             except ValueError:
                 pass
 

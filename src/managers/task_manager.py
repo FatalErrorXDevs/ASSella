@@ -265,16 +265,30 @@ class TaskManager(QObject):
     def _show_depot_selection_dialog(self):
         # Deferred import to prevent circular dependency
         from ui.dialogs.depotselection import DepotSelectionDialog
+        import json
 
         game_data = self.game_data
         if not game_data:
             self.job_finished()
             return
 
+        appid = str(game_data.get("appid", ""))
+        depots = game_data.get("depots") or {}
+
+        # Load any previously saved depot selection so the dialog restores ticks
+        saved_selection = None
+        if appid:
+            raw = self.settings.value(f"depot_selection/{appid}", "", type=str)
+            if raw:
+                try:
+                    saved_data = json.loads(raw)
+                    saved_selection = saved_data.get("selected", [])
+                except Exception:
+                    pass
+
         auto_skip_single_choice = self.settings.value(
             "auto_skip_single_choice", False, type=bool
         )
-        depots = game_data.get("depots") or {}
         if auto_skip_single_choice and len(depots) == 1:
             from ui.dialogs.fetchmanifest import SingleDepotTimerDialog
             from PyQt6.QtWidgets import QDialog
@@ -283,6 +297,19 @@ class TaskManager(QObject):
                 selected_depots = list(depots.keys())
                 if self.game_data:
                     self.game_data["selected_depots_list"] = selected_depots
+                # Persist single-depot selection
+                if appid and selected_depots:
+                    try:
+                        self.settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": selected_depots,
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d: depots.get(d, {}).get("desc", "") for d in selected_depots}
+                            })
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to cache single-depot selection: {e}")
                 self._start_download_with_destination(selected_depots)
             else:
                 self.job_finished()
@@ -294,6 +321,7 @@ class TaskManager(QObject):
             game_data["depots"],
             game_data.get("header_url"),
             self.main_window,
+            selected_depots=saved_selection,
         )
 
         if self.main_window.ui_state.depot_dialog.exec():
@@ -302,6 +330,9 @@ class TaskManager(QObject):
             )
             selected_files = (
                 self.main_window.ui_state.depot_dialog.get_selected_files()
+            )
+            selected_storage = (
+                self.main_window.ui_state.depot_dialog.get_selected_storage()
             )
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
@@ -312,12 +343,29 @@ class TaskManager(QObject):
                 self.job_finished()
                 return
 
-            self._start_download_with_destination(selected_depots)
+            # Persist the confirmed selection to QSettings so future updates recall it
+            if appid and selected_depots:
+                try:
+                    self.settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({
+                            "selected": selected_depots,
+                            "all_available": list(depots.keys()),
+                            "descriptions": {d: depots.get(d, {}).get("desc", "") for d in selected_depots}
+                        })
+                    )
+                    logger.info(f"Saved depot selection for AppID {appid}: {selected_depots}")
+                except Exception as e:
+                    logger.warning(f"Failed to cache depot selection: {e}")
+
+            self._start_download_with_destination(selected_depots, selected_storage)
         else:
+            # User cancelled — do NOT save anything
             self.job_finished()
 
-    def _start_download_with_destination(self, selected_depots):
-        dest_path = self._get_destination_path()
+    def _start_download_with_destination(self, selected_depots, dest_path=None):
+        if not dest_path:
+            dest_path = self._get_destination_path()
         if dest_path:
             self._start_download(selected_depots, dest_path)
         else:

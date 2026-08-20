@@ -1,11 +1,12 @@
 import logging
 import math
+import os
 import re
 import time
 from typing import Any, Dict
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
-from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen, QMovie
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -32,10 +33,33 @@ from core import morrenus_api
 from utils.image_fetcher import ImageFetcher
 from utils.task_runner import TaskRunner
 from utils.helpers import get_base_path
+from utils.paths import get_jumpscare_gif
 from core import steam_helpers
 from ui.dialogs.steamlibrary import SteamLibraryDialog
 
 from ui.material_progress import MaterialSpinner
+
+SEARCH_PLACEHOLDERS = (
+    "Search: Cyberpunk 2077...",
+    "Search: 1091500...",
+    "Search: Elden Ring...",
+    "Search: 1245620...",
+    "Search: Baldur's Gate 3...",
+    "Search: 1086940...",
+    "Search: RimWorld...",
+    "Search: 294100...",
+    "Search: Black Myth: Wukong...",
+    "Search: 2358720...",
+    "Search: Vampire Survivors...",
+    "Search: 1794680...",
+    "Search: Hollow Knight...",
+    "Search: 367520...",
+    "Search: Hades II...",
+    "Search: 1145350...",
+    "Search: Palworld...",
+    "Search: 1623730...",
+    "Search by game name or AppID...",
+)
 
 
 class SingleDepotTimerDialog(QDialog):
@@ -375,6 +399,14 @@ class FetchManifestDialog(QDialog):
         self.task_runner = TaskRunner()
         self._active_image_fetchers = {}
 
+        self._origins_movie = None
+        if self.settings and self.settings.value("remember_origins", False, type=bool):
+            gif_path = get_jumpscare_gif("lain3.gif")
+            if gif_path and os.path.exists(gif_path):
+                self._origins_movie = QMovie(gif_path)
+                self._origins_movie.frameChanged.connect(self.update)
+                self._origins_movie.start()
+
         self._init_ui()
         logger.debug("FetchManifestDialog initialized.")
 
@@ -417,7 +449,7 @@ class FetchManifestDialog(QDialog):
                     padding: 0px 15px;
                 }}
                 QListWidget {{
-                    background-color: {self.background_color};
+                    background: transparent;
                     border: none;
                     padding: 10px 0px;
                 }}
@@ -526,10 +558,16 @@ class FetchManifestDialog(QDialog):
         games_layout = QVBoxLayout(self.games_tab)
         games_layout.setContentsMargins(0, 8, 0, 0)
 
+        self._placeholder_idx = 0
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search for a game...")
+        self.search_input.setPlaceholderText(SEARCH_PLACEHOLDERS[0])
         self.search_input.returnPressed.connect(self.on_search)
         games_layout.addWidget(self.search_input)
+
+        # Dynamic lightweight placeholder rotation timer
+        self._placeholder_timer = QTimer(self)
+        self._placeholder_timer.timeout.connect(self._rotate_placeholder)
+        self._placeholder_timer.start(3500)
 
         self.results_list = QListWidget()
         self.results_list.setIconSize(QSize(230, 108))
@@ -1404,6 +1442,9 @@ class FetchManifestDialog(QDialog):
                 )
                 if depot_dialog.exec():
                     selected_depots = depot_dialog.get_selected_depots()
+                    selected_storage = depot_dialog.get_selected_storage()
+                    if selected_storage:
+                        metadata["library_path"] = selected_storage
             
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots
@@ -1499,15 +1540,56 @@ class FetchManifestDialog(QDialog):
         else:
             QMessageBox.critical(self, "Error", "Could not access the application job queue.")
 
+    def _rotate_placeholder(self) -> None:
+        if not hasattr(self, "search_input") or not self.search_input:
+            return
+        if self.search_input.text() or self.search_input.hasFocus():
+            return
+        self._placeholder_idx = (self._placeholder_idx + 1) % len(SEARCH_PLACEHOLDERS)
+        self.search_input.setPlaceholderText(SEARCH_PLACEHOLDERS[self._placeholder_idx])
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if hasattr(self, "_origins_movie") and self._origins_movie and self._origins_movie.state() == QMovie.MovieState.Running:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            current_pixmap = self._origins_movie.currentPixmap()
+            if not current_pixmap.isNull():
+                painter.setOpacity(0.18)
+                scaled_pixmap = current_pixmap.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                x = (self.width() - scaled_pixmap.width()) // 2
+                y = (self.height() - scaled_pixmap.height()) // 2
+                painter.drawPixmap(x, y, scaled_pixmap)
+
     def accept(self):
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+        if hasattr(self, "_placeholder_timer") and self._placeholder_timer:
+            self._placeholder_timer.stop()
         self._stop_active_image_fetchers()
         super().accept()
 
     def reject(self):
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+        if hasattr(self, "_placeholder_timer") and self._placeholder_timer:
+            self._placeholder_timer.stop()
         self._stop_active_image_fetchers()
         super().reject()
 
     def closeEvent(self, event):
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+        if hasattr(self, "_placeholder_timer") and self._placeholder_timer:
+            self._placeholder_timer.stop()
         self._stop_active_image_fetchers()
 
         if self.task_runner:

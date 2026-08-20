@@ -203,6 +203,86 @@ def get_user_stats() -> Dict:
     return res
 
 
+def get_generate_usage() -> Dict:
+    """Retrieves cloud generation API quotas and usage limits from /generate/usage."""
+    logger.info("Fetching generation usage stats")
+    settings = get_settings()
+    res = _make_json_request("GET", "/generate/usage")
+    if isinstance(res, dict) and "error" not in res and res:
+        settings.setValue("last_cached_generate_usage", res)
+        return res
+    cached = settings.value("last_cached_generate_usage", None)
+    if isinstance(cached, dict) and cached:
+        logger.info("Using cached generation usage stats due to network request error")
+        return cached
+    return res
+
+
+def get_all_hubcap_stats() -> Dict:
+    """Fetches both user stats and generation usage limits."""
+    user_stats = get_user_stats()
+    gen_usage = get_generate_usage()
+    return {
+        "user_stats": user_stats,
+        "gen_usage": gen_usage,
+    }
+
+
+def generate_single_manifest(
+    depot_id: Union[str, int], manifest_id: Union[str, int]
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Generates a single depot manifest directly from Steam via Hubcap API (/generate/manifest).
+    Uses the 1,500/day single manifest quota pool.
+    Returns (raw_manifest_bytes, None) on success, or (None, error_message) on failure.
+    """
+    headers = _get_headers()
+    if not headers:
+        return None, "API Key is not set. Please set it in Settings."
+
+    url = f"{BASE_URL}/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        response.raise_for_status()
+        return response.content, None
+    except Exception as e:
+        err = _handle_request_exception(e, f"Single manifest generate (depot {depot_id}, gid {manifest_id})")
+        return None, err
+
+
+def generate_bundle_manifest(
+    app_id: Union[str, int], branch: str = "public"
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Generates an app manifest bundle (.zip containing all depot manifests) via Hubcap API (/generate/appmanifest).
+    Uses the 100/day bundle quota pool.
+    Returns (zip_bytes, None) on success, or (None, error_message) on failure.
+    """
+    headers = _get_headers()
+    if not headers:
+        return None, "API Key is not set. Please set it in Settings."
+
+    url = f"{BASE_URL}/generate/appmanifest/{app_id}"
+    if branch and branch != "public":
+        url += f"?branch={branch}"
+    else:
+        url += "?branch=public"
+
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        response.raise_for_status()
+        return response.content, None
+    except Exception as e:
+        err = _handle_request_exception(e, f"Bundle manifest generate (AppID {app_id}, branch {branch})")
+        return None, err
+
+
 def check_health() -> Dict:
     """
     Checks if the Hubcab API is healthy using the ISP bypass pipeline,

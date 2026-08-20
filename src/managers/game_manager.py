@@ -214,11 +214,30 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
+        # Collect AppIDs of games currently downloading or in queue
+        active_appids = set()
+        main_win = self.parent()
+        if main_win:
+            if getattr(main_win, "task_manager", None) and getattr(main_win.task_manager, "is_processing", False):
+                gd = getattr(main_win.task_manager, "game_data", None)
+                if gd and gd.get("appid"):
+                    active_appids.add(str(gd.get("appid")))
+            if getattr(main_win, "job_queue", None):
+                for job in getattr(main_win.job_queue, "job_queue", []):
+                    meta_aid = job.get("metadata", {}).get("appid")
+                    if meta_aid:
+                        active_appids.add(str(meta_aid))
+
         # Build filtered list according to smart skip logic
         games_to_check = []
         for g in self.games:
             appid = g.get("appid")
             if appid in ("0", "N/A", "unknown"):
+                continue
+
+            # Skip checking games that are currently downloading or queued
+            if str(appid) in active_appids:
+                logger.debug(f"Skipping update check for actively downloading/queued appid={appid}")
                 continue
 
             # Pinned build bypass
@@ -1052,8 +1071,13 @@ class GameManager(QObject):
                         f"Restored cached update status for {game_name} ({appid}): {cached_status}"
                     )
                 else:
-                    # No usable cache — needs a live check
-                    game_data["update_status"] = UPDATE_STATUS["CHECKING"]
+                    # If cache TTL expired or not fresh, fallback to last known persistent status
+                    # rather than falsely setting 'checking' when no check is running
+                    raw_status = get_update_cache().get_raw_status(appid)
+                    if raw_status in (UPDATE_STATUS["UP_TO_DATE"], UPDATE_STATUS["UPDATE_AVAILABLE"]):
+                        game_data["update_status"] = raw_status
+                    else:
+                        game_data["update_status"] = UPDATE_STATUS["CANNOT_DETERMINE"]
             else:
                 game_data["update_status"] = UPDATE_STATUS["CANNOT_DETERMINE"]
 
@@ -1143,6 +1167,21 @@ class GameManager(QObject):
                 lastupdated_match = re.search(r'"LastUpdated"\s+"([^"]+)"', content)
                 if lastupdated_match:
                     game_data["last_updated"] = lastupdated_match.group(1)
+
+                # Extract betakey (branch) using regex
+                betakey_match = re.search(r'"betakey"\s+"([^"]+)"', content, re.IGNORECASE)
+                if betakey_match:
+                    betakey_val = betakey_match.group(1).strip()
+                    if betakey_val:
+                        game_data["installed_branch"] = betakey_val
+                        try:
+                            from utils.settings import get_settings
+                            _s = get_settings()
+                            _appid = str(game_data.get("appid") or "")
+                            if _appid:
+                                _s.setValue(f"installed_branch/{_appid}", betakey_val)
+                        except Exception:
+                            pass
 
                 # Extract SizeOnDisk using regex (only use if non-zero)
                 sizeon_disk_match = re.search(r'"SizeOnDisk"\s+"([^"]+)"', content)

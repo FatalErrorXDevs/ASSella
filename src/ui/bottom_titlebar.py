@@ -6,6 +6,7 @@ from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -79,9 +80,11 @@ class BottomTitleBar(QFrame):
 
     def _setup_ui(self) -> None:
         """Setup the layout and widgets."""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 0, 5, 0)
-        layout.setSpacing(5)
+        # Use QGridLayout so the title sits at the true geometric centre
+        # regardless of how wide the left / right sections are.
+        grid = QGridLayout(self)
+        grid.setContentsMargins(5, 0, 5, 0)
+        grid.setSpacing(5)
 
         left_widget = self._create_left_section()
         right_widget = self._create_right_section()
@@ -92,9 +95,14 @@ class BottomTitleBar(QFrame):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
 
-        layout.addWidget(left_widget, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.title_label, 1)
-        layout.addWidget(right_widget, 0, Qt.AlignmentFlag.AlignRight)
+        # col 0: left  (stretch=1) | col 1: title (stretch=2) | col 2: right (stretch=1)
+        # Equal stretch on columns 0 and 2 keeps the title in the true centre.
+        grid.addWidget(left_widget, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self.title_label, 0, 1, Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(right_widget, 0, 2, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 1)
 
     def _create_left_section(self) -> QWidget:
         """Create the left section containing animation and version."""

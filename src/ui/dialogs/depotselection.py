@@ -19,7 +19,10 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QAbstractItemView
+    QAbstractItemView,
+    QButtonGroup,
+    QComboBox,
+    QSizePolicy,
 )
 
 from utils.image_fetcher import ImageFetcher
@@ -100,7 +103,16 @@ class NumericTableWidgetItem(QTableWidgetItem):
 
 
 class DepotSelectionDialog(QDialog):
-    def __init__(self, app_id, game_name, depots, header_url, parent=None, selected_depots=None):
+    def __init__(
+        self,
+        app_id,
+        game_name,
+        depots,
+        header_url,
+        parent=None,
+        selected_depots=None,
+        show_storage=True,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Select Depots to Download")
         self.depots = depots
@@ -109,6 +121,8 @@ class DepotSelectionDialog(QDialog):
         self.header_url = header_url
         self.selected_depots = selected_depots
         self.selected_files = []
+        self.show_storage = show_storage
+        self.selected_storage_path = None
         self.resize(650, 520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 10)
@@ -482,10 +496,227 @@ class DepotSelectionDialog(QDialog):
 
         content_widget.addLayout(file_sel_layout)
 
-        buttons = create_standard_buttons(self.accept, self.reject)
-        content_widget.addWidget(buttons)
+        # Bottom row: Storage Selection (Left, Expanding) + OK / Cancel (Right)
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(0, 4, 0, 0)
+        bottom_bar.setSpacing(6)
+
+        if self.show_storage:
+            self._setup_storage_buttons(bottom_bar)
+        else:
+            bottom_bar.addStretch(1)
+
+        ok_btn = QPushButton("OK")
+        ok_btn.setObjectName("ok_button")
+        ok_btn.setFixedHeight(28)
+        ok_btn.setMinimumWidth(80)
+        ok_btn.clicked.connect(self.accept)
+        ok_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #111318;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 4px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+            }}
+        """)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("cancel_button")
+        cancel_btn.setFixedHeight(28)
+        cancel_btn.setMinimumWidth(80)
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet("""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.8);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                padding: 4px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #FFFFFF;
+            }}
+        """)
+
+        bottom_bar.addWidget(ok_btn)
+        bottom_bar.addWidget(cancel_btn)
+
+        content_widget.addLayout(bottom_bar)
 
         layout.addLayout(content_widget)
+
+    def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
+        import shutil
+        from core.steam_helpers import get_steam_libraries, find_steam_install
+
+        storage_paths = []
+        def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
+        if def_dir and os.path.isdir(def_dir):
+            storage_paths.append(def_dir)
+
+        try:
+            raw_libs = get_steam_libraries() or []
+            for p in raw_libs:
+                if p and os.path.isdir(p) and p not in storage_paths:
+                    storage_paths.append(p)
+        except Exception as e:
+            logger.warning(f"Error discovering Steam storage libraries: {e}")
+
+        self._storage_paths = storage_paths
+        self._storage_btn_group = QButtonGroup(self)
+        self._storage_btn_group.setExclusive(True)
+
+        if not storage_paths:
+            layout.addStretch(1)
+            return
+
+        def _format_storage_info(path_str: str):
+            p = Path(path_str)
+            try:
+                free_bytes = shutil.disk_usage(path_str).free
+                if free_bytes >= 1024**4:
+                    free_str = f"{free_bytes / (1024**4):.1f} TB free"
+                elif free_bytes >= 1024**3:
+                    free_str = f"{free_bytes / (1024**3):.1f} GB free"
+                elif free_bytes >= 1024**2:
+                    free_str = f"{free_bytes / (1024**2):.0f} MB free"
+                else:
+                    free_str = f"{free_bytes} B free"
+            except Exception:
+                free_str = ""
+
+            steam_root = find_steam_install()
+            p_str_lower = path_str.lower()
+
+            if steam_root and os.path.realpath(path_str) == os.path.realpath(steam_root):
+                label = "Primary"
+            elif "/.local/share/steam" in p_str_lower or "/.steam/steam" in p_str_lower:
+                label = "Primary"
+            elif "sdcard" in p_str_lower or "sd_card" in p_str_lower or "mmcblk" in p_str_lower or "/sd" in p_str_lower:
+                label = "SD Card"
+            else:
+                label = p.name
+                if label.lower() in ("steamlibrary", "steamapps", "common") and len(p.parts) > 1:
+                    label = p.parts[-2]
+                if len(label) > 14:
+                    label = label[:12] + "…"
+
+            tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
+            return label, tooltip
+
+        def _get_storage_btn_style():
+            from utils.color_utils import get_best_foreground_color
+            text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            return f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QPushButton:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QPushButton:checked {{
+                    background-color: {self.accent_color} !important;
+                    color: {text_hex} !important;
+                    border: 1px solid {self.accent_color} !important;
+                    font-weight: bold;
+                }}
+            """
+
+        self._storage_buttons = {}
+        self._more_storage_combo = None
+
+        max_direct_buttons = 3 if len(storage_paths) <= 3 else 2
+
+        for i in range(min(len(storage_paths), max_direct_buttons)):
+            spath = storage_paths[i]
+            lbl_text, tip_text = _format_storage_info(spath)
+            btn = QPushButton(lbl_text)
+            btn.setCheckable(True)
+            btn.setFixedHeight(28)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setToolTip(tip_text)
+            btn.setStyleSheet(_get_storage_btn_style())
+
+            def _make_handler(target_path=spath, target_btn=btn):
+                def _on_clicked():
+                    if target_btn.isChecked():
+                        self.selected_storage_path = target_path
+                        if self._more_storage_combo:
+                            self._more_storage_combo.setCurrentIndex(0)
+                return _on_clicked
+
+            btn.clicked.connect(_make_handler())
+            self._storage_btn_group.addButton(btn, i)
+            self._storage_buttons[spath] = btn
+            layout.addWidget(btn, 1)
+
+        if len(storage_paths) > max_direct_buttons:
+            self._more_storage_combo = QComboBox()
+            self._more_storage_combo.setFixedHeight(28)
+            self._more_storage_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._more_storage_combo.addItem("More Drives ▾", None)
+            self._more_storage_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8.5pt;
+                }}
+                QComboBox:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1a24;
+                    color: #FFFFFF;
+                    selection-background-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }}
+            """)
+            for i in range(max_direct_buttons, len(storage_paths)):
+                spath = storage_paths[i]
+                lbl_text, tip_text = _format_storage_info(spath)
+                self._more_storage_combo.addItem(lbl_text, spath)
+
+            def _on_combo_changed(index):
+                if index > 0:
+                    chosen_path = self._more_storage_combo.itemData(index)
+                    if chosen_path:
+                        self.selected_storage_path = chosen_path
+                        checked_btn = self._storage_btn_group.checkedButton()
+                        if checked_btn:
+                            self._storage_btn_group.setExclusive(False)
+                            checked_btn.setChecked(False)
+                            self._storage_btn_group.setExclusive(True)
+
+            self._more_storage_combo.currentIndexChanged.connect(_on_combo_changed)
+            layout.addWidget(self._more_storage_combo, 1)
+
+        # Pre-select default download directory or first available library
+        default_target = def_dir if (def_dir and def_dir in storage_paths) else storage_paths[0]
+        self.selected_storage_path = default_target
+        if default_target in self._storage_buttons:
+            self._storage_buttons[default_target].setChecked(True)
+        elif self._more_storage_combo:
+            for idx in range(1, self._more_storage_combo.count()):
+                if self._more_storage_combo.itemData(idx) == default_target:
+                    self._more_storage_combo.setCurrentIndex(idx)
+                    break
 
     def on_depot_cell_clicked(self, row, col):
         id_item = self.table_widget.item(row, 0)
@@ -876,6 +1107,25 @@ class DepotSelectionDialog(QDialog):
 
         self.dump_thread.finished_signal.connect(on_dump_finished)
         self.dump_thread.start()
+
+    def accept(self):
+        # 1. Validate depot selection
+        selected_depots = self.get_selected_depots()
+        if not selected_depots:
+            QMessageBox.warning(self, "No Depots Selected", "Please select at least one depot to proceed.")
+            return
+
+        # 2. Validate storage selection if enabled
+        if self.show_storage and hasattr(self, "_storage_paths") and self._storage_paths:
+            if not self.selected_storage_path:
+                QMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
+                return
+
+        super().accept()
+
+    def get_selected_storage(self) -> str:
+        """Returns the selected storage destination path, or None."""
+        return self.selected_storage_path
 
     def closeEvent(self, a0):
         """Ensure image fetch is cleaned up when dialog closes."""

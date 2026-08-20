@@ -168,7 +168,7 @@ class CreditsDialog(QDialog):
         ver_row.setContentsMargins(0, 0, 0, 0)
         ver_row.setSpacing(8)
 
-        build_date = "15/08/2026"
+        build_date = "20/08/2026"
         ver_lbl = QLabel(f"v{app_version}  ·  {build_date}")
         ver_lbl.setStyleSheet("font-size: 11px; color: #666666;")
 

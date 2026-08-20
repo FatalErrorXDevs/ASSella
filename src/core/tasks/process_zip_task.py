@@ -435,7 +435,7 @@ class ProcessZipTask:
                         else:
                             missing_from_hubcap = [
                                 str(did) for did in api_details.keys()
-                                if str(did) not in filtered_depots and str(did) not in string_blacklist and str(did) != str(game_data.get("appid"))
+                                if str(did).isdigit() and str(did) not in filtered_depots and str(did) not in string_blacklist and str(did) != str(game_data.get("appid"))
                             ]
                             if missing_from_hubcap:
                                 logger.warning(
@@ -487,9 +487,18 @@ class ProcessZipTask:
                                     )
                                     continue
 
-                            api_size = details.get("size") if details else None
+                            api_size = None
+                            if details:
+                                api_size = details.get("size")
+                                if not api_size and details.get("manifests"):
+                                    branch_entry = details["manifests"].get(game_data.get("branch", "public")) or details["manifests"].get("public")
+                                    if isinstance(branch_entry, dict):
+                                        api_size = branch_entry.get("download") or branch_entry.get("size")
+                                if not api_size:
+                                    api_size = details.get("maxsize")
+
                             if api_size:
-                                final_depot_data["size"] = api_size
+                                final_depot_data["size"] = str(api_size)
                                 logger.debug(
                                     f"Using API size for depot {depot_id}: {api_size}"
                                 )
@@ -498,7 +507,7 @@ class ProcessZipTask:
                                     depot_id
                                 )
                                 if lua_size:
-                                    final_depot_data["size"] = lua_size
+                                    final_depot_data["size"] = str(lua_size)
                                     logger.debug(
                                         f"Using LUA fallback size for depot {depot_id}: {lua_size}"
                                     )

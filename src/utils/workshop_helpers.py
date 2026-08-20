@@ -118,3 +118,69 @@ def delete_workshop_item(appid: str, wid: str, mod_path: str) -> bool:
         logger.error(f"Failed to delete workshop item {wid}: {e}")
 
     return success
+
+
+def check_game_has_workshop(appid: str, game_data: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Check if a game supports Steam Workshop in a fast and resource-friendly way:
+    1. Check if local workshop directory or acf file already exists (0ms, 0 network).
+    2. Check cached result in QSettings (0ms, 0 network).
+    3. Check local depot / app metadata (0ms, 0 network).
+    4. Query Steam Store categories (Category 30 = Steam Workshop) and cache the result.
+    """
+    if not appid or str(appid) in ("0", "N/A", "unknown"):
+        return False
+
+    appid_str = str(appid).strip()
+
+    # 1. Quick local check: do installed workshop files or directory exist?
+    try:
+        from core.steam_helpers import get_steam_libraries
+        for lib in get_steam_libraries():
+            ws_dir = os.path.join(lib, "steamapps", "workshop", "content", appid_str)
+            if os.path.isdir(ws_dir) and os.listdir(ws_dir):
+                return True
+            acf_file = os.path.join(lib, "steamapps", "workshop", f"appworkshop_{appid_str}.acf")
+            if os.path.exists(acf_file):
+                return True
+    except Exception:
+        pass
+
+    # 2. Check QSettings cache
+    settings = None
+    try:
+        from utils.settings import get_settings
+        settings = get_settings()
+        cached = settings.value(f"has_workshop/{appid_str}", None)
+        if cached is not None:
+            # Handle boolean or string representation
+            if isinstance(cached, bool):
+                return cached
+            return str(cached).lower() in ("true", "1", "yes")
+    except Exception:
+        settings = None
+
+    # 3. Check game_data / depots metadata
+    if game_data and isinstance(game_data, dict):
+        depots = game_data.get("depots", {})
+        if isinstance(depots, dict) and "workshopdepots" in depots:
+            if settings:
+                settings.setValue(f"has_workshop/{appid_str}", True)
+            return True
+
+    # 4. Check Steam Store categories (Category 30 = Steam Workshop)
+    try:
+        url = f"https://store.steampowered.com/api/appdetails?appids={appid_str}&filters=categories"
+        res = requests.get(url, timeout=3)
+        if res.status_code == 200:
+            data = res.json().get(appid_str, {})
+            if data.get("success"):
+                categories = data.get("data", {}).get("categories", [])
+                has_ws = any(cat.get("id") == 30 for cat in categories)
+                if settings:
+                    settings.setValue(f"has_workshop/{appid_str}", has_ws)
+                return has_ws
+    except Exception as e:
+        logger.debug(f"Could not check workshop support for appid {appid_str}: {e}")
+
+    return False
