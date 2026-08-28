@@ -7,21 +7,27 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the supported baseline; 3.14 exercises the current stable
+        # runtime without making builds depend on a moving "latest" alias.
+        python-version: ["3.11", "3.14"]
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y shellcheck libfuse2
+        run: sudo apt-get update && sudo apt-get install -y shellcheck libfuse2 libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
       - name: Compile Python sources
         run: python -m compileall -q src workshop_downloader
       - name: Import smoke test
-        run: python -c "import sys; sys.path.insert(0, 'src'); import core.morrenus_api, managers.game_manager, ui.main_window"
+        run: python -c "import sys; sys.path.insert(0, 'src'); from PyQt6.QtWidgets import QApplication; app = QApplication([]); import core.morrenus_api, managers.game_manager, ui.main_window"
       - name: Validate shell scripts
         run: shellcheck install.sh uninstall.sh steamless-aio.sh && bash -n install.sh uninstall.sh steamless-aio.sh packaging/build_appimage.sh
       - name: Validate bundled resources
