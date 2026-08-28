@@ -58,7 +58,7 @@ jobs:
           curl -fL --retry 3 -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
       - name: Build development AppImage
-        run: packaging/build_appimage.sh
+        run: bash packaging/build_appimage.sh
       - name: Smoke test development AppImage bundle
         run: |
           test -s ASSella.AppImage.dev

@@ -36,7 +36,7 @@ jobs:
       - name: Build AppImage
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-        run: packaging/build_appimage.sh
+        run: bash packaging/build_appimage.sh
       - name: Smoke test packaged application
         run: |
           set +e
