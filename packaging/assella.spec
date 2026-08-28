@@ -9,6 +9,7 @@ src = ROOT / "src"
 hiddenimports = []
 for package in ("core", "managers", "ui", "utils", "components"):
     hiddenimports.extend(collect_submodules(package))
+hiddenimports.extend(collect_submodules("urwid"))
 hiddenimports.extend(["steam", "vdf", "urwid", "gevent", "gevent_eventemitter"])
 
 datas = [
