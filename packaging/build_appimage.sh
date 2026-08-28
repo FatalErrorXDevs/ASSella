@@ -10,6 +10,7 @@ python3 -m PyInstaller --noconfirm --clean packaging/assella.spec
 
 mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
 cp -a dist/ASSella/. AppDir/usr/bin/
+test -s AppDir/usr/bin/certifi/cacert.pem
 # AppImage's runtime always starts AppRun. Keep this as a relative symlink so
 # both the development and release images launch the PyInstaller executable.
 ln -s usr/bin/ASSella AppDir/AppRun

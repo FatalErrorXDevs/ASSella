@@ -3,6 +3,7 @@ import logging
 import os
 import ssl
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Dict, List, Union, Tuple, Any
 
@@ -13,12 +14,17 @@ from urllib3.util.ssl_ import create_urllib3_context
 
 from utils.helpers import get_base_path
 from utils.settings import get_settings
+from utils.ssl_config import configure_ssl_certificates
+
+configure_ssl_certificates()
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://hubcapmanifest.com/api/v1"
 DEFAULT_SEARCH_LIMIT = 100
 MAX_SEARCH_LIMIT = 100
+EMPTY_RESPONSE_RETRIES = 3
+EMPTY_RESPONSE_BACKOFF = (0.5, 1.0, 2.0)
 
 # Error messages for specific HTTP status codes
 API_ERROR_MESSAGES = {
@@ -100,6 +106,35 @@ def _handle_request_exception(e: Exception, context: str) -> str:
         return "SSL connection failed. Check proxy/firewall settings."
 
     return f"Request Failed: {e}"
+
+
+def _fetch_nonempty_response(url: str, headers: Dict[str, str], context: str) -> bytes:
+    """Fetch binary data, retrying HTTP 200 responses with an empty body."""
+    from utils.isp_bypass import execute_hubcap_request
+
+    last_status = "unknown"
+    for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        last_status = response.status_code
+        response.raise_for_status()
+        payload = response.content
+        if payload:
+            return payload
+        if attempt < EMPTY_RESPONSE_RETRIES:
+            logger.warning(
+                "%s returned HTTP %s with an empty body; retrying (%d/%d)",
+                context,
+                response.status_code,
+                attempt + 1,
+                EMPTY_RESPONSE_RETRIES,
+            )
+            time.sleep(EMPTY_RESPONSE_BACKOFF[min(attempt, len(EMPTY_RESPONSE_BACKOFF) - 1)])
+    raise requests.RequestException(
+        f"{context} returned HTTP {last_status} with an empty body after "
+        f"{EMPTY_RESPONSE_RETRIES + 1} attempts"
+    )
 
 
 def _make_json_request(
@@ -242,12 +277,9 @@ def generate_single_manifest(
 
     url = f"{BASE_URL}/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
     try:
-        from utils.isp_bypass import execute_hubcap_request
-        response = execute_hubcap_request(
-            get_session(), "GET", url, headers=headers, stream=True, timeout=60
-        )
-        response.raise_for_status()
-        return response.content, None
+        return _fetch_nonempty_response(
+            url, headers, f"Single manifest generate (depot {depot_id}, gid {manifest_id})"
+        ), None
     except Exception as e:
         err = _handle_request_exception(e, f"Single manifest generate (depot {depot_id}, gid {manifest_id})")
         return None, err
@@ -272,12 +304,9 @@ def generate_bundle_manifest(
         url += "?branch=public"
 
     try:
-        from utils.isp_bypass import execute_hubcap_request
-        response = execute_hubcap_request(
-            get_session(), "GET", url, headers=headers, stream=True, timeout=60
-        )
-        response.raise_for_status()
-        return response.content, None
+        return _fetch_nonempty_response(
+            url, headers, f"Bundle manifest generate (AppID {app_id}, branch {branch})"
+        ), None
     except Exception as e:
         err = _handle_request_exception(e, f"Bundle manifest generate (AppID {app_id}, branch {branch})")
         return None, err
@@ -356,14 +385,37 @@ def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Op
 
     try:
         from utils.isp_bypass import execute_hubcap_request
-        r = execute_hubcap_request(
-            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+            r = execute_hubcap_request(
+                get_session(), "GET", url, headers=headers, stream=True, timeout=60
+            )
+            r.raise_for_status()
+            received = False
+            with open(save_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        received = True
+                        f.write(chunk)
+            if received and save_path.stat().st_size > 0:
+                return str(save_path), None
+            try:
+                save_path.unlink()
+            except OSError:
+                pass
+            if attempt < EMPTY_RESPONSE_RETRIES:
+                logger.warning(
+                    "Download %s returned HTTP %s with an empty body; retrying (%d/%d)",
+                    app_id,
+                    r.status_code,
+                    attempt + 1,
+                    EMPTY_RESPONSE_RETRIES,
+                )
+                time.sleep(EMPTY_RESPONSE_BACKOFF[min(attempt, len(EMPTY_RESPONSE_BACKOFF) - 1)])
+        raise requests.RequestException(
+            f"Download {app_id} returned HTTP {getattr(r, 'status_code', 'unknown')} "
+            f"with an empty body after "
+            f"{EMPTY_RESPONSE_RETRIES + 1} attempts"
         )
-        r.raise_for_status()
-        with open(save_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return str(save_path), None
 
     except Exception as e:
         # Cleanup partial download

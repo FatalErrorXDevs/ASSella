@@ -1555,25 +1555,20 @@ class GameDetailsDialogV2(QDialog):
         def _fetch_thread():
             error_msg = None
             try:
-                from core.morrenus_api import get_session, _get_headers
+                from core.morrenus_api import _fetch_nonempty_response, _get_headers
                 headers = _get_headers()
                 if not headers:
                     error_msg = "API key not configured in settings."
                 else:
                     url = f"https://hubcapmanifest.com/api/v1/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
-                    from utils.isp_bypass import execute_hubcap_request
-                    r = execute_hubcap_request(get_session(), "GET", url, headers=headers, timeout=30)
-                    if r.status_code == 200:
-                        global_manifests_dir.mkdir(parents=True, exist_ok=True)
-                        with open(src_manifest_path, "wb") as f:
-                            f.write(r.content)
-                        logger.info(f"[DEBUG_DEV] Successfully generated, downloaded, and saved manifest: {src_manifest_path}")
-                    else:
-                        try:
-                            detail = r.json().get("detail", r.text)
-                        except Exception:
-                            detail = r.text
-                        error_msg = f"Hubcap returned status code {r.status_code}: {detail}"
+                    payload = _fetch_nonempty_response(
+                        url, headers,
+                        f"Single manifest generate (depot {depot_id}, gid {manifest_id})",
+                    )
+                    global_manifests_dir.mkdir(parents=True, exist_ok=True)
+                    with open(src_manifest_path, "wb") as f:
+                        f.write(payload)
+                    logger.info(f"[DEBUG_DEV] Successfully generated, downloaded, and saved manifest: {src_manifest_path}")
             except Exception as e:
                 logger.error(f"[DEBUG_DEV] Error generating manifest from Hubcap: {e}", exc_info=True)
                 error_msg = str(e)
@@ -3291,6 +3286,5 @@ class GameDetailsDialogV2(QDialog):
                 self._proton_badge_lbl.show()
             else:
                 self._proton_badge_lbl.hide()
-
 
 

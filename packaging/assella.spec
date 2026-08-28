@@ -1,5 +1,5 @@
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # ``SPECPATH`` is the directory containing this spec (``packaging``), so its
 # parent is the repository root.
@@ -11,12 +11,14 @@ for package in ("core", "managers", "ui", "utils", "components"):
     hiddenimports.extend(collect_submodules(package))
 hiddenimports.extend(collect_submodules("urwid"))
 hiddenimports.extend(["steam", "vdf", "urwid", "gevent", "gevent_eventemitter"])
+hiddenimports.append("certifi")
 
 datas = [
     (str(src / "res"), "res"),
     (str(src / "deps"), "deps"),
     (str(ROOT / "SLSsteam"), "SLSsteam"),
 ]
+datas.extend(collect_data_files("certifi"))
 
 a = Analysis(
     [str(src / "main.py")],
@@ -26,7 +28,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "packaging" / "runtime_ssl.py")],
     excludes=[],
     noarchive=False,
 )

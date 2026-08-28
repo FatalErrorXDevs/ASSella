@@ -27,7 +27,21 @@ curl -fsSL https://raw.githubusercontent.com/FatalErrorXDevs/ASSella/beta/instal
 * **Headcrab (SLSsteam)**: Required to intercept and download depots:
   `curl -fsSL headcrab.pages.dev | bash`
 * **.NET 9 Runtime**: Automatically installed if missing, required for Steamless and DepotDownloader tools.
-* **Hubcap API Key**: Required to query manifest histories.
+* **Hubcap API Key**: Required for Hubcap fallback/history queries; complete local Lua imports can use native SLSsteam/WUDRM instead.
+
+## Manifest sources
+
+Manifest acquisition is provider-based. Local `.lua` files are parsed first;
+when they contain a manifest GID and depot key for every depot, ASSella can
+configure SLSsteam/WUDRM to retrieve the manifest directly from Steam without
+creating an intermediate ZIP. WUDRM's manifest-request lookup retries empty
+successful responses. If native inputs are unavailable or incomplete, the
+existing Hubcap provider remains the fallback and its binary endpoints retry
+HTTP 200 responses that contain no body before failing.
+
+Provider metadata is cached under `manifest_sources/<provider>/` with the
+provider name and branch included, so additional sources can be added without
+changing download-task code.
 
 ---
 

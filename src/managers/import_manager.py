@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.helpers import get_base_path
 from utils.settings import get_settings
+from core.manifest_sources import ManifestCapability, ManifestRequest, create_default_registry
+from core.manifest_sources.wudrm import configure_wudrm_native
 
 try:
     from managers.depot_key_manager import DepotKeyManager
@@ -38,6 +40,7 @@ class ImportManager:
         self._lua_dir = get_base_path() / "cached_luas"
         self._manifests_dir = get_base_path() / "hubcap_manifests"
         self._dkm = DepotKeyManager() if DepotKeyManager else None
+        self.source_registry = create_default_registry(enrich_local=False)
 
     # ─────────────────────────────────────────────────────────────
     # Scanning
@@ -86,6 +89,11 @@ class ImportManager:
                     "has_manifest_zip": has_zip,
                     "game_name": parsed.get("game_name", f"App {appid}"),
                     "depot_count": len(parsed.get("depot_keys", {})),
+                    "native_ready": bool(parsed.get("depot_keys")) and all(
+                        re.fullmatch(r"[0-9a-fA-F]{64}", str(key))
+                        and depot_id in parsed.get("manifest_gids", {})
+                        for depot_id, key in parsed.get("depot_keys", {}).items()
+                    ),
                 })
                 logger.info(
                     f"[ImportManager] Found unregistered lua: {lua_path.name} "
@@ -296,6 +304,37 @@ class ImportManager:
                 "needs_api": False,
                 "api_type": None,
             }
+
+        # A complete Lua (manifest GIDs + 64-character depot keys) can be
+        # consumed natively by SLSsteam/WUDRM. Configure that path before
+        # falling back to Hubcap, so no raw manifest ZIP is required.
+        try:
+            native_result = self.source_registry.resolve(
+                ManifestRequest(appid, branch=sel_b, lua_path=Path(lua_path)),
+                capability=ManifestCapability.NATIVE_STEAM,
+                preferred=("local_lua",),
+            )
+            if native_result.native_ready:
+                from utils.yaml_config_manager import (
+                    is_slssteam_mode_enabled,
+                    is_slssteam_config_management_enabled,
+                )
+                if is_slssteam_mode_enabled() and is_slssteam_config_management_enabled():
+                    if configure_wudrm_native(native_result):
+                        logger.info(
+                            "[ImportManager] Configured native WUDRM source for AppID %s",
+                            appid,
+                        )
+                        return {
+                            "appid": appid,
+                            "game_name": native_result.game_name or game_name,
+                            "status": "ready",
+                            "needs_api": False,
+                            "api_type": None,
+                            "native": True,
+                        }
+        except Exception as exc:
+            logger.debug("[ImportManager] Native Lua path unavailable: %s", exc)
 
         # Step 4: No manifest zip — check staleness to decide API path
         if not manifest_gids:

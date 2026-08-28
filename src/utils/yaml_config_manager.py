@@ -104,7 +104,6 @@ def _create_backup(config_path: Path) -> bool:
         logger.error(f"Failed to create backup for {config_path}: {e}", exc_info=True)
         return False
 
-
 def backup_config_on_startup(config_path: Path) -> bool:
     """Create a backup of the config file on application startup."""
     return _create_backup(config_path)
@@ -793,11 +792,125 @@ def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
                     logger.info(f"Added AppToken for '{app_id}'")
                 return True
         return False
-
     except OSError as e:
         logger.error(f"Failed to add AppToken '{app_id}': {e}", exc_info=True)
         return False
 
+
+def _section_bounds(content: str, section_name: str) -> Optional[Tuple[int, int]]:
+    """Return content offsets for a top-level YAML section's body."""
+    match = re.search(rf"^{re.escape(section_name)}:\s*$", content, re.MULTILINE)
+    if not match:
+        return None
+    body_start = match.end()
+    if body_start < len(content) and content[body_start] == "\n":
+        body_start += 1
+    next_match = re.search(r"^[A-Za-z][A-Za-z0-9_]*:\s*.*$", content[body_start:], re.MULTILINE)
+    body_end = body_start + next_match.start() if next_match else len(content)
+    return body_start, body_end
+
+
+def _yaml_scalar(value: str, quote: bool = False) -> str:
+    value = str(value)
+    if quote:
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def _upsert_mapping_entries(
+    content: str, section_name: str, entries: Dict[str, str], quote_values: bool = False
+) -> Tuple[str, bool]:
+    """Upsert two-space mapping entries while retaining section comments."""
+    if not entries:
+        return content, False
+    bounds = _section_bounds(content, section_name)
+    if bounds is None:
+        block = f"\n{section_name}:\n" + "".join(
+            f"  {key}: {_yaml_scalar(value, quote_values)}\n" for key, value in entries.items()
+        )
+        return content.rstrip("\n") + block, True
+
+    start, end = bounds
+    section = content[start:end]
+    changed = False
+    for key, value in entries.items():
+        pattern = re.compile(rf"^([ \t]*)['\"]?{re.escape(str(key))}['\"]?\s*:\s*[^\n]*(?:\n|$)", re.MULTILINE)
+        replacement = f"  {key}: {_yaml_scalar(value, quote_values)}\n"
+        if pattern.search(section):
+            new_section, count = pattern.subn(replacement, section, count=1)
+            changed = changed or new_section != section
+            section = new_section
+        else:
+            insert_at = len(section)
+            section = section[:insert_at] + replacement + section[insert_at:]
+            changed = True
+    return content[:start] + section + content[end:], changed
+
+
+def _upsert_list_entries(content: str, section_name: str, values: List[str]) -> Tuple[str, bool]:
+    if not values:
+        return content, False
+    bounds = _section_bounds(content, section_name)
+    if bounds is None:
+        block = f"\n{section_name}:\n" + "".join(f"  - {value}\n" for value in values)
+        return content.rstrip("\n") + block, True
+    start, end = bounds
+    section = content[start:end]
+    existing = set(re.findall(r"^\s*-\s*([^\s#]+)", section, re.MULTILINE))
+    missing = [str(value) for value in values if str(value) not in existing]
+    if not missing:
+        return content, False
+    return content[:start] + section + "".join(f"  - {value}\n" for value in missing) + content[end:], True
+
+
+def configure_native_manifest_source(
+    config_path: Path,
+    appid: str,
+    game_name: str = "",
+    manifest_ids: Optional[Dict[str, str]] = None,
+    decryption_keys: Optional[Dict[str, str]] = None,
+    app_token: str = "",
+) -> bool:
+    """Atomically configure ManifestIds, keys, token, and depot injection for WUDRM."""
+    if not appid or not str(appid).isdigit():
+        return False
+    content = _get_config_content_if_enabled(config_path)
+    if content is _CONFIG_DISABLED or content is None:
+        return False
+
+    changed = False
+    content, did_change = _upsert_mapping_entries(
+        content, "ManifestIds", manifest_ids or {}, quote_values=False
+    )
+    changed = changed or did_change
+    content, did_change = _upsert_mapping_entries(
+        content, "DecryptionKeys", decryption_keys or {}, quote_values=True
+    )
+    changed = changed or did_change
+    content, did_change = _upsert_list_entries(
+        content, "AdditionalDepots", list((manifest_ids or {}).keys())
+    )
+    changed = changed or did_change
+
+    if app_token:
+        content, did_change = _upsert_mapping_entries(
+            content, "AppTokens", {str(appid): app_token}, quote_values=False
+        )
+        changed = changed or did_change
+
+    if changed and _atomic_write(config_path, content):
+        logger.info(
+            "Configured native manifest source for AppID %s (%d manifest IDs, %d keys)%s",
+            appid,
+            len(manifest_ids or {}),
+            len(decryption_keys or {}),
+            f" ({game_name})" if game_name else "",
+        )
+        return True
+    # An already matching configuration is still successfully configured;
+    # callers must not fall back to a network provider merely because there
+    # was nothing to rewrite.
+    return not changed
 
 def get_app_tokens(config_path: Path) -> Dict[str, str]:
     """Get all AppTokens from SLSsteam config.yaml."""
@@ -1317,5 +1430,3 @@ def clean_denuvo_games_section(config_path: Path) -> bool:
             logger.info(f"Successfully cleaned DenuvoGames block in {config_path}")
             return True
     return False
-
-

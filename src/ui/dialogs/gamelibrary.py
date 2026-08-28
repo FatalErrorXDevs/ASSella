@@ -1489,6 +1489,7 @@ class GameLibraryDialog(QDialog):
                         "game_name": game_name,
                         "status": import_result["status"],
                         "zip_path": import_result.get("zip_path"),
+                        "native": import_result.get("native", False),
                     })
 
                 QMetaObject.invokeMethod(
@@ -1520,7 +1521,8 @@ class GameLibraryDialog(QDialog):
             appid = r.get("appid", "?")
             name = r.get("game_name", f"App {appid}")
             if r["status"] == "ready":
-                summary_parts.append(f"✅ {name} (AppID {appid}) — Ready")
+                mode = "native SLSsteam" if r.get("native") else "Ready"
+                summary_parts.append(f"✅ {name} (AppID {appid}) — {mode}")
             elif r["status"] == "error":
                 summary_parts.append(f"❌ {name} (AppID {appid}) — {r.get('error', 'Failed')}")
             elif r["status"] == "api_error":
@@ -3222,4 +3224,3 @@ class GameLibraryDialog(QDialog):
         game_data = self.game_manager.get_game(appid)
         if game_data:
             self._show_game_details_dialog(game_data)
-
