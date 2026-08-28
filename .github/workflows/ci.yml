@@ -35,3 +35,42 @@ jobs:
         run: shellcheck --severity=error install.sh uninstall.sh packaging/build_appimage.sh && bash -n install.sh uninstall.sh steamless-aio.sh packaging/build_appimage.sh
       - name: Validate bundled resources
         run: test -f src/res/version && test -f src/res/logo/icon.png && test -f src/deps/DepotDownloader.dll && test -f src/deps/steamless.py
+
+  appimage:
+    name: Build AppImage
+    needs: checks
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-22.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+      ASSELLA_APPIMAGE_NAME: ASSella.AppImage.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 fuse squashfs-tools desktop-file-utils libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
+      - name: Download appimagetool
+        run: |
+          curl -fL --retry 3 -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+      - name: Build development AppImage
+        run: packaging/build_appimage.sh
+      - name: Smoke test development AppImage bundle
+        run: |
+          test -s ASSella.AppImage.dev
+          set +e
+          timeout 20 ./AppDir/usr/bin/ASSella --check-updates
+          status=$?
+          set -e
+          [[ "$status" -eq 0 || "$status" -eq 124 ]]
+      - name: Upload development AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASSella-AppImage-dev-${{ github.sha }}
+          path: ASSella.AppImage.dev
+          if-no-files-found: error
+          retention-days: 14

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_NAME="${ASSELLA_APPIMAGE_NAME:-ASSella.AppImage}"
 cd "$ROOT_DIR"
 
 rm -rf build dist AppDir
@@ -22,4 +23,4 @@ else
   echo "appimagetool not found" >&2
   exit 1
 fi
-ARCH=x86_64 "$TOOL" --no-appstream AppDir ASSella.AppImage
+ARCH=x86_64 "$TOOL" --no-appstream AppDir "$OUTPUT_NAME"
