@@ -10,7 +10,11 @@ python3 -m PyInstaller --noconfirm --clean packaging/assella.spec
 
 mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
 cp -a dist/ASSella/. AppDir/usr/bin/
-test -s AppDir/usr/bin/certifi/cacert.pem
+ca_bundle="$(find AppDir/usr/bin -type f -path '*/certifi/cacert.pem' -print -quit)"
+if [[ -z "$ca_bundle" || ! -s "$ca_bundle" ]]; then
+  echo "Bundled certifi CA bundle was not found in the PyInstaller output" >&2
+  exit 1
+fi
 # AppImage's runtime always starts AppRun. Keep this as a relative symlink so
 # both the development and release images launch the PyInstaller executable.
 ln -s usr/bin/ASSella AppDir/AppRun
