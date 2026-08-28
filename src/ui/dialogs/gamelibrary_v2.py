@@ -1869,7 +1869,7 @@ class GameDetailsDialogV2(QDialog):
         if self.settings:
             self.settings.setValue(f"dlc_only_mode/{self.appid}", state)
             try:
-                from utils.paths import get_user_config_path
+                from utils.yaml_config_manager import get_user_config_path
                 from utils.dlc_helpers import sync_dlc_only_sls_config
                 cp = get_user_config_path()
                 if cp.exists():
@@ -1877,6 +1877,7 @@ class GameDetailsDialogV2(QDialog):
             except Exception as e:
                 logger.debug(f"DLC sync error: {e}")
         self._build_uninstall_panel()
+        self._refresh_drm_emulation_state()
 
     def _update_eos_btn_state(self):
         # Phase 1: File Detection & Hash-based State Resolution
@@ -2135,11 +2136,11 @@ class GameDetailsDialogV2(QDialog):
         grid.addWidget(self._section_title("DRM & Emulation"))
 
         # Row 1: Steamless (Python) | Steamless (Legacy)
-        b_aio = QPushButton("Steamless (Python)")
-        b_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
-        b_aio.setFixedHeight(36)
-        b_aio.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_aio.setStyleSheet(f"""
+        self.b_steamless_aio = QPushButton("Steamless (Python)")
+        self.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        self.b_steamless_aio.setFixedHeight(36)
+        self.b_steamless_aio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_steamless_aio.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.12);
@@ -2155,14 +2156,14 @@ class GameDetailsDialogV2(QDialog):
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
-        b_aio.clicked.connect(
+        self.b_steamless_aio.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
 
-        b_steamless = QPushButton("Steamless (Legacy)")
-        b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
-        b_steamless.setFixedHeight(36)
-        b_steamless.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_steamless.setStyleSheet(f"""
+        self.b_steamless = QPushButton("Steamless (Legacy)")
+        self.b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+        self.b_steamless.setFixedHeight(36)
+        self.b_steamless.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_steamless.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.12);
@@ -2178,15 +2179,15 @@ class GameDetailsDialogV2(QDialog):
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
-        b_steamless.clicked.connect(
+        self.b_steamless.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
 
         sl_row_widget = QWidget()
         sl_row = QHBoxLayout(sl_row_widget)
         sl_row.setContentsMargins(0, 0, 0, 0)
         sl_row.setSpacing(8)
-        sl_row.addWidget(b_aio, 1)
-        sl_row.addWidget(b_steamless, 1)
+        sl_row.addWidget(self.b_steamless_aio, 1)
+        sl_row.addWidget(self.b_steamless, 1)
         grid.addWidget(sl_row_widget)
 
         # Row 2: Apply Goldberg | Remove Goldberg
@@ -2267,6 +2268,8 @@ class GameDetailsDialogV2(QDialog):
         gb_row.addWidget(self.gb_apply_btn, 1)
         gb_row.addWidget(self.gb_remove_btn, 1)
         grid.addWidget(gb_row_widget)
+
+        self._refresh_drm_emulation_state()
 
         grid.addWidget(self._thin_line())
 
@@ -3070,13 +3073,50 @@ class GameDetailsDialogV2(QDialog):
 
     # ──────────────────────────────────────────
     def _on_goldberg_check_complete(self, is_applied):
-        if hasattr(self, "gb_apply_btn") and hasattr(self, "gb_remove_btn"):
-            if is_applied:
+        self._refresh_drm_emulation_state(is_applied)
+
+    def _refresh_drm_emulation_state(self, is_applied=None):
+        from utils.dlc_helpers import is_dlc_only_mode
+        is_dlc = is_dlc_only_mode(self.appid)
+
+        if is_applied is not None:
+            self._last_goldberg_applied = is_applied
+        applied = getattr(self, "_last_goldberg_applied", False)
+
+        if is_dlc:
+            if hasattr(self, "b_steamless_aio") and self.b_steamless_aio:
+                self.b_steamless_aio.setEnabled(False)
+                self.b_steamless_aio.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "b_steamless") and self.b_steamless:
+                self.b_steamless.setEnabled(False)
+                self.b_steamless.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "gb_apply_btn") and self.gb_apply_btn:
                 self.gb_apply_btn.setEnabled(False)
+                self.gb_apply_btn.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "gb_remove_btn") and self.gb_remove_btn:
+                self.gb_remove_btn.setEnabled(False)
+                self.gb_remove_btn.setToolTip("Not available in DLC-Only mode")
+            return
+
+        # Regular game mode - enable / configure buttons
+        if hasattr(self, "b_steamless_aio") and self.b_steamless_aio:
+            self.b_steamless_aio.setEnabled(True)
+            self.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        if hasattr(self, "b_steamless") and self.b_steamless:
+            self.b_steamless.setEnabled(True)
+            self.b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+
+        if hasattr(self, "gb_apply_btn") and hasattr(self, "gb_remove_btn"):
+            if applied:
+                self.gb_apply_btn.setEnabled(False)
+                self.gb_apply_btn.setToolTip("Goldberg is currently applied")
                 self.gb_remove_btn.setEnabled(True)
+                self.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
             else:
                 self.gb_apply_btn.setEnabled(True)
+                self.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
                 self.gb_remove_btn.setEnabled(False)
+                self.gb_remove_btn.setToolTip("Goldberg is not applied")
 
     def _update_depot_label(self):
         btn_text = "Depots: Default"
@@ -3273,20 +3313,20 @@ class GameDetailsDialogV2(QDialog):
             from core.ratings import get_protondb_tier
             tier = get_protondb_tier(self.appid)
             _tier_map = {
-                "platinum": ("PLATINUM", "#0d47a1", "#b3e5fc"),
-                "gold":     ("GOLD",     "#5d4037", "#ffd54f"),
-                "silver":   ("SILVER",   "#263238", "#cfd8dc"),
-                "bronze":   ("BRONZE",   "#4e342e", "#ffab91"),
-                "borked":   ("BORKED",   "#ffffff", "#ef5350"),
-                "native":   ("NATIVE",   "#1b5e20", "#a5d6a7"),
+                "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+                "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
+                "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
+                "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
+                "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
+                "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
             }
             if tier and tier in _tier_map:
-                p_text, p_color, p_bg = _tier_map[tier]
+                p_text, p_color, p_bg, p_border = _tier_map[tier]
                 self._proton_badge_lbl.setText(p_text)
                 self._proton_badge_lbl.setStyleSheet(
-                    f"color: {p_color}; background-color: {p_bg}; "
-                    f"border-radius: 3px; padding: 2px 8px; "
-                    f"font-size: 8.5pt; font-weight: bold; border: none;"
+                    f"color: {p_color}; background-color: {p_bg}; border: 1px solid {p_border}; "
+                    f"border-radius: 4px; padding: 1px 6px; "
+                    f"font-size: 8pt; font-weight: bold; letter-spacing: 0.5px;"
                 )
                 self._proton_badge_lbl.show()
             else:

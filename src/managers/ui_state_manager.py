@@ -333,7 +333,7 @@ class UIStateManager:
         self.main_window.font = font
 
         # Update application appearance
-        from main import update_appearance
+        from ui.theme import update_appearance
 
         # UI mode (e.g., 'sonic') may override colors and font file
         ui_mode = self.settings.value("ui_mode", "default")
@@ -404,7 +404,8 @@ class UIStateManager:
         self.main_window.update_progress_bar_style()
 
         # Log output
-        self.main_window.log_output.setStyleSheet(accent_style)
+        if hasattr(self.main_window, "log_output") and self.main_window.log_output:
+            self.main_window.log_output.setStyleSheet(accent_style)
 
         # Simplified terminal
         if hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:

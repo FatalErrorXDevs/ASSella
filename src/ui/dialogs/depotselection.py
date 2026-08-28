@@ -75,6 +75,133 @@ def _depot_is_macos(depot_data: dict) -> bool:
     return False
 
 
+def is_bonus_or_media_depot(depot_data: dict) -> bool:
+    """Check if depot is soundtrack, wallpaper, artbook, manual, etc."""
+    text = (
+        (depot_data.get("desc") or "") + " " +
+        (depot_data.get("name") or "")
+    ).lower()
+    
+    bonus_keywords = [
+        "soundtrack", " ost", "ost ", "(ost)", "[ost]", "original soundtrack", "bonus track",
+        "wallpaper", "artbook", "art book", "manual", "guide", "strategy guide",
+        "comic", "novel", "goodies", "avatar", "poster", "press kit", "bonus content",
+        "extra content", "credits", "dedicated server", "server"
+    ]
+    for kw in bonus_keywords:
+        if kw in text:
+            return True
+    return False
+
+
+def get_smart_default_depots(depots: dict, target_platform: str = "linux", language: str = "english") -> list:
+    """
+    Intelligently pre-select depots for the user:
+    1. If target_platform == "linux" and native Linux depots exist -> Target Linux + shared.
+       If target_platform == "linux" and NO native Linux depots exist -> Target Windows + shared (for Proton).
+       If target_platform == "windows" -> Target Windows + shared.
+    2. Exclude macOS-only depots.
+    3. Exclude soundtracks, wallpapers, artbooks, manuals, bonus media by default.
+    4. Exclude 32-bit depots if 64-bit depots exist for the target architecture.
+    5. Prioritize selected language (English) if language-specific depots exist.
+    6. Safety: fallback to non-macOS depots if filtered list is empty.
+    """
+    if not depots:
+        return []
+
+    # Check if there are any native Linux depots
+    has_linux = False
+    for d_id, d_data in depots.items():
+        if not isinstance(d_data, dict) or _depot_is_macos(d_data):
+            continue
+        oslist = (d_data.get("oslist") or "").lower()
+        desc = (d_data.get("desc") or "").lower()
+        if "linux" in oslist or "[linux]" in desc:
+            has_linux = True
+            break
+
+    if target_platform.lower() == "linux":
+        active_platform = "linux" if has_linux else "windows"
+    else:
+        active_platform = "windows"
+
+    # Check if 64-bit depots exist for active platform
+    has_64 = False
+    for d_id, d_data in depots.items():
+        if not isinstance(d_data, dict):
+            continue
+        if not _depot_matches_platform(d_data, active_platform):
+            continue
+        osarch = str(d_data.get("osarch") or "").lower()
+        desc = (d_data.get("desc") or "").lower()
+        if osarch == "64" or "64-bit" in desc or "x64" in desc or "64 bit" in desc or "[64]" in desc:
+            has_64 = True
+            break
+
+    # Check if language-specific depots exist
+    has_lang_depots = False
+    for d_id, d_data in depots.items():
+        if not isinstance(d_data, dict):
+            continue
+        d_lang = (d_data.get("language") or "").lower()
+        desc = (d_data.get("desc") or "").lower()
+        if d_lang or any(f"[{l}]" in desc for l in ["english", "french", "german", "spanish", "italian", "japanese", "chinese", "russian", "korean"]):
+            has_lang_depots = True
+            break
+
+    selected = []
+    for d_id, d_data in depots.items():
+        if not isinstance(d_data, dict):
+            continue
+
+        # 1. Skip macOS
+        if _depot_is_macos(d_data):
+            continue
+
+        # 2. Skip bonus/media (soundtracks, wallpapers, artbooks)
+        if is_bonus_or_media_depot(d_data):
+            continue
+
+        # 3. Match platform (Linux if native exists, else Windows + shared)
+        if not _depot_matches_platform(d_data, active_platform):
+            continue
+
+        # 4. Filter 32-bit if 64-bit exists
+        if has_64:
+            osarch = str(d_data.get("osarch") or "").lower()
+            desc = (d_data.get("desc") or "").lower()
+            is_32 = osarch == "32" or "32-bit" in desc or "x86" in desc or "32 bit" in desc or "[32]" in desc or "[x86]" in desc
+            if is_32:
+                continue
+
+        # 5. Language filtering if applicable
+        if has_lang_depots:
+            d_lang = (d_data.get("language") or "").lower()
+            desc = (d_data.get("desc") or "").lower()
+            if d_lang and d_lang != language.lower() and d_lang != "all":
+                continue
+            other_langs = ["french", "german", "spanish", "italian", "japanese", "chinese", "russian", "korean", "portuguese", "polish"]
+            if language.lower() in other_langs:
+                other_langs.remove(language.lower())
+            if any(f"[{l}]" in desc for l in other_langs) and f"[{language.lower()}]" not in desc:
+                continue
+
+        selected.append(str(d_id))
+
+    # Safety fallback: if everything got filtered out, fallback to basic non-macOS matching
+    if not selected:
+        for d_id, d_data in depots.items():
+            if isinstance(d_data, dict) and not _depot_is_macos(d_data):
+                if _depot_matches_platform(d_data, active_platform):
+                    selected.append(str(d_id))
+
+    # If still empty, return all depot keys
+    if not selected:
+        selected = [str(k) for k in depots.keys()]
+
+    return selected
+
+
 def format_size(size_bytes):
     if not size_bytes:
         return "0.00 B"
@@ -325,6 +452,12 @@ class DepotSelectionDialog(QDialog):
         # Set maximum possible row count, we will resize it dynamically
         self.table_widget.setRowCount(len(sorted_depots))
 
+        # Determine initial selection: if selected_depots is provided, use it; otherwise compute smart defaults
+        if self.selected_depots is not None:
+            pre_selected_set = set(str(d) for d in self.selected_depots)
+        else:
+            pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
+
         for depot_id, depot_data in sorted_depots:
             # Filter out macOS depots if setting is enabled
             if self._hide_macos and _depot_is_macos(depot_data):
@@ -404,11 +537,8 @@ class DepotSelectionDialog(QDialog):
             id_item.setData(Qt.ItemDataRole.UserRole, depot_id)
             id_item.setData(Qt.ItemDataRole.UserRole + 1, depot_id)
  
-            if self.selected_depots is not None:
-                is_checked = depot_id in self.selected_depots
-                id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
-            else:
-                id_item.setCheckState(Qt.CheckState.Unchecked)
+            is_checked = str(depot_id) in pre_selected_set
+            id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
  
             # Make item non-editable and disable internal checkbox handling (handled manually on cell click)
             id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
@@ -440,23 +570,12 @@ class DepotSelectionDialog(QDialog):
         button_layout.setSpacing(4)
 
         linux_button = QPushButton("Linux")
-        linux_button.setToolTip("Select all Linux-compatible depots (including shared)")
+        linux_button.setToolTip("Smart select Linux installation (Native Linux if available, or Windows + shared for Proton; excludes media/32-bit)")
         linux_button.clicked.connect(lambda: self._select_platform("linux"))
-        
-        # Disable the Linux button if there are no Linux-specific depots for this game
-        has_linux = any(
-            "linux" in (d.get("oslist") or "").lower() or "[linux]" in (d.get("desc") or "").lower()
-            for d in self.depots.values()
-            if isinstance(d, dict)
-        )
-        if not has_linux:
-            linux_button.setDisabled(True)
-            linux_button.setToolTip("No Linux-specific depots found for this game")
-
         button_layout.addWidget(linux_button)
 
         windows_button = QPushButton("Windows")
-        windows_button.setToolTip("Select all Windows-compatible depots (including shared)")
+        windows_button.setToolTip("Smart select Windows installation (Windows + shared; excludes media/32-bit)")
         windows_button.clicked.connect(lambda: self._select_platform("windows"))
         button_layout.addWidget(windows_button)
 
@@ -765,26 +884,16 @@ class DepotSelectionDialog(QDialog):
         self.anchor_row = -1
 
     def _select_platform(self, platform: str):
-        """Select depots matching a platform (linux/windows), including shared depots."""
-        # Check if there is any depot explicitly designated for this platform
-        has_explicit_platform_depot = False
-        for d_id, d_data in self.depots.items():
-            oslist = (d_data.get("oslist") or "").lower()
-            desc = (d_data.get("desc") or "").lower()
-            if self._hide_macos and _depot_is_macos(d_data):
-                continue
-            if platform in oslist or f"[{platform}]" in desc:
-                has_explicit_platform_depot = True
-                break
+        """Smart select depots matching a platform (linux/windows), including shared depots and filtering out bonus media/32-bit."""
+        smart_depots = set(get_smart_default_depots(self.depots, target_platform=platform))
 
         self.table_widget.blockSignals(True)
         for i in range(self.table_widget.rowCount()):
             id_item = self.table_widget.item(i, 0)
             if id_item is None:
                 continue
-            depot_id = id_item.data(Qt.ItemDataRole.UserRole)
-            depot_data = self.depots.get(depot_id, {})
-            if has_explicit_platform_depot and _depot_matches_platform(depot_data, platform):
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            if depot_id in smart_depots:
                 id_item.setCheckState(Qt.CheckState.Checked)
             else:
                 id_item.setCheckState(Qt.CheckState.Unchecked)
@@ -794,7 +903,7 @@ class DepotSelectionDialog(QDialog):
     def _fetch_header_image(self, app_id):
         self._current_app_id = app_id
         url = ImageFetcher.get_header_image_url(app_id)
-        self.fetcher = ImageFetcher(url)
+        self.fetcher = ImageFetcher(url, ephemeral=True)
         self.fetcher.finished.connect(self.on_image_fetched)
         self.fetcher.finished.connect(self._cleanup_fetcher)
         self.fetcher.start()
@@ -1120,6 +1229,10 @@ class DepotSelectionDialog(QDialog):
             if not self.selected_storage_path:
                 QMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
                 return
+
+        # 3. Promote header image to permanent cache since user is downloading
+        if hasattr(self, "app_id") and self.app_id:
+            ImageFetcher.promote_to_permanent_cache(self.app_id)
 
         super().accept()
 

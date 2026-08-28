@@ -8,7 +8,7 @@ import webbrowser
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSlot, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -389,8 +389,13 @@ class MorrenusStatsWidget(QWidget):
 class SettingsDialog(QDialog):
     """Dialog for configuring application settings."""
 
+    assfixer_done_signal = pyqtSignal(tuple)
+    assfixer_repair_done_signal = pyqtSignal(tuple)
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.assfixer_done_signal.connect(self._handle_assfixer_check_done)
+        self.assfixer_repair_done_signal.connect(self._handle_assfixer_repair_done)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(525)
         self.setMinimumHeight(650)
@@ -404,7 +409,6 @@ class SettingsDialog(QDialog):
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
-        self.use_lancache_checkbox = None
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
         self.isp_bypass_hubcap_checkbox = None
@@ -795,25 +799,110 @@ class SettingsDialog(QDialog):
         )
         assella_lay.addWidget(self.smart_depot_selection_checkbox)
 
-        # 2. Enable LanCache Detection
-        self.use_lancache_checkbox = create_checkbox_setting(
-            "Enable LanCache Detection",
-            "use_lancache",
-            False,
-            self,
-            "Direct DepotDownloader downloads through a local LanCache server if detected on the local network (speeds up LAN downloads).",
-        )
-        assella_lay.addWidget(self.use_lancache_checkbox)
+        # 2. ISP Bypass & Hubcap Gateway Selector
+        isp_group = QVBoxLayout()
+        isp_group.setSpacing(8)
+        isp_group.setContentsMargins(0, 2, 0, 2)
 
-        # 3. ISP Bypass (Hubcap API)
-        self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
-            "ISP Bypass (Hubcap API)",
-            "isp_bypass_hubcap",
-            False,
-            self,
-            "If Hubcap API is blocked by your ISP, uses Cloudflare/Google DNS (1.1.1.1/8.8.8.8) to bypass.",
-        )
-        assella_lay.addWidget(self.isp_bypass_hubcap_checkbox)
+        isp_row = QHBoxLayout()
+        isp_row.setContentsMargins(0, 0, 0, 0)
+        isp_lbl = QLabel("Hubcap Gateway:")
+        isp_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        isp_lbl.setToolTip("Select how ASSella routes requests to Hubcap API (Auto Smart Fallback, Direct, DoH, Tor, or Wire).")
+        isp_row.addWidget(isp_lbl)
+        isp_row.addStretch()
+
+        self.isp_gateway_combo = QComboBox()
+        self.isp_gateway_combo.addItem("Auto", "auto")
+        self.isp_gateway_combo.addItem("Direct", "direct")
+        self.isp_gateway_combo.addItem("DoH", "doh")
+        self.isp_gateway_combo.addItem("Tor", "tor")
+        self.isp_gateway_combo.addItem("Wire", "wirecutter")
+        self.isp_gateway_combo.setFixedWidth(115)
+
+        # Load saved mode
+        saved_mode = self.settings.value("isp_bypass_mode", "auto", type=str)
+        if not saved_mode:
+            saved_mode = "auto"
+
+        idx = self.isp_gateway_combo.findData(saved_mode)
+        if idx >= 0:
+            self.isp_gateway_combo.setCurrentIndex(idx)
+        else:
+            self.isp_gateway_combo.setCurrentIndex(0)
+
+        self.isp_gateway_combo.currentIndexChanged.connect(self._on_isp_gateway_changed)
+        isp_row.addWidget(self.isp_gateway_combo)
+        isp_group.addLayout(isp_row)
+
+        # 4-Button Gateway Health Tester Row
+        test_bar_box = QVBoxLayout()
+        test_bar_box.setSpacing(4)
+        test_bar_box.setContentsMargins(0, 2, 0, 0)
+
+        test_bar_lbl = QLabel("Hubcap Gateway Health Check:")
+        test_bar_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
+        test_bar_box.addWidget(test_bar_lbl)
+
+        self.gateway_btn_row = QHBoxLayout()
+        self.gateway_btn_row.setSpacing(8)
+
+        base_btn_css = """
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #e0e0e0;
+                font-size: 8.5pt;
+                font-weight: 500;
+                min-height: 26px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+            }
+            QPushButton:disabled {
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.25);
+            }
+        """
+
+        self.test_direct_btn = QPushButton("Direct")
+        self.test_direct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_direct_btn.setStyleSheet(base_btn_css)
+        self.test_direct_btn.clicked.connect(lambda: self._test_single_gateway("direct", self.test_direct_btn, "Direct"))
+        self.gateway_btn_row.addWidget(self.test_direct_btn)
+
+        self.test_doh_btn = QPushButton("DoH")
+        self.test_doh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_doh_btn.setStyleSheet(base_btn_css)
+        self.test_doh_btn.clicked.connect(lambda: self._test_single_gateway("doh", self.test_doh_btn, "DoH"))
+        self.gateway_btn_row.addWidget(self.test_doh_btn)
+
+        self.test_tor_btn = QPushButton("Tor")
+        self.test_tor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_tor_btn.setStyleSheet(base_btn_css)
+        self.test_tor_btn.clicked.connect(lambda: self._test_single_gateway("tor", self.test_tor_btn, "Tor"))
+        self.gateway_btn_row.addWidget(self.test_tor_btn)
+
+        self.test_wirecutter_btn = QPushButton("Wirecutter")
+        self.test_wirecutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_wirecutter_btn.setStyleSheet(base_btn_css)
+        self.test_wirecutter_btn.clicked.connect(lambda: self._test_single_gateway("wirecutter", self.test_wirecutter_btn, "Wirecutter"))
+        self.gateway_btn_row.addWidget(self.test_wirecutter_btn)
+
+        test_bar_box.addLayout(self.gateway_btn_row)
+        isp_group.addLayout(test_bar_box)
+        assella_lay.addLayout(isp_group)
+
+        # Initial button state check
+        if saved_mode == "disabled":
+            self.test_direct_btn.setEnabled(False)
+            self.test_doh_btn.setEnabled(False)
+            self.test_tor_btn.setEnabled(False)
+            self.test_wirecutter_btn.setEnabled(False)
 
         # 4. Update Check Interval Slider
         slider_layout = QHBoxLayout()
@@ -875,6 +964,29 @@ class SettingsDialog(QDialog):
         assella_lay.addLayout(slider_layout)
 
         layout.addWidget(assella_card)
+
+        # ── Training Wheels Protocol ──────────────────────────────────────
+        twp_btn = QPushButton("Training Wheels Protocol (Beta)")
+        twp_btn.setToolTip("Launch the first-time setup guide to configure recommended settings for ASSella.")
+        twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        twp_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 10px 16px;
+                color: #FFFFFF;
+                font-size: 9.5pt;
+                font-weight: 500;
+                text-align: center;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.1);
+                border-color: {self.accent_color};
+            }}
+        """)
+        twp_btn.clicked.connect(self._run_training_wheels)
+        layout.addWidget(twp_btn)
 
         layout.addStretch()
 
@@ -1328,23 +1440,6 @@ class SettingsDialog(QDialog):
 
         self.tab_widget.addTab(tab, "Integrations")
 
-    def _toggle_proxy_url_visibility(self) -> None:
-        """Toggles the visibility of the Wirecutter proxy URL, prompting with confirmation on show."""
-        if self.wirecutter_url_input.echoMode() == QLineEdit.EchoMode.Password:
-            reply = QMessageBox.question(
-                self,
-                "Show Proxy URL",
-                "Warning: Exposing your proxy URL could lead to third-party abuse and exhaust your daily request limits.\n\nAre you sure you want to show it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Normal)
-                self.show_url_btn.setText("Hide")
-        else:
-            self.wirecutter_url_input.setEchoMode(QLineEdit.EchoMode.Password)
-            self.show_url_btn.setText("Show")
-
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
         if (
@@ -1566,6 +1661,25 @@ class SettingsDialog(QDialog):
 
     # ── ASSella Manager helpers ───────────────────────────────────────────
 
+    def _run_training_wheels(self) -> None:
+        """Manually trigger the Training Wheels Protocol setup guide."""
+        from ui.dialogs.training_wheels import TrainingWheelsDialog
+        dlg = TrainingWheelsDialog(parent=self, manual=True)
+        if dlg.exec():
+            # Refresh local UI controls to match applied settings
+            if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox:
+                self.smart_depot_selection_checkbox.setChecked(self.settings.value("smart_depot_selection", True, type=bool))
+            if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo:
+                idx = self.isp_gateway_combo.findData(self.settings.value("isp_bypass_mode", "auto", type=str))
+                if idx >= 0:
+                    self.isp_gateway_combo.setCurrentIndex(idx)
+            if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox:
+                self.experimental_acf_independent_checkbox.setChecked(self.settings.value("experimental_acf_independent", False, type=bool))
+            if hasattr(self, "achievements_checkbox") and self.achievements_checkbox:
+                self.achievements_checkbox.setChecked(self.settings.value("generate_achievements", False, type=bool))
+            if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox:
+                self.hide_macos_depots_checkbox.setChecked(self.settings.value("hide_macos_depots", True, type=bool))
+
     def uninstall_assela(self) -> None:
         """Remove ASSella and optionally restore the original ACCELA backup."""
         install_dir = os.path.expanduser("~/.local/share/ACCELA")
@@ -1704,6 +1818,7 @@ class SettingsDialog(QDialog):
 
 
     def _run_assfixer_check(self) -> None:
+        logger.info("ASSfixer check triggered from Settings -> Tools tab.")
         self.assfixer_check_btn.setEnabled(False)
         self.assfixer_status_lbl.setText("Checking config against upstream template...")
         self.assfixer_status_lbl.setStyleSheet("color: #7aa2f7; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
@@ -1715,20 +1830,16 @@ class SettingsDialog(QDialog):
                 from utils.assfixer import check_config_status
                 res = check_config_status(online=True)
             except Exception as e:
-                res = (False, f"Check failed: {e}", [str(e)])
-            QMetaObject.invokeMethod(
-                self,
-                "_handle_assfixer_check_done",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(object, res),
-            )
+                res = (True, f"Check failed: {e}", [str(e)])
+            self.assfixer_done_signal.emit(res)
 
         t = threading.Thread(target=_target, daemon=True)
         t.start()
 
-    @pyqtSlot(object)
+    @pyqtSlot(tuple)
     def _handle_assfixer_check_done(self, result) -> None:
         needs_repair, summary, details = result
+        logger.info(f"ASSfixer check UI handler received result: needs_repair={needs_repair}, summary='{summary}', details_count={len(details)}")
         self.assfixer_check_btn.setEnabled(True)
         if needs_repair:
             self.assfixer_repair_btn.setEnabled(True)
@@ -1742,7 +1853,15 @@ class SettingsDialog(QDialog):
             self.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
             self.assfixer_status_lbl.setToolTip("")
 
+
     def _run_assfixer_repair(self) -> None:
+        from ui.dialogs.assfixer_confirm import AssfixerConfirmDialog
+        accent = self.settings.value("accent_color", "#C06C84")
+        bg = self.settings.value("background_color", "#111318")
+        confirm_dlg = AssfixerConfirmDialog(parent=self, accent_color=accent, bg_color=bg)
+        if confirm_dlg.exec() != AssfixerConfirmDialog.DialogCode.Accepted:
+            return
+
         self.assfixer_repair_btn.setEnabled(False)
         self.assfixer_status_lbl.setText("Repairing and synchronizing config...")
         self.assfixer_status_lbl.setStyleSheet("color: #7aa2f7; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
@@ -1757,12 +1876,7 @@ class SettingsDialog(QDialog):
                 res = (success, msg, has_bak)
             except Exception as e:
                 res = (False, f"Repair error: {e}", False)
-            QMetaObject.invokeMethod(
-                self,
-                "_handle_assfixer_repair_done",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(object, res),
-            )
+            self.assfixer_repair_done_signal.emit(res)
 
         t = threading.Thread(target=_target, daemon=True)
         t.start()
@@ -1780,6 +1894,7 @@ class SettingsDialog(QDialog):
             self.assfixer_status_lbl.setText(f"🔴 {msg}")
             self.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
             QMessageBox.warning(self, "ASSfixer", msg)
+
 
     def _run_assfixer_restore(self) -> None:
         reply = QMessageBox.question(
@@ -1806,6 +1921,7 @@ class SettingsDialog(QDialog):
                 self.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
                 self.assfixer_status_lbl.show()
                 QMessageBox.warning(self, "Restore Failed", msg)
+
         except Exception as e:
             QMessageBox.critical(self, "Restore Error", str(e))
 
@@ -2351,6 +2467,17 @@ class SettingsDialog(QDialog):
             from utils.helpers import encrypt_string
             encrypted_pass = encrypt_string(self.steam_password_input.text())
             self.settings.setValue("steam_password", encrypted_pass)
+        if hasattr(self, "log_level_combo") and self.log_level_combo is not None:
+            self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
+        if hasattr(self, "log_category_combo") and self.log_category_combo is not None:
+            self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
+
+        # Apply logging changes immediately
+        try:
+            from utils.logger import update_log_filters
+            update_log_filters()
+        except Exception:
+            pass
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -2370,11 +2497,6 @@ class SettingsDialog(QDialog):
         self.settings.setValue(
             "smart_depot_selection",
             self.smart_depot_selection_checkbox.isChecked(),
-        )
-
-        self.settings.setValue(
-            "use_lancache",
-            self.use_lancache_checkbox.isChecked(),
         )
         self.settings.setValue(
             "prompt_steam_restart",
@@ -2506,10 +2628,11 @@ class SettingsDialog(QDialog):
                 self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
             except RuntimeError:
                 pass
-        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
-            new_val = self.isp_bypass_hubcap_checkbox.isChecked()
-            self.settings.setValue("isp_bypass_hubcap", new_val)
-            if not new_val:
+        if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
+            mode = self.isp_gateway_combo.currentData() or "auto"
+            self.settings.setValue("isp_bypass_mode", mode)
+            self.settings.setValue("isp_bypass_hubcap", mode != "disabled")
+            if mode == "disabled":
                 try:
                     from utils.isp_bypass import TorManager
                     TorManager.stop_tor()
@@ -2526,27 +2649,103 @@ class SettingsDialog(QDialog):
                 except Exception:
                     pass
 
+    def _on_isp_gateway_changed(self, index: int) -> None:
+        """Saves selected mode immediately and triggers Tor warm boot if needed."""
+        if not hasattr(self, "isp_gateway_combo") or not self.isp_gateway_combo:
+            return
+        mode = self.isp_gateway_combo.currentData() or "auto"
+        self.settings.setValue("isp_bypass_mode", mode)
+        self.settings.setValue("isp_bypass_hubcap", True)
+
+        if mode == "tor":
+            import threading
+            from utils.isp_bypass import TorManager
+            threading.Thread(target=TorManager.start_tor_if_needed, daemon=True).start()
+
+
+    def _test_single_gateway(self, gateway_key: str, btn: QPushButton, label: str) -> None:
+        """Runs an individual gateway health check in a background thread and updates button."""
+        btn.setEnabled(False)
+        btn.setText("Testing...")
+        btn.setStyleSheet("""
+            QPushButton {
+                background: #3b4261;
+                border: 1px solid #e0af68;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #e0af68;
+                font-size: 8.5pt;
+                font-weight: bold;
+                min-height: 26px;
+            }
+        """)
+
+        import threading
+        def _target():
+            import utils.isp_bypass as isp
+            if gateway_key == "direct":
+                ok, status, lat = isp.test_gateway_direct()
+            elif gateway_key == "doh":
+                ok, status, lat = isp.test_gateway_doh()
+            elif gateway_key == "tor":
+                ok, status, lat = isp.test_gateway_tor()
+            elif gateway_key == "wirecutter":
+                ok, status, lat = isp.test_gateway_wirecutter()
+            else:
+                ok, status, lat = False, "Unknown", 0
+
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_gateway_test_done",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(object, (btn, label, ok, status, lat)),
+            )
+
+        threading.Thread(target=_target, daemon=True).start()
+
+    @pyqtSlot(object)
+    def _handle_gateway_test_done(self, data) -> None:
+        btn, label, ok, status, lat = data
+        btn.setEnabled(True)
+        if ok:
+            btn.setText(f"{label}: OK")
+            btn.setToolTip(f"{label} Gateway: {status}")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: #1b5e20;
+                    border: 1px solid #4caf50;
+                    border-radius: 6px;
+                    padding: 5px 8px;
+                    color: #a5d6a7;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    min-height: 26px;
+                }
+                QPushButton:hover {
+                    background: #2e7d32;
+                }
+            """)
+        else:
+            btn.setText(f"{label}: {status}")
+            btn.setToolTip(f"{label} Gateway Failed: {status}")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: #b71c1c;
+                    border: 1px solid #ef5350;
+                    border-radius: 6px;
+                    padding: 5px 8px;
+                    color: #ffcdd2;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    min-height: 26px;
+                }
+                QPushButton:hover {
+                    background: #c62828;
+                }
+            """)
+
     def _on_isp_bypass_toggled(self, state) -> None:
-        """Stops background Tor process if user unchecks ISP Bypass."""
-        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
-            if not self.isp_bypass_hubcap_checkbox.isChecked():
-                try:
-                    from utils.isp_bypass import TorManager
-                    TorManager.stop_tor()
-                except Exception as e:
-                    logger.warning(f"Error stopping Tor on toggle untick: {e}")
-
-        if hasattr(self, "log_level_combo"):
-            self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
-        if hasattr(self, "log_category_combo"):
-            self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
-
-        # Apply logging changes immediately
-        try:
-            from utils.logger import update_log_filters
-            update_log_filters()
-        except Exception:
-            pass
+        pass
 
     def _on_experimental_acf_toggled(self, state):
         is_checked = (state == Qt.CheckState.Checked.value or state == True or state == 2)
@@ -2628,9 +2827,6 @@ class SettingsDialog(QDialog):
 
 
 
-        self.settings.setValue("nerd_mode", False)
-        if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
-            self.main_window.update_nerd_mode(False)
         if SettingsDialog._is_too_close(QColor(u_accent), QColor(u_bg)):
                 QMessageBox.warning(
                     self,
@@ -3012,6 +3208,7 @@ class SettingsDialog(QDialog):
             if bak_path:
                 detail_msg += f"\n\nA backup of your previous config has been saved to:\n{bak_path}"
 
+
             QMessageBox.information(self, "ASShead Config Fixer", detail_msg)
         else:
             self._update_asshead_status_ui()
@@ -3019,6 +3216,7 @@ class SettingsDialog(QDialog):
             # Refresh system status on the main window dashboard in case check failed
             if self.main_window and hasattr(self.main_window, "refresh_system_status"):
                 self.main_window.refresh_system_status()
+
 
             QMessageBox.critical(self, "ASShead Config Fixer Error", f"Failed to fix configuration:\n{msg}")
 
@@ -3053,6 +3251,8 @@ class SettingsDialog(QDialog):
             count = res.get("count", 0)
             if self.main_window and hasattr(self.main_window, "refresh_system_status"):
                 self.main_window.refresh_system_status()
+
+
             QMessageBox.information(
                 self,
                 "Denuvo Sync",
@@ -3061,6 +3261,8 @@ class SettingsDialog(QDialog):
         else:
             if self.main_window and hasattr(self.main_window, "refresh_system_status"):
                 self.main_window.refresh_system_status()
+
+
             QMessageBox.critical(
                 self,
                 "Denuvo Sync Error",
@@ -3081,6 +3283,7 @@ class SettingsDialog(QDialog):
             py if py else ("python" if sys.platform == "win32" else "python3")
         )
         cmd.append(str(helper_path))
+
 
         SettingsDialog._launch_terminal_command(cmd, str(helper_path.parent))
 

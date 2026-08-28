@@ -70,7 +70,8 @@ class JobQueueManager(QObject):
 
         if not self.main_window.task_manager.is_processing:
             logger.info("Not processing, starting new Workshop job from queue.")
-            self.main_window.log_output.clear()
+            if hasattr(self.main_window, "log_output") and self.main_window.log_output:
+                self.main_window.log_output.clear()
             self._start_next_job()
         else:
             logger.info("App is busy, Workshop job added to queue.")
@@ -124,7 +125,8 @@ class JobQueueManager(QObject):
 
         if not self.main_window.task_manager.is_processing:
             logger.info("Not processing, starting new job from queue.")
-            self.main_window.log_output.clear()
+            if hasattr(self.main_window, "log_output") and self.main_window.log_output:
+                self.main_window.log_output.clear()
             self._start_next_job()
         else:
             logger.info("App is busy, job added to queue.")

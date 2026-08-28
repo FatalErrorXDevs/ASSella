@@ -87,13 +87,15 @@ class ManifestCheckTask(QObject):
     completed = pyqtSignal()
     error = pyqtSignal(tuple)  # (Exception, message, traceback)
 
-    def __init__(self, games_list):
+    def __init__(self, games_list, trigger: str = "AUTO_TIMER"):
         """
         Args:
             games_list: List of game dictionaries to check
+            trigger: Trigger source ('USER_MANUAL', 'AUTO_TIMER', 'BOOT_CHECK', 'USER_SINGLE')
         """
         super().__init__()
         self.games_list = games_list
+        self.trigger = trigger
         self._is_running = False
 
     def run(self):
@@ -248,6 +250,11 @@ class ManifestCheckTask(QObject):
                 return
 
             # Process each game with the batched results
+            up_to_date_count = 0
+            update_available_count = 0
+            cannot_determine_count = 0
+            update_games_list = []
+
             for game in valid_games:
                 # Check if task was stopped
                 if not self._is_running:
@@ -263,10 +270,20 @@ class ManifestCheckTask(QObject):
                     # Emit signal with results
                     self.game_update_checked.emit(appid, update_status)
 
+                    if update_status == "update_available":
+                        update_available_count += 1
+                        g_name = game.get("name") or game.get("clean_name") or str(appid)
+                        update_games_list.append(g_name)
+                    elif update_status == "up_to_date":
+                        up_to_date_count += 1
+                    else:
+                        cannot_determine_count += 1
+
                 except Exception as e:
                     logger.error(f"Error checking update for game {appid}: {e}")
                     self.error.emit((type(e), str(e), traceback.format_exc()))
                     self.game_update_checked.emit(appid, "cannot_determine")
+                    cannot_determine_count += 1
 
                 checked_games += 1
                 self.progress.emit(checked_games, total_games)

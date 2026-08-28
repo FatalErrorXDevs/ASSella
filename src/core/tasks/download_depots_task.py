@@ -102,6 +102,9 @@ class DownloadDepotsTask(QObject):
                 f"Task tracking total download size: {self.total_download_size_for_this_job} bytes"
             )
 
+            # Track sidecar writes across all depots — determines DD_DELTA vs DD_FULL
+            _sidecar_written_count = 0
+
             for i, current_cmd in enumerate(commands):
                 if not self._is_running:
                     logger.info("Download task stopping before next depot.")
@@ -198,6 +201,7 @@ class DownloadDepotsTask(QObject):
                             with open(dest_manifest_path + ".sha", "wb") as f:
                                 f.write(sha1.digest())
 
+                            _sidecar_written_count += 1
                             logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
                         else:
                             logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
@@ -217,6 +221,7 @@ class DownloadDepotsTask(QObject):
 
             self._copy_manifests_to_steam_depotcache()
             self._cleanup_temp_files()
+
             self.completed.emit()
 
         except FileNotFoundError:
@@ -638,10 +643,8 @@ class DownloadDepotsTask(QObject):
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 
-            # 1. LanCache support
-            use_lancache = settings.value("use_lancache", False, type=bool)
-            if use_lancache:
-                cmd_args.append("-use-lancache")
+            # 1. LanCache support (permanently enabled: DepotDownloader autodetects any local LanCache instance on the LAN)
+            cmd_args.append("-use-lancache")
 
             # 2. LoginID session isolation (randomized 32-bit integer)
             login_id = random.randint(1, 2147483647)

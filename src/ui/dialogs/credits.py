@@ -324,28 +324,26 @@ class CreditsDialog(QDialog):
 
         def _parse_version(v_str: str) -> tuple:
             v_str = v_str.lstrip("v").strip()
-            parts = v_str.split("-")
-            main_part = parts[0]
-            main_numbers = []
-            for num in main_part.split("."):
-                try:
-                    main_numbers.append(int(num))
-                except ValueError:
-                    main_numbers.append(0)
-            while len(main_numbers) < 3:
-                main_numbers.append(0)
-            pre_release_val = 0
-            pre_release_num = 0
-            if len(parts) > 1:
-                pre_tag = parts[1].lower()
-                pre_release_val = -1
-                match = re.search(r"\d+$", pre_tag)
-                if match:
-                    try:
-                        pre_release_num = int(match.group(0))
-                    except ValueError:
-                        pre_release_num = 0
-            return tuple(main_numbers) + (pre_release_val, pre_release_num)
+            m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc)(\d*)|\-([a-zA-Z0-9.]+))?$", v_str, re.IGNORECASE)
+            if m:
+                major = int(m.group(1) or 0)
+                minor = int(m.group(2) or 0)
+                patch = int(m.group(3) or 0)
+                pre_type = m.group(4) or ""
+                pre_num_str = m.group(5) or ""
+                pre_extra = m.group(6) or ""
+                pre_weights = {"rc": -1, "beta": -2, "alpha": -3, "dev": -4}
+                if pre_type:
+                    pre_val = pre_weights.get(pre_type.lower(), -4)
+                    pre_num = int(pre_num_str) if pre_num_str else 0
+                elif pre_extra:
+                    pre_val = -4
+                    pre_num = 0
+                else:
+                    pre_val = 0
+                    pre_num = 0
+                return (major, minor, patch, pre_val, pre_num)
+            return (0, 0, 0, 0, 0)
 
         def _check_sync():
             try:

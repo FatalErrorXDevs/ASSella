@@ -416,10 +416,20 @@ def _do_ratings_refresh() -> None:
     if not app:
         return
 
+    try:
+        from PyQt6 import sip
+    except ImportError:
+        sip = None
+
     for w in app.allWidgets():
-        if isinstance(w, GameItemWidget):
-            w.update_proton_badge()
-        elif isinstance(w, GameDetailsDialogV2):
-            w.update_title()
-        elif isinstance(w, SearchItemWidget):
-            w.update_ratings()
+        try:
+            if sip and sip.isdeleted(w):
+                continue
+            if isinstance(w, GameItemWidget):
+                w.update_proton_badge()
+            elif isinstance(w, GameDetailsDialogV2):
+                w.update_title()
+            elif isinstance(w, SearchItemWidget):
+                w.update_ratings()
+        except Exception:
+            pass

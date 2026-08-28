@@ -248,6 +248,7 @@ class TaskManager(QObject):
         self.game_data = game_data
 
         if self.game_data and self.game_data.get("depots"):
+
             pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
             if pre_selected:
                 self.game_data["selected_depots_list"] = pre_selected
@@ -1548,6 +1549,72 @@ class TaskManager(QObject):
                 targets.add(root)
         return targets
 
+    @staticmethod
+    def _safe_remove(file_path: str) -> bool:
+        """Remove a file safely, making it writable first if read-only."""
+        import stat
+        if not os.path.exists(file_path):
+            return True
+        try:
+            os.chmod(file_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        except Exception:
+            pass
+        try:
+            os.remove(file_path)
+            return True
+        except Exception as e:
+            logger.warning(f"Could not remove file {file_path}: {e}")
+            return False
+
+    @staticmethod
+    def _safe_rmtree(dir_path: str) -> bool:
+        """Safely remove a directory tree, fixing read-only permissions if necessary."""
+        import stat
+
+        def _remove_readonly(func, p, excinfo):
+            try:
+                os.chmod(os.path.dirname(p), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
+            try:
+                os.chmod(p, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
+            try:
+                func(p)
+            except Exception as e:
+                logger.debug(f"_safe_rmtree handler failed on {p}: {e}")
+
+        if not os.path.exists(dir_path):
+            return True
+
+        # Pre-emptively make tree writable
+        try:
+            for root, dirs, files in os.walk(dir_path):
+                for d in dirs:
+                    try:
+                        os.chmod(os.path.join(root, d), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                    except Exception:
+                        pass
+                for f in files:
+                    try:
+                        os.chmod(os.path.join(root, f), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                    except Exception:
+                        pass
+            os.chmod(dir_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        except Exception:
+            pass
+
+        try:
+            try:
+                shutil.rmtree(dir_path, onexc=_remove_readonly)
+            except TypeError:
+                shutil.rmtree(dir_path, onerror=_remove_readonly)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove directory {dir_path}: {e}")
+            return False
+
     def _apply_goldberg_to_single_dir(
         self, target_dir: str, appid: str, goldberg_src: Path
     ):
@@ -1572,7 +1639,13 @@ class TaskManager(QObject):
             if os.path.exists(src):
                 dst = src + ".valve"
                 if not os.path.exists(dst):
-                    os.rename(src, dst)
+                    try:
+                        os.rename(src, dst)
+                        renamed.append(name)
+                    except Exception as e:
+                        logger.error(f"Failed to rename {src} to {dst}: {e}")
+                else:
+                    # .valve backup already exists (e.g. re-applying Goldberg)
                     renamed.append(name)
         return renamed
 
@@ -1580,11 +1653,20 @@ class TaskManager(QObject):
         self, target_dir: str, goldberg_src: Path, renamed_files: List[str]
     ):
         """For each renamed file, copy the Goldberg replacement from the goldberg deps folder."""
+        import stat
         for name in renamed_files:
+            dst_file = os.path.join(target_dir, name)
+            if os.path.exists(dst_file):
+                try:
+                    os.chmod(dst_file, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                except Exception:
+                    pass
+
             if name.endswith(".dll"):
                 src = goldberg_src / "windows" / name
                 if src.exists():
-                    shutil.copy2(str(src), os.path.join(target_dir, name))
+                    shutil.copy2(str(src), dst_file)
+                    logger.info(f"Copied Goldberg {name} to {target_dir}")
                 else:
                     logger.warning(f"Goldberg file not found: {src}")
 
@@ -1611,7 +1693,7 @@ class TaskManager(QObject):
 
                 src = goldberg_src / "linux" / src_filename
                 if src.exists():
-                    shutil.copy2(str(src), os.path.join(target_dir, name))
+                    shutil.copy2(str(src), dst_file)
                     logger.info(
                         f"Copied {src_filename} (detected {arch}-bit) to {name}"
                     )
@@ -1628,12 +1710,21 @@ class TaskManager(QObject):
         if src_settings.exists():
             dst_settings = os.path.join(target_dir, "steam_settings")
             if os.path.exists(dst_settings):
-                shutil.rmtree(dst_settings)
-            shutil.copytree(str(src_settings), dst_settings)
+                self._safe_rmtree(dst_settings)
+            try:
+                shutil.copytree(str(src_settings), dst_settings)
+            except Exception as e:
+                logger.error(f"Failed to copy steam_settings to {dst_settings}: {e}")
 
     def _write_appid_file(self, target_dir: str, appid: str):
         """Write steam_appid.txt"""
+        import stat
         appid_path = os.path.join(target_dir, "steam_appid.txt")
+        if os.path.exists(appid_path):
+            try:
+                os.chmod(appid_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
         try:
             with open(appid_path, "w", encoding="utf-8") as f:
                 f.write(str(appid))
@@ -1665,6 +1756,8 @@ class TaskManager(QObject):
                     interfaces_dst = os.path.join(
                         steam_settings_dir, "steam_interfaces.txt"
                     )
+                    if os.path.exists(interfaces_dst):
+                        self._safe_remove(interfaces_dst)
                     shutil.move(interfaces_src, interfaces_dst)
                     logger.info(f"Moved steam_interfaces.txt to {steam_settings_dir}")
 
@@ -1726,12 +1819,12 @@ class TaskManager(QObject):
         # Remove steam_settings
         settings_path = os.path.join(target_dir, "steam_settings")
         if os.path.exists(settings_path):
-            shutil.rmtree(settings_path)
+            self._safe_rmtree(settings_path)
 
         # Remove steam_appid.txt
         appid_path = os.path.join(target_dir, "steam_appid.txt")
         if os.path.exists(appid_path):
-            os.remove(appid_path)
+            self._safe_remove(appid_path)
 
         # Remove any Goldberg DLLs/SOs that are not .valve
         for name in [
@@ -1742,7 +1835,7 @@ class TaskManager(QObject):
         ]:
             full = os.path.join(target_dir, name)
             if os.path.exists(full) and not os.path.exists(full + ".valve"):
-                os.remove(full)
+                self._safe_remove(full)
 
     def _restore_original_files(self, target_dir: str):
         """Rename .valve backups back to original names."""
@@ -1752,13 +1845,12 @@ class TaskManager(QObject):
             original = fname[:-6]  # remove .valve
             backup_path = os.path.join(target_dir, fname)
             original_path = os.path.join(target_dir, original)
-
-            # Delete current file if it exists (Goldberg copy)
             if os.path.exists(original_path):
-                os.remove(original_path)
-
-            # Restore backup
-            os.rename(backup_path, original_path)
+                self._safe_remove(original_path)
+            try:
+                os.rename(backup_path, original_path)
+            except Exception as e:
+                logger.error(f"Failed to restore {backup_path} to {original_path}: {e}")
 
     @staticmethod
     def _run_chmod_recursive(game_directory) -> int:
@@ -1834,6 +1926,7 @@ class TaskManager(QObject):
             logger.info("Steamless processing completed successfully")
         else:
             logger.info("Steamless processing completed with warnings or no DRM found")
+
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("steamless", "completed" if success else "error")

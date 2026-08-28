@@ -131,22 +131,58 @@ def _make_json_request(
 def search_games(
     query: str, limit: int = DEFAULT_SEARCH_LIMIT
 ) -> dict | dict[str, list] | dict[str, list[Any]]:
+    """
+    Search Hubcap for games by name or AppID using the free /search endpoint.
 
-    logger.info(f"Searching Hubcab API for: {query}")
+    Strategy:
+      - Numeric queries: try exact AppID match first (/search?appid=true). If Hubcap
+        returns no results (e.g. user typed "007" meaning the game title), transparently
+        fall through to a name-based search so titles like "007: First Light" still surface.
+      - Text queries: use /search?q=... directly (fast, free, no quota consumed).
+      - Fallback: if /search itself errors, fall back to the old paginated /library endpoint.
+    """
+    logger.info(f"Searching Hubcap API for: {query}")
     try:
         normalized_limit = int(limit)
     except (TypeError, ValueError):
         normalized_limit = DEFAULT_SEARCH_LIMIT
     normalized_limit = max(1, min(normalized_limit, MAX_SEARCH_LIMIT))
 
+    # ── Path 1: Numeric query — try AppID exact-match first ──────────────────
+    if query.strip().isdigit():
+        data = _make_json_request(
+            "GET", "/search",
+            params={"q": query.strip(), "appid": "true", "limit": normalized_limit},
+        )
+        if isinstance(data, dict) and "error" not in data:
+            results = data.get("results") or []
+            total = data.get("total_matches", len(results))
+            if results:
+                logger.info(f"[search_games] Exact AppID match for '{query}': {len(results)} result(s)")
+                return {"results": results, "total_count": total}
+            # No AppID match — treat as a game-name number (e.g. "007", "1984")
+            logger.info(f"[search_games] AppID '{query}' not found in Hubcap — retrying as name search")
+
+    # ── Path 2: Name-based search via the free /search endpoint ──────────────
+    data = _make_json_request(
+        "GET", "/search",
+        params={"q": query.strip(), "limit": normalized_limit},
+    )
+    if isinstance(data, dict) and "error" not in data:
+        results = data.get("results") or []
+        total = data.get("total_matches", len(results))
+        logger.info(f"[search_games] Name search for '{query}': {len(results)} result(s) (total_matches={total})")
+        return {"results": results, "total_count": total}
+
+    # ── Path 3: Fallback — paginated /library (legacy) ───────────────────────
+    logger.warning(f"[search_games] /search failed for '{query}', falling back to /library")
     offset = 0
     all_games: list[Any] = []
     total_count: Optional[int] = None
 
     while True:
-        data = _make_json_request(
-            "GET",
-            "/library",
+        lib_data = _make_json_request(
+            "GET", "/library",
             params={
                 "search": query,
                 "limit": normalized_limit,
@@ -154,24 +190,22 @@ def search_games(
                 "sort_by": "name",
             },
         )
-
-        if isinstance(data, dict) and "error" in data:
-            return data
+        if isinstance(lib_data, dict) and "error" in lib_data:
+            return lib_data
 
         page_games: list[Any] = []
-        if isinstance(data, dict):
-            if isinstance(data.get("games"), list):
-                page_games = data["games"]
-            elif isinstance(data.get("results"), list):
-                page_games = data["results"]
-
+        if isinstance(lib_data, dict):
+            if isinstance(lib_data.get("games"), list):
+                page_games = lib_data["games"]
+            elif isinstance(lib_data.get("results"), list):
+                page_games = lib_data["results"]
             if total_count is None:
                 try:
-                    total_count = int(data.get("total_count", 0))
+                    total_count = int(lib_data.get("total_count", 0))
                 except (TypeError, ValueError):
                     total_count = None
-        elif isinstance(data, list):
-            page_games = data
+        elif isinstance(lib_data, list):
+            page_games = lib_data
 
         if not page_games:
             break

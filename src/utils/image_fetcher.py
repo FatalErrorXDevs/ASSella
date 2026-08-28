@@ -2,9 +2,10 @@ import logging
 import time
 import re
 import os
+from collections import OrderedDict
 from pathlib import Path
 from functools import wraps
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Set
 
 import requests
 from PyQt6.QtCore import QObject, QUrl, pyqtSignal, Qt, QTimer
@@ -72,14 +73,21 @@ def send_request(url: str) -> bool:
         return False
 
 
+# In-memory LRU session cache for transient search results and fast RAM hits
+_session_memory_cache: OrderedDict[str, bytes] = OrderedDict()
+MAX_SESSION_CACHE_SIZE = 50
+
+
 class ImageFetcher(QObject):
-    """Async image fetcher using Qt's QNetworkAccessManager (no threads)."""
+    """Async image fetcher using Qt's QNetworkAccessManager with 2-tier RAM/Disk caching."""
 
     finished = pyqtSignal(bytes)
+    MAX_SESSION_CACHE_SIZE = 50
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, ephemeral: bool = False):
         super().__init__()
         self.url = url
+        self.ephemeral = ephemeral
         self._stopped = False
         self._reply: Optional[QNetworkReply] = None
         self._start_time: Optional[float] = None
@@ -111,22 +119,30 @@ class ImageFetcher(QObject):
             self._reply.abort()
 
     def start(self) -> None:
-        """Start the async fetch using QNetworkAccessManager."""
+        """Start the async fetch using RAM cache, disk cache, or QNetworkAccessManager."""
         if self._stopped:
             return
 
-        # Check local cache first
         if self.app_id:
+            # 1. Tier 1: Check in-memory RAM cache first (instant 0ms, 0 disk I/O)
+            mem_data = ImageFetcher.get_from_session_cache(self.app_id)
+            if mem_data and not self._stopped:
+                QTimer.singleShot(0, lambda: self.finished.emit(mem_data))
+                return
+
+            # 2. Tier 2: Check permanent disk cache
             cached_path = ImageFetcher.get_cache_path(self.app_id)
             if cached_path.exists():
                 try:
                     data = cached_path.read_bytes()
                     if data and not self._stopped:
+                        ImageFetcher.put_to_session_cache(self.app_id, data)
                         QTimer.singleShot(0, lambda: self.finished.emit(data))
                         return
                 except Exception as e:
                     logger.debug(f"Failed to read cached image for AppID {self.app_id}: {e}")
 
+        # 3. Tier 3: Fetch over network
         self._start_time = time.time()
         self._fetch_next_url()
 
@@ -170,9 +186,13 @@ class ImageFetcher(QObject):
             # Success Path
             data = reply.readAll().data()  # .data() returns Python bytes
 
-            # Cache the exact raw image bytes directly
             if self.app_id and data:
-                ImageFetcher.save_to_cache(self.app_id, data)
+                # Always store in the fast 50-item LRU RAM session cache
+                ImageFetcher.put_to_session_cache(self.app_id, data)
+
+                # Only persist to permanent disk cache if not ephemeral (e.g. library / installed games)
+                if not self.ephemeral:
+                    ImageFetcher.save_to_cache(self.app_id, data)
 
             if self._start_time:
                 download_time = (time.time() - self._start_time) * 1000
@@ -191,6 +211,46 @@ class ImageFetcher(QObject):
         finally:
             reply.deleteLater()
 
+    # --------------------------
+    # In-Memory Session Cache (Max 50 items LRU)
+    # --------------------------
+
+    @staticmethod
+    def get_from_session_cache(app_id: str) -> Optional[bytes]:
+        """Get image data from 50-item LRU session RAM cache."""
+        global _session_memory_cache
+        app_id_str = str(app_id)
+        if app_id_str in _session_memory_cache:
+            _session_memory_cache.move_to_end(app_id_str)
+            return _session_memory_cache[app_id_str]
+        return None
+
+    @staticmethod
+    def put_to_session_cache(app_id: str, data: bytes) -> None:
+        """Put image data into 50-item LRU session RAM cache."""
+        global _session_memory_cache
+        if not app_id or not data:
+            return
+        app_id_str = str(app_id)
+        _session_memory_cache[app_id_str] = data
+        _session_memory_cache.move_to_end(app_id_str)
+        while len(_session_memory_cache) > MAX_SESSION_CACHE_SIZE:
+            _session_memory_cache.popitem(last=False)
+
+    @staticmethod
+    def promote_to_permanent_cache(app_id: Union[str, int]) -> bool:
+        """Promote an in-memory session image to permanent disk cache when installed or downloaded."""
+        app_id_str = str(app_id)
+        data = ImageFetcher.get_from_session_cache(app_id_str)
+        if data:
+            ImageFetcher.save_to_cache(app_id_str, data)
+            return True
+        return False
+
+    # --------------------------
+    # Permanent Disk Cache
+    # --------------------------
+
     @staticmethod
     def get_cache_dir() -> Path:
         return Path.home() / ".local" / "share" / "ACCELA" / "image_cache"
@@ -207,71 +267,74 @@ class ImageFetcher(QObject):
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_path = cache_dir / f"{app_id}.jpg"
             cache_path.write_bytes(data)
-
-            # Enforce 300MB limit
-            ImageFetcher._enforce_cache_limit()
         except Exception as e:
             logger.warning(f"Failed to cache image for AppID {app_id}: {e}")
 
-    _last_cleanup_time = 0.0
+    # --------------------------
+    # Uninstalled Cache Scrubber
+    # --------------------------
 
     @staticmethod
-    def _enforce_cache_limit() -> None:
-        """Keep cache under limit by removing oldest non-installed game images."""
-        now = time.time()
-        if now - ImageFetcher._last_cleanup_time < 600:
-            return
-        ImageFetcher._last_cleanup_time = now
+    def get_installed_appids() -> Set[str]:
+        """Collects all installed AppIDs across Steam libraries, depots, and cached LUAs."""
+        installed: Set[str] = set()
+        try:
+            from core.steam_helpers import get_steam_libraries
+            libs = get_steam_libraries()
+            for lib in libs:
+                steamapps = Path(lib) / "steamapps"
+                if steamapps.exists():
+                    for acf in steamapps.glob("appmanifest_*.acf"):
+                        m = re.search(r"appmanifest_(\d+)\.acf", acf.name)
+                        if m:
+                            installed.add(m.group(1))
+        except Exception:
+            pass
 
+        try:
+            from utils.helpers import get_base_path
+            base = get_base_path()
+            depots_dir = base / "depots"
+            if depots_dir.exists():
+                for d in depots_dir.glob("*.depot"):
+                    installed.add(d.stem)
+            cached_luas = base / "cached_luas"
+            if cached_luas.exists():
+                for lua in cached_luas.glob("*.lua"):
+                    stem = lua.stem.replace("accela_", "")
+                    installed.add(stem)
+        except Exception:
+            pass
+
+        return installed
+
+    @staticmethod
+    def cleanup_uninstalled_cache() -> int:
+        """Scans image_cache/ and removes thumbnails of games that are not installed."""
         try:
             cache_dir = ImageFetcher.get_cache_dir()
             if not cache_dir.exists():
-                return
+                return 0
 
-            MAX_CACHE_SIZE = 300 * 1024 * 1024  # 300MB (prevent thrashing during searches)
+            installed_appids = ImageFetcher.get_installed_appids()
+            deleted_count = 0
 
-            # Get list of all jpg files in cache with their size and mtime
-            files = []
-            total_size = 0
             for f in cache_dir.glob("*.jpg"):
-                try:
-                    stat = f.stat()
-                    files.append((f, stat.st_size, stat.st_mtime))
-                    total_size += stat.st_size
-                except Exception:
-                    pass
+                if f.stem not in installed_appids:
+                    try:
+                        f.unlink()
+                        deleted_count += 1
+                    except Exception:
+                        pass
 
-            if total_size <= MAX_CACHE_SIZE:
-                return
-
-            # Sort by mtime (oldest first)
-            files.sort(key=lambda x: x[2])
-
-            # Identify installed appids to protect from deletion
-            installed_appids = set()
-            try:
-                depots_dir = Path.home() / ".local" / "share" / "ACCELA" / "depots"
-                if depots_dir.exists():
-                    installed_appids = {p.stem for p in depots_dir.glob("*.depot")}
-            except Exception:
-                pass
-
-            logger.info(
-                f"Image cache size ({total_size / (1024*1024):.2f}MB) exceeds limit. "
-                f"Cleaning up non-installed cached images..."
-            )
-            for f, size, _ in files:
-                if f.stem in installed_appids:
-                    continue  # Protect installed game header images
-                try:
-                    f.unlink()
-                    total_size -= size
-                    if total_size <= MAX_CACHE_SIZE:
-                        break
-                except Exception as e:
-                    logger.warning(f"Failed to delete cached image {f.name}: {e}")
+            if deleted_count > 0:
+                logger.info(
+                    f"Cleaned up {deleted_count} non-installed cached search images from disk."
+                )
+            return deleted_count
         except Exception as e:
             logger.warning(f"Error enforcing image cache limit: {e}")
+            return 0
 
     # Legacy method for compatibility
     def run(self) -> None:

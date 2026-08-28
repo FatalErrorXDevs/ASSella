@@ -527,7 +527,7 @@ def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
     """Create new config file with a single AdditionalApps entry."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if comment:
-        new_entry = f"AdditionalApps:\n  - {app_id}   # {comment}\n"
+        new_entry = f"AdditionalApps:\n  - {app_id} # {comment}\n"
     else:
         new_entry = f"AdditionalApps:\n  - {app_id}\n"
 
@@ -562,13 +562,13 @@ def _append_to_additional_apps(
         # AdditionalApps: was empty
         insert_pos = start_pos
         if not content[start_pos:].startswith("\n"):
-            new_entry = f"\n  - {app_id}   # {comment}\n" if comment else f"\n  - {app_id}\n"
+            new_entry = f"\n  - {app_id} # {comment}\n" if comment else f"\n  - {app_id}\n"
         else:
-            new_entry = f"  - {app_id}   # {comment}\n" if comment else f"  - {app_id}\n"
+            new_entry = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
         return content[:insert_pos] + new_entry + content[insert_pos:]
 
     insert_pos = start_pos + last_item_offset
-    new_entry = f"  - {app_id}   # {comment}\n" if comment else f"  - {app_id}\n"
+    new_entry = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
     return content[:insert_pos] + new_entry + content[insert_pos:]
 
 
@@ -599,7 +599,7 @@ def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> boo
         else:
             # Create new AdditionalApps section
             if comment:
-                entry = f"AdditionalApps:\n  - {app_id}   # {comment}\n"
+                entry = f"AdditionalApps:\n  - {app_id} # {comment}\n"
             else:
                 entry = f"AdditionalApps:\n  - {app_id}\n"
             new_content = fixed_content + "\n" + entry
@@ -1125,7 +1125,7 @@ def check_and_merge_fakeappid_db(config_path: Path) -> bool:
     # Create the text block to insert
     insert_text = ""
     for appid, (fake_appid, comment) in missing_entries.items():
-        comment_suffix = f"  # {comment}" if comment else ""
+        comment_suffix = f" # {comment}" if comment else ""
         insert_text += f"  {appid}: {fake_appid}{comment_suffix}\n"
 
     new_content = ""

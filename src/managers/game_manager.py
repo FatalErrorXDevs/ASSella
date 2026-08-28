@@ -266,8 +266,9 @@ class GameManager(QObject):
 
         self.update_check_started.emit()
 
-        # Create new task
-        self.manifest_check_task = ManifestCheckTask(self._games_to_check)
+        # Create new task with trigger provenance
+        trigger = "USER_MANUAL" if force_refresh else ("AUTO_TIMER" if is_periodic else "BACKGROUND_SCAN")
+        self.manifest_check_task = ManifestCheckTask(self._games_to_check, trigger=trigger)
         self.update_check_progress.emit(0, len(self._games_to_check))
 
         # Connect signals
@@ -1636,6 +1637,8 @@ class GameManager(QObject):
                     f"auto_update_manifest/{appid}",
                 ):
                     settings.remove(key)
+                
+
             except Exception as _set_err:
                 logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
 

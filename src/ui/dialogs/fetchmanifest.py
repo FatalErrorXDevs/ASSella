@@ -187,7 +187,7 @@ class SearchItemWidget(QWidget):
         info_col.setContentsMargins(0, 10, 0, 10)
         info_col.setSpacing(5)
 
-        # Top row: game name + badge pills
+        # Top row: game name + minimal ProtonDB badge
         name_row = QHBoxLayout()
         name_row.setSpacing(8)
         name_row.setContentsMargins(0, 0, 0, 0)
@@ -197,11 +197,6 @@ class SearchItemWidget(QWidget):
         self.name_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {name_color};")
         self.name_lbl.setWordWrap(False)
         name_row.addWidget(self.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self.denuvo_badge = QLabel()
-        self.denuvo_badge.hide()
-        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        name_row.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.proton_badge = QLabel()
         self.proton_badge.hide()
@@ -213,13 +208,27 @@ class SearchItemWidget(QWidget):
 
         info_col.addStretch(1)
 
-        # Bottom: AppID row
-        appid_text = f"App ID: {app_id}"
-        if in_library:
-            appid_text += "  •  In Library"
-        self.appid_lbl = QLabel(appid_text)
+        # Bottom: AppID + Denuvo status row
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(6)
+        meta_row.setContentsMargins(0, 0, 0, 0)
+
+        self.appid_lbl = QLabel(f"App ID: {app_id}")
         self.appid_lbl.setStyleSheet("font-size: 11px; color: rgba(255,255,255,0.50);")
-        info_col.addWidget(self.appid_lbl)
+        meta_row.addWidget(self.appid_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.denuvo_lbl = QLabel()
+        self.denuvo_lbl.hide()
+        self.denuvo_lbl.setStyleSheet("font-size: 11px; font-weight: bold;")
+        meta_row.addWidget(self.denuvo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        if in_library:
+            self.in_lib_lbl = QLabel("•  In Library")
+            self.in_lib_lbl.setStyleSheet("font-size: 11px; color: #81C784; font-weight: bold;")
+            meta_row.addWidget(self.in_lib_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        meta_row.addStretch()
+        info_col.addLayout(meta_row)
 
         layout.addLayout(info_col, 1)
 
@@ -228,46 +237,53 @@ class SearchItemWidget(QWidget):
 
     def update_ratings(self) -> None:
         """Update Denuvo and ProtonDB badges dynamically."""
-        from core.ratings import get_denuvo_status, get_protondb_tier
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            pass
 
-        # Denuvo badge
-        denuvo_status = get_denuvo_status(self.app_id)
-        _denuvo_map = {
-            "cracked":    ("Denuvo Cracked",    "#81C784", "rgba(129,199,132,0.15)"),
-            "hypervisor": ("Denuvo Hypervisor", "#FFA726", "rgba(255,167,38,0.12)"),
-            "uncracked":  ("Denuvo Uncracked",  "#E57373", "rgba(229,115,115,0.15)"),
-        }
-        if denuvo_status and denuvo_status in _denuvo_map:
-            text, color, bg = _denuvo_map[denuvo_status]
-            self.denuvo_badge.setText(text)
-            self.denuvo_badge.setStyleSheet(
-                f"color: {color}; background-color: {bg}; border-radius: 10px;"
-                f"padding: 3px 10px; font-size: 11px; font-weight: bold;"
-            )
-            self.denuvo_badge.show()
-        else:
-            self.denuvo_badge.hide()
+        try:
+            from core.ratings import get_denuvo_status, get_protondb_tier
 
-        # ProtonDB badge
-        proton_tier = get_protondb_tier(self.app_id)
-        _tier_map = {
-            "platinum": ("PLATINUM", "#0d47a1", "#b3e5fc"),
-            "gold":     ("GOLD",     "#5d4037", "#ffd54f"),
-            "silver":   ("SILVER",   "#263238", "#cfd8dc"),
-            "bronze":   ("BRONZE",   "#4e342e", "#ffab91"),
-            "borked":   ("BORKED",   "#ffffff", "#ef5350"),
-            "native":   ("NATIVE",   "#1b5e20", "#a5d6a7"),
-        }
-        if proton_tier and proton_tier in _tier_map:
-            text, color, bg = _tier_map[proton_tier]
-            self.proton_badge.setText(text)
-            self.proton_badge.setStyleSheet(
-                f"color: {color}; background-color: {bg}; border-radius: 3px;"
-                f"padding: 2px 8px; font-size: 10px; font-weight: bold;"
-            )
-            self.proton_badge.show()
-        else:
-            self.proton_badge.hide()
+            # Denuvo status as colored text next to App ID
+            denuvo_status = get_denuvo_status(self.app_id)
+            _denuvo_text_map = {
+                "cracked":    ("•  Denuvo Cracked",    "#81C784"),
+                "hypervisor": ("•  Denuvo Hypervisor", "#FFA726"),
+                "uncracked":  ("•  Denuvo Uncracked",  "#E57373"),
+            }
+            if denuvo_status and denuvo_status in _denuvo_text_map:
+                text, color = _denuvo_text_map[denuvo_status]
+                self.denuvo_lbl.setText(text)
+                self.denuvo_lbl.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {color};")
+                self.denuvo_lbl.show()
+            else:
+                self.denuvo_lbl.hide()
+
+            # Minimal ProtonDB badge
+            proton_tier = get_protondb_tier(self.app_id)
+            _tier_map = {
+                "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+                "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
+                "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
+                "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
+                "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
+                "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
+            }
+            if proton_tier and proton_tier in _tier_map:
+                text, color, bg, border = _tier_map[proton_tier]
+                self.proton_badge.setText(text)
+                self.proton_badge.setStyleSheet(
+                    f"color: {color}; background-color: {bg}; border: 1px solid {border}; "
+                    f"border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: bold; letter-spacing: 0.5px;"
+                )
+                self.proton_badge.show()
+            else:
+                self.proton_badge.hide()
+        except Exception:
+            pass
 
     def set_image(self, pixmap: QPixmap) -> None:
         if pixmap and not pixmap.isNull():
@@ -398,6 +414,8 @@ class FetchManifestDialog(QDialog):
 
         self.task_runner = TaskRunner()
         self._active_image_fetchers = {}
+        self._pending_image_timers = []
+        self._search_generation = 0
 
         self._origins_movie = None
         if self.settings and self.settings.value("remember_origins", False, type=bool):
@@ -562,7 +580,13 @@ class FetchManifestDialog(QDialog):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(SEARCH_PLACEHOLDERS[0])
         self.search_input.returnPressed.connect(self.on_search)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
         games_layout.addWidget(self.search_input)
+
+        # Debounce timer for live search suggestions (400ms, min 3 chars)
+        self._live_search_timer = QTimer(self)
+        self._live_search_timer.setSingleShot(True)
+        self._live_search_timer.timeout.connect(self._fire_live_search)
 
         # Dynamic lightweight placeholder rotation timer
         self._placeholder_timer = QTimer(self)
@@ -813,6 +837,37 @@ class FetchManifestDialog(QDialog):
     # Search Logic
     # --------------------------
 
+    def _on_search_text_changed(self, text: str) -> None:
+        """Slot called on every keystroke — starts/restarts the 400ms debounce timer."""
+        text = text.strip()
+        # Don't fire live suggestions for numeric-only queries (those go via AppID
+        # branch-check on Enter/Search press, not live suggestion mode)
+        if len(text) < 3 or text.isdigit():
+            self._live_search_timer.stop()
+            return
+        # Restart the debounce window
+        self._live_search_timer.start(400)
+
+    def _fire_live_search(self) -> None:
+        """Called 400ms after the last keystroke — runs a lightweight suggestion search."""
+        query = self.search_input.text().strip()
+        if len(query) < 3 or query.isdigit():
+            return
+        # Don't clobber an in-progress explicit search or download
+        if not self.search_input.isEnabled():
+            return
+
+        self._search_generation += 1
+        gen = self._search_generation
+
+        logger.debug(f"[LiveSearch] Firing suggestion search for '{query}' (gen {gen})")
+        self._stop_active_image_fetchers()
+        self.status_label.setText(f"Searching for '{query}'…")
+        self._set_loading_active(True)
+        worker = self.task_runner.run(self._search_and_filter_results, query)
+        worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
+        worker.error.connect(self.on_task_error)
+
     def on_search(self):
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -820,6 +875,10 @@ class FetchManifestDialog(QDialog):
                 self.parent_window.game_manager.cancel_update_checks()
             except Exception as e:
                 logger.error(f"Error cancelling background update checks: {e}")
+
+        # Stop debounce timer if user pressed Enter
+        if hasattr(self, "_live_search_timer"):
+            self._live_search_timer.stop()
 
         query = self.search_input.text().strip()
         if len(query) < 2:
@@ -851,6 +910,9 @@ class FetchManifestDialog(QDialog):
             worker.error.connect(lambda err, q=query: self._on_direct_manifest_error(err, q))
             return
 
+        self._search_generation += 1
+        gen = self._search_generation
+
         # Reset UI
         self.results_list.clear()
         self._stop_active_image_fetchers()
@@ -859,7 +921,7 @@ class FetchManifestDialog(QDialog):
 
         # Run search + filtering in a worker thread.
         worker = self.task_runner.run(self._search_and_filter_results, query)
-        worker.finished.connect(self.on_search_finished)
+        worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
         worker.error.connect(self.on_task_error)
 
     def _on_direct_manifest_finished(self, result, query: str):
@@ -868,18 +930,24 @@ class FetchManifestDialog(QDialog):
             self.on_download_finished(result)
         else:
             logger.info(f"Direct AppID lookup for '{query}' failed — falling back to standard text search.")
+            self._search_generation += 1
+            gen = self._search_generation
             self.results_list.clear()
+            self._stop_active_image_fetchers()
             self.status_label.setText(f"Searching for '{query}'...")
             worker = self.task_runner.run(self._search_and_filter_results, query)
-            worker.finished.connect(self.on_search_finished)
+            worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
             worker.error.connect(self.on_task_error)
 
     def _on_direct_manifest_error(self, error_info, query: str):
         logger.info(f"Direct AppID lookup for '{query}' errored — falling back to standard text search.")
+        self._search_generation += 1
+        gen = self._search_generation
         self.results_list.clear()
+        self._stop_active_image_fetchers()
         self.status_label.setText(f"Searching for '{query}'...")
         worker = self.task_runner.run(self._search_and_filter_results, query)
-        worker.finished.connect(self.on_search_finished)
+        worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
         worker.error.connect(self.on_task_error)
 
     def _search_and_filter_results(self, query: str) -> Dict[str, Any]:
@@ -1004,13 +1072,21 @@ class FetchManifestDialog(QDialog):
 
         return False
 
-    def on_search_finished(self, results):
+    def on_search_finished(self, results, gen: int = 0):
+        # Ignore stale search results from previous queries
+        if gen and gen != self._search_generation:
+            logger.debug(f"Ignoring stale search results (gen {gen} != current {self._search_generation})")
+            return
+
         self._toggle_inputs(True)
         self._set_loading_active(False)
 
         if "error" in results:
             self._handle_error(results["error"])
             return
+
+        self.results_list.clear()
+        self._stop_active_image_fetchers()
 
         filtered_results = results.get("results", [])
         raw_total = int(results.get("raw_total", len(filtered_results)))
@@ -1020,7 +1096,7 @@ class FetchManifestDialog(QDialog):
             return
 
         for idx, game in enumerate(filtered_results):
-            self._add_game_to_list(game, delay_fetch=(idx >= 3))
+            self._add_game_to_list(game, gen=gen, delay_fetch=(idx >= 4))
 
         hidden_count = max(0, raw_total - len(filtered_results))
         status_msg = f"Found {len(filtered_results)} games"
@@ -1084,7 +1160,7 @@ class FetchManifestDialog(QDialog):
 
         return cls._is_blacklisted(cls._extract_game_name(game))
 
-    def _add_game_to_list(self, game: Dict, delay_fetch: bool = False):
+    def _add_game_to_list(self, game: Dict, gen: int = 0, delay_fetch: bool = False):
         # Support both legacy and newer API response keys.
         app_id = self._extract_app_id(game)
         if not app_id:
@@ -1092,8 +1168,6 @@ class FetchManifestDialog(QDialog):
             return
 
         name = self._extract_game_name(game) or "Unknown"
-
-        applist_2_0_enabled = True
 
         in_library = False
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -1110,65 +1184,87 @@ class FetchManifestDialog(QDialog):
         self.results_list.setItemWidget(item, widget)
 
         if delay_fetch:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(1500, lambda i=item, a=app_id: self._fetch_item_image(i, a))
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda w=widget, a=app_id, g=gen, t=timer: self._delayed_fetch_callback(w, a, g, t))
+            self._pending_image_timers.append(timer)
+            timer.start(1200)
         else:
-            self._fetch_item_image(item, app_id)
+            self._fetch_item_image(widget, app_id, gen)
 
+    def _delayed_fetch_callback(self, widget, app_id: str, gen: int, timer: QTimer):
+        if timer in self._pending_image_timers:
+            self._pending_image_timers.remove(timer)
+        if gen != self._search_generation:
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(widget):
+                return
+        except Exception:
+            pass
+        self._fetch_item_image(widget, app_id, gen)
 
     # --------------------------
     # Image Fetching
     # --------------------------
 
-    def _fetch_item_image(self, item, app_id):
-        # app_id is passed as string here
+    def _fetch_item_image(self, widget, app_id: str, gen: int = 0):
         url = ImageFetcher.get_header_image_url(app_id)
-        fetcher = ImageFetcher(url)
+        fetcher = ImageFetcher(url, ephemeral=True)
 
         self._active_image_fetchers[app_id] = fetcher
 
-        # Connect signals
-        fetcher.finished.connect(lambda data: self._on_image_ready(data, item, app_id))
+        # Connect signals directly with widget and generation check
+        fetcher.finished.connect(lambda data, w=widget, a=app_id, g=gen: self._on_image_ready(data, w, a, g))
         fetcher.start()
 
-    def _on_image_ready(self, image_data, item, app_id):
+    def _on_image_ready(self, image_data, widget, app_id: str, gen: int = 0):
         # Cleanup fetcher reference
         self._active_image_fetchers.pop(app_id, None)
 
+        if gen != self._search_generation:
+            return
+
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(widget):
+                return
+        except Exception:
+            pass
+
         if image_data:
-            pixmap = QPixmap()
-            pixmap.loadFromData(image_data)
-            if not pixmap.isNull():
-                target_size = QSize(230, 108)
-                scaled = pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            try:
+                pixmap = QPixmap()
+                pixmap.loadFromData(image_data)
+                if not pixmap.isNull():
+                    target_size = QSize(230, 108)
+                    scaled = pixmap.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
 
-                cropped_faded = QPixmap(target_size)
-                cropped_faded.fill(Qt.GlobalColor.transparent)
+                    cropped_faded = QPixmap(target_size)
+                    cropped_faded.fill(Qt.GlobalColor.transparent)
 
-                painter = QPainter(cropped_faded)
-                dx = (target_size.width() - scaled.width()) // 2
-                dy = (target_size.height() - scaled.height()) // 2
-                painter.drawPixmap(dx, dy, scaled)
+                    painter = QPainter(cropped_faded)
+                    dx = (target_size.width() - scaled.width()) // 2
+                    dy = (target_size.height() - scaled.height()) // 2
+                    painter.drawPixmap(dx, dy, scaled)
 
-                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-                gradient = QLinearGradient(0, 0, target_size.width(), 0)
-                gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
-                gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
-                gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                    gradient = QLinearGradient(0, 0, target_size.width(), 0)
+                    gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
+                    gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
+                    gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
 
-                painter.fillRect(cropped_faded.rect(), QBrush(gradient))
-                painter.end()
+                    painter.fillRect(cropped_faded.rect(), QBrush(gradient))
+                    painter.end()
 
-                widget = self.results_list.itemWidget(item)
-                if widget and hasattr(widget, "set_image"):
                     widget.set_image(cropped_faded)
-                else:
-                    item.setIcon(QIcon(cropped_faded))
-
+            except Exception as e:
+                logger.debug(f"Failed to process image for AppID {app_id}: {e}")
 
         # Find fetcher and delete it safely
         sender = self.sender()
@@ -1456,6 +1552,9 @@ class FetchManifestDialog(QDialog):
 
         self.status_label.setText("Download complete! Adding to queue")
 
+        if parsed_data and parsed_data.get("appid"):
+            ImageFetcher.promote_to_permanent_cache(parsed_data["appid"])
+
         if self.parent_window and hasattr(self.parent_window, "job_queue"):
             self.parent_window.job_queue.add_job(filepath, metadata)
 
@@ -1481,7 +1580,15 @@ class FetchManifestDialog(QDialog):
         self._toggle_inputs(True)
 
     def _stop_active_image_fetchers(self):
-        """Safely stops all running image fetchers."""
+        """Safely stops all running image fetchers and cancels pending timers."""
+        if hasattr(self, "_pending_image_timers"):
+            for timer in list(self._pending_image_timers):
+                try:
+                    timer.stop()
+                except Exception:
+                    pass
+            self._pending_image_timers.clear()
+
         for fetcher in list(self._active_image_fetchers.values()):
             try:
                 fetcher.stop()
