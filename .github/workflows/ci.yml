@@ -63,7 +63,7 @@ jobs:
         run: |
           test -s ASSella.AppImage.dev
           set +e
-          timeout 20 ./AppDir/usr/bin/ASSella --check-updates
+          timeout 20 ./ASSella.AppImage.dev --check-updates
           status=$?
           set -e
           [[ "$status" -eq 0 || "$status" -eq 124 ]]

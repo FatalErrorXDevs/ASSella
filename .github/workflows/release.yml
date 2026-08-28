@@ -40,7 +40,7 @@ jobs:
       - name: Smoke test packaged application
         run: |
           set +e
-          timeout 20 ./AppDir/usr/bin/ASSella --check-updates
+          timeout 20 ./ASSella.AppImage --check-updates
           status=$?
           set -e
           [[ "$status" -eq 0 || "$status" -eq 124 ]]
