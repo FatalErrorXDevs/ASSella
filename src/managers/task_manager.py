@@ -2558,9 +2558,7 @@ class TaskManager(QObject):
         reply = QMessageBox.question(
             self.main_window,
             "Cancel Job",
-            f"Are you sure you want to cancel the download for '{
-                os.path.basename(self.current_job)
-            }'?",
+            f"Are you sure you want to cancel the download for '{os.path.basename(self.current_job)}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
