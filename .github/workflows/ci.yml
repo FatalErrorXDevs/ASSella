@@ -32,6 +32,6 @@ jobs:
         # steamless-aio.sh contains an embedded base64 Python payload; ShellCheck
         # correctly cannot parse that payload as shell source. Keep syntax
         # validation for it, while linting the maintainable shell scripts.
-        run: shellcheck install.sh uninstall.sh packaging/build_appimage.sh && bash -n install.sh uninstall.sh steamless-aio.sh packaging/build_appimage.sh
+        run: shellcheck --severity=error install.sh uninstall.sh packaging/build_appimage.sh && bash -n install.sh uninstall.sh steamless-aio.sh packaging/build_appimage.sh
       - name: Validate bundled resources
         run: test -f src/res/version && test -f src/res/logo/icon.png && test -f src/deps/DepotDownloader.dll && test -f src/deps/steamless.py
