@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=ASSella
+Comment=Steam game depot and library manager
+Exec=ASSella %U
+Icon=assella
+Terminal=false
+Type=Application
+Categories=Game;Utility;
+MimeType=x-scheme-handler/accela;

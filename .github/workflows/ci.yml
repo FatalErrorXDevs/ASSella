@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-22.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y shellcheck libfuse2
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
+      - name: Compile Python sources
+        run: python -m compileall -q src workshop_downloader
+      - name: Import smoke test
+        run: python -c "import sys; sys.path.insert(0, 'src'); import core.morrenus_api, managers.game_manager, ui.main_window"
+      - name: Validate shell scripts
+        run: shellcheck install.sh uninstall.sh steamless-aio.sh && bash -n install.sh uninstall.sh steamless-aio.sh packaging/build_appimage.sh
+      - name: Validate bundled resources
+        run: test -f src/res/version && test -f src/res/logo/icon.png && test -f src/deps/DepotDownloader.dll && test -f src/deps/steamless.py

@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 fuse squashfs-tools desktop-file-utils
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pyinstaller
+      - name: Check release version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(tr -d '\r\n' < src/res/version)"
+          [[ "$tag" == "$version" ]] || { echo "Tag $tag does not match src/res/version $version"; exit 1; }
+      - name: Download appimagetool
+        run: |
+          curl -fL --retry 3 -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+      - name: Build AppImage
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: packaging/build_appimage.sh
+      - name: Smoke test packaged application
+        run: |
+          set +e
+          timeout 20 ./AppDir/usr/bin/ASSella --check-updates
+          status=$?
+          set -e
+          [[ "$status" -eq 0 || "$status" -eq 124 ]]
+      - name: Create source archive
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          root="ASSella-${version}-linux-source"
+          mkdir -p "$root/bin"
+          cp install.sh uninstall.sh "$root/"
+          cp requirements.txt run.sh "$root/bin/"
+          cp -a src "$root/bin/src"
+          cp src/res/logo/icon.png "$root/bin/icon.png"
+          tar -czf "${root}.tar.gz" "$root"
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ASSella.AppImage
+            ASSella-*-linux-source.tar.gz
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

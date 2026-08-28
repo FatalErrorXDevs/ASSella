@@ -19,6 +19,8 @@ DESKTOP_ENTRY="$HOME/.local/share/applications/accela.desktop"
 ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
 VERSION_FILE="$INSTALL_DESTINATION/version"
 NIXOS_LAUNCHER="$INSTALL_DESTINATION/launch_nixos.sh"
+REPOSITORY="${ASSELLA_REPO:-FatalErrorXDevs/ASSella}"
+RELEASE_CHANNEL="stable"
 
 # ------------------------------------------------------------------------------
 #  1. System & Distro Detection
@@ -90,25 +92,28 @@ get_local_version() {
 get_latest_github_version() {
     LATEST_VER="Unknown"
     LATEST_URL=""
-
-    REL_JSON=$(curl -s "https://api.github.com/repos/niwia/ASSella/releases" || true)
-    if [ -n "$REL_JSON" ]; then
-        # Try to parse tag_name of first release
-        TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4 || true)
-        if [ -n "$TAG_NAME" ]; then
-            LATEST_VER="$TAG_NAME"
-        fi
-
-        # Find AppImage download URL
-        DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
-        if [ -n "$DL_URL" ]; then
-            LATEST_URL="$DL_URL"
-        fi
+    local rel_json parsed
+    if ! rel_json=$(curl -fsSL --retry 3 --connect-timeout 10 "https://api.github.com/repos/${REPOSITORY}/releases?per_page=30"); then
+        echo -e "${RED}[ERROR] Unable to query GitHub releases for ${REPOSITORY}.${NC}" >&2
+        return 1
     fi
-
-    if [ -z "$LATEST_URL" ]; then
-        LATEST_URL="https://github.com/niwia/ASSella/releases/latest/download/ASSella.AppImage"
+    if ! parsed=$(RELEASE_CHANNEL="$RELEASE_CHANNEL" python3 -c '
+import json, os, sys
+try: releases = json.load(sys.stdin)
+except Exception: raise SystemExit(2)
+want_beta = os.environ.get("RELEASE_CHANNEL") == "beta"
+for release in releases:
+    if bool(release.get("prerelease")) != want_beta or release.get("draft"): continue
+    for asset in release.get("assets", []):
+        if asset.get("name") == "ASSella.AppImage":
+            print(release.get("tag_name", "Unknown")); print(asset.get("browser_download_url", "")); raise SystemExit(0)
+raise SystemExit(1)
+' <<< "$rel_json"); then
+        echo -e "${RED}[ERROR] No ${RELEASE_CHANNEL} release containing ASSella.AppImage was found.${NC}" >&2
+        return 1
     fi
+    LATEST_VER=$(printf '%s\n' "$parsed" | sed -n '1p')
+    LATEST_URL=$(printf '%s\n' "$parsed" | sed -n '2p')
 }
 
 # ------------------------------------------------------------------------------
@@ -222,20 +227,40 @@ do_install() {
     echo -e "\n${YELLOW}[INFO] Installing / Updating ASSella...${NC}"
     mkdir -p "$INSTALL_DESTINATION"
 
-    # Backup existing ACCELA.AppImage if present
-    if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
-        echo -e "${YELLOW}[INFO] Backing up existing ACCELA.AppImage to ACCELA.AppImage.bak...${NC}"
+    # Preserve a pre-existing, non-symlinked ACCELA binary so the restore
+    # option can recover it after ASSella has been installed.
+    if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -f "$INSTALL_DESTINATION/ACCELA.AppImage.bak" ]; then
+        echo -e "${YELLOW}[INFO] Backing up existing ACCELA.AppImage...${NC}"
         mv -f "$INSTALL_DESTINATION/ACCELA.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage.bak"
     fi
 
     # Fetch AppImage binary
-    get_latest_github_version
-    echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
-    if ! curl -fL -o "$INSTALL_DESTINATION/ASSella.AppImage" "$LATEST_URL"; then
+    if ! get_latest_github_version; then
+        pause_if_interactive
+        return 1
+    fi
+    echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER, ${RELEASE_CHANNEL})...${NC}"
+    local tmp_appimage
+    tmp_appimage=$(mktemp "$INSTALL_DESTINATION/.ASSella.AppImage.XXXXXX")
+    if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp_appimage" "$LATEST_URL"; then
+        rm -f "$tmp_appimage"
         echo -e "${RED}❌ Download failed! Please check your connection to GitHub.${NC}"
         pause_if_interactive
         return 1
     fi
+
+    if ! file "$tmp_appimage" 2>/dev/null | grep -q 'ELF'; then
+        rm -f "$tmp_appimage"
+        echo -e "${RED}❌ Downloaded file is not a valid AppImage.${NC}"
+        pause_if_interactive
+        return 1
+    fi
+
+    if [ -f "$INSTALL_DESTINATION/ASSella.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ASSella.AppImage" ] && [ ! -f "$INSTALL_DESTINATION/ASSella.AppImage.bak" ]; then
+        mv -f "$INSTALL_DESTINATION/ASSella.AppImage" "$INSTALL_DESTINATION/ASSella.AppImage.bak"
+    fi
+    chmod +x "$tmp_appimage"
+    mv -f "$tmp_appimage" "$INSTALL_DESTINATION/ASSella.AppImage"
 
     chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"
 
@@ -519,6 +544,15 @@ main() {
         --headcrab)
             install_headcrab
             ;;
+        --beta)
+            RELEASE_CHANNEL="beta"
+            do_install
+            ;;
+        --beta-update)
+            RELEASE_CHANNEL="beta"
+            get_latest_github_version
+            if [ "$LOCAL_VER" != "$LATEST_VER" ]; then do_install; else echo -e "${GREEN}ASSella beta is already up to date ($LOCAL_VER).${NC}"; fi
+            ;;
         --restore)
             do_restore_accela
             ;;
@@ -532,6 +566,8 @@ main() {
             echo "Options:"
             echo "  --install, -i    Install or force update ASSella"
             echo "  --update, -u     Check and update if a new release exists"
+            echo "  --beta           Install the latest beta/pre-release"
+            echo "  --beta-update    Update from the beta/pre-release channel"
             echo "  --headcrab       Install Headcrab (SLSsteam) daemon"
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
