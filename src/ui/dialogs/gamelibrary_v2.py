@@ -2135,32 +2135,8 @@ class GameDetailsDialogV2(QDialog):
         # Section 1: DRM & Emulation
         grid.addWidget(self._section_title("DRM & Emulation"))
 
-        # Row 1: Steamless (Python) | Steamless (Legacy)
-        self.b_steamless_aio = QPushButton("Steamless (Python)")
-        self.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
-        self.b_steamless_aio.setFixedHeight(36)
-        self.b_steamless_aio.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.b_steamless_aio.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 8px;
-                color: #FFFFFF;
-                font-size: 9pt;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background: rgba(255,255,255,0.12);
-                border-color: {ac};
-                color: {ac};
-            }}
-            QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
-        """)
-        self.b_steamless_aio.clicked.connect(
-            lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
-
-        self.b_steamless = QPushButton("Steamless (Legacy)")
-        self.b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+        self.b_steamless = QPushButton("Steamless")
+        self.b_steamless.setToolTip("Remove Steam DRM using Steamless")
         self.b_steamless.setFixedHeight(36)
         self.b_steamless.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_steamless.setStyleSheet(f"""
@@ -2180,15 +2156,9 @@ class GameDetailsDialogV2(QDialog):
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
         """)
         self.b_steamless.clicked.connect(
-            lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
-
-        sl_row_widget = QWidget()
-        sl_row = QHBoxLayout(sl_row_widget)
-        sl_row.setContentsMargins(0, 0, 0, 0)
-        sl_row.setSpacing(8)
-        sl_row.addWidget(self.b_steamless_aio, 1)
-        sl_row.addWidget(self.b_steamless, 1)
-        grid.addWidget(sl_row_widget)
+            lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
+        self.b_steamless_aio = self.b_steamless
+        grid.addWidget(self.b_steamless)
 
         # Row 2: Apply Goldberg | Remove Goldberg
         self.gb_apply_btn = QPushButton("Apply Goldberg")

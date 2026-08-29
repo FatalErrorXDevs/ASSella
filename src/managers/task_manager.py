@@ -1306,6 +1306,7 @@ class TaskManager(QObject):
 
     def _create_steamless_task(self, progress_handler):
         self.steamless_task = SteamlessTask()
+        self.steamless_task.use_aio = True
         self.steamless_task.progress.connect(progress_handler)
         self.steamless_task.result.connect(self._on_steamless_complete)
         self.steamless_task.finished.connect(self._on_steamless_finished)
@@ -1317,7 +1318,7 @@ class TaskManager(QObject):
             self.steamless_task.stop()
             self.steamless_task = None
 
-    def _start_steamless_processing(self, use_aio=False):
+    def _start_steamless_processing(self, use_aio=True):
         if not self.current_dest_path or not self.game_data:
             self._finalize_job_logic()
             return
@@ -1335,7 +1336,7 @@ class TaskManager(QObject):
             self.main_window.simplified_terminal.set_stage_status("steamless", "in_progress")
 
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
-        steamless_task.use_aio = use_aio
+        steamless_task.use_aio = True
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
 
@@ -1351,6 +1352,7 @@ class TaskManager(QObject):
 
         logger.info(f"Starting manual Steamless processing for: {exe_path}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
+        steamless_task.use_aio = True
         steamless_task.set_target_exe(exe_path)
         steamless_task.start()
 
@@ -1376,6 +1378,7 @@ class TaskManager(QObject):
 
         logger.info(f"Starting manual Steamless processing for game: {game_name}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
+        steamless_task.use_aio = True
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
 
@@ -1964,6 +1967,10 @@ class TaskManager(QObject):
         processed_count = 0
         had_error = self._steamless_error
 
+        # If a single file was targeted directly, default exe_count to at least 1
+        if self._steamless_game_name and self._steamless_game_name.lower().endswith(".exe"):
+            exe_count = 1
+
         for message in self._steamless_progress_log:
             if "Found " in message and "executable(s)" in message:
                 try:
@@ -1975,15 +1982,29 @@ class TaskManager(QObject):
                 except ValueError:
                     pass
 
-            if "Successfully processed:" in message:
+            if (
+                "Successfully processed:" in message
+                or "Successfully unpacked file!" in message
+                or "Unpacked with SteamStub" in message
+                or "[+] Unpacked with" in message
+            ):
                 processed_count += 1
-            if "Successfully unpacked file!" in message:
-                processed_count += 1
-                exe_count = max(exe_count, 1)
-            if "No Steam DRM detected" in message:
                 exe_count = max(exe_count, 1)
 
-        actual_success = processed_count > 0 and not had_error
+            if (
+                "No Steam DRM detected" in message
+                or "No variant matched" in message
+                or "[-] No Steam DRM" in message
+                or "[!] No variant matched" in message
+            ):
+                exe_count = max(exe_count, 1)
+
+        # Fallback if _last_steamless_success was True
+        if getattr(self, "_last_steamless_success", False) and not had_error:
+            processed_count = max(processed_count, 1)
+            exe_count = max(exe_count, 1)
+
+        actual_success = (processed_count > 0 or getattr(self, "_last_steamless_success", False)) and not had_error
 
         dialog = SteamlessResumeDialog(
             game_name=self._steamless_game_name,
