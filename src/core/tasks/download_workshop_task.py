@@ -10,7 +10,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from utils.settings import get_settings
 from utils.paths import Paths
-from utils.helpers import get_base_path, get_dotnet_path
+from utils.helpers import get_base_path, get_dotnet_env, get_dotnet_path
 from core import steam_helpers
 from core.morrenus_api import BASE_URL
 
@@ -220,7 +220,8 @@ class DownloadWorkshopTask(QObject):
                     stderr=subprocess.STDOUT,
                     text=True,
                     encoding="utf-8",
-                    errors="replace"
+                    errors="replace",
+                    env=get_dotnet_env(),
                 )
                 self.process = proc
                 for line in proc.stdout:

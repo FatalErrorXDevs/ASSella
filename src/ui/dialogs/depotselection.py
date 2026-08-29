@@ -1158,7 +1158,7 @@ class DepotSelectionDialog(QDialog):
         progress_dialog.show()
 
         # Define command args
-        from utils.helpers import get_dotnet_path, resource_path
+        from utils.helpers import get_dotnet_env, get_dotnet_path, resource_path
         dotnet_path = get_dotnet_path()
         dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
 
@@ -1178,7 +1178,13 @@ class DepotSelectionDialog(QDialog):
             finished_signal = pyqtSignal(bool, str)
             def run(self):
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        env=get_dotnet_env(),
+                    )
                     self.finished_signal.emit(True, "")
                 except Exception as ex:
                     self.finished_signal.emit(False, str(ex))

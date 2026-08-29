@@ -13,7 +13,12 @@ from typing import List, Tuple, Optional, Dict, Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # Local imports
-from utils.helpers import resource_path, ensure_dotnet_availability, get_dotnet_path
+from utils.helpers import (
+    ensure_dotnet_availability,
+    get_dotnet_env,
+    get_dotnet_path,
+    resource_path,
+)
 from utils.settings import get_settings
 
 # Third-party imports
@@ -134,6 +139,7 @@ class DownloadDepotsTask(QObject):
                     stderr=subprocess.STDOUT,
                     text=False,  # Binary mode
                     creationflags=creation_flags,
+                    env=get_dotnet_env(),
                 )
 
                 # Read output directly in this thread

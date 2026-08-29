@@ -493,14 +493,10 @@ class SteamlessIntegration(QObject):
                         creationflags=creationflags,
                     )
                 else:
-                    # Linux: run with dotnet
-                    # Set DOTNET_ROOT if using ~/.dotnet
-                    env = None
-                    if self.dotnet_path and self.dotnet_path.startswith(
-                        os.path.expanduser("~")
-                    ):
-                        env = os.environ.copy()
-                        env["DOTNET_ROOT"] = os.path.expanduser("~/.dotnet")
+                    # Linux: run host dotnet without AppImage library overrides.
+                    from utils.helpers import get_dotnet_env
+
+                    env = get_dotnet_env()
 
                     process = subprocess.Popen(
                         cmd,

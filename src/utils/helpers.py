@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.paths import Paths
+from utils.subprocess_env import get_external_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ def get_dotnet_path() -> str | None:
         try:
             dotnet_exe = str(dotnet_exe)
             dotnet_root = os.path.dirname(dotnet_exe)
-            env = os.environ.copy()
+            env = get_dotnet_env()
             env.setdefault("DOTNET_ROOT", dotnet_root)
             run_kwargs = {
                 "capture_output": True,
@@ -144,7 +145,7 @@ def _install_dotnet_9_linux() -> bool:
 
         # Set DOTNET_ROOT to ensure the install script uses and exposes
         # the correct location
-        env = os.environ.copy()
+        env = get_dotnet_env()
         dotnet_root = _get_user_dotnet_root()
         env["DOTNET_ROOT"] = dotnet_root
 
@@ -1344,20 +1345,13 @@ def get_steam_stats_dir() -> Path | None:
 
 
 def get_dotnet_env():
-    import os
-    from pathlib import Path
-    import sys
-    env = os.environ.copy()
-    
-    # 1. Clean AppImage library overrides that break .NET runtime host
-    env.pop("LD_LIBRARY_PATH", None)
-    env.pop("LD_PRELOAD", None)
-    
-    # 2. Find local or system .dotnet directory
+    """Return an AppImage-safe environment for the host .NET runtime."""
+    env = get_external_process_env()
+
     local_dotnet = Path.home() / ".dotnet"
     system_dotnet = Path("/usr/share/dotnet")
     usr_lib_dotnet = Path("/usr/lib/dotnet")
-    
+
     dotnet_dir = None
     if local_dotnet.exists():
         dotnet_dir = local_dotnet
@@ -1367,11 +1361,11 @@ def get_dotnet_env():
         dotnet_dir = usr_lib_dotnet
         
     if dotnet_dir:
-        # Set DOTNET_ROOT (required for .NET to find runtimes)
         env["DOTNET_ROOT"] = str(dotnet_dir)
-        # Prepend to PATH so dotnet executable is found if needed
-        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
-        
+        path_entries = env.get("PATH", "").split(os.pathsep)
+        if str(dotnet_dir) not in path_entries:
+            env["PATH"] = os.pathsep.join((str(dotnet_dir), *path_entries))
+
     return env
 
 
