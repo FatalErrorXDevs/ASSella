@@ -44,5 +44,12 @@ def get_settings() -> QSettings:
             _settings_local.instance.setValue("user_background_color", "#111318")
             _settings_local.instance.setValue("workshop_steam_enabled", True)
             _settings_local.instance.setValue("workshop_max_downloads", 4)
+            _settings_local.instance.setValue("use_lancache", True)
             _settings_local.instance.sync()
     return _settings_local.instance
+
+
+def is_twp_needed() -> bool:
+    """True if the Training Wheels Protocol should be shown (first ASSella launch / transition from ACCELA)."""
+    s = get_settings()
+    return not s.value("assella_twp_seen", False, type=bool)

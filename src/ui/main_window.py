@@ -911,10 +911,14 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     refresh_system_status_signal = pyqtSignal()
+    # Signal used to safely invoke a callable on the main thread from a background thread.
+    # Using a typed signal instead of Q_ARG(object, fn) avoids PyQt6 GIL/metatype crashes.
+    _main_thread_callable = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
         self.refresh_system_status_signal.connect(self.refresh_system_status)
+        self._main_thread_callable.connect(self._run_on_main_thread)
         self.resize_handles: Dict[str, ResizeHandle] = {}
         self.key_sequence = deque(maxlen=4)
         self.target_sequence = ["l", "a", "i", "n"]
@@ -1111,7 +1115,28 @@ class MainWindow(QMainWindow):
             # Safely refresh system status labels on the main window dashboard
             self.refresh_system_status_signal.emit()
 
+            # Clean up orphaned non-installed search thumbnails from disk cache
+            try:
+                from utils.image_fetcher import ImageFetcher
+                ImageFetcher.cleanup_uninstalled_cache()
+            except Exception as e:
+                logger.debug(f"Image cache cleanup skipped/failed: {e}")
+
         threading.Thread(target=run_boot_checks, daemon=True).start()
+
+        # Check if Training Wheels Protocol (first-time transition guide) should be shown
+        from utils.settings import is_twp_needed
+        if is_twp_needed():
+            QTimer.singleShot(1000, self._show_training_wheels)
+
+    def _show_training_wheels(self) -> None:
+        """Display the Training Wheels Protocol transition and quickstart dialog."""
+        try:
+            from ui.dialogs.training_wheels import TrainingWheelsDialog
+            dlg = TrainingWheelsDialog(parent=self, manual=False)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"Failed to display Training Wheels Protocol dialog: {e}", exc_info=True)
 
     def _prompt_experimental_features_once_if_needed(self):
         """Prompt user once on startup to try experimental features if not already enabled."""
@@ -1885,33 +1910,15 @@ class MainWindow(QMainWindow):
         self.ui_state.setup_queue_panel()
         self.bottom_layout.addWidget(self.ui_state.queue_widget, 1)
 
-        self.stacked_terminal_widget = QStackedWidget()
-
-        self.log_output = QPlainTextEdit()
-        self.log_output.setReadOnly(True)
-        self.log_output.setMaximumBlockCount(5000)  # cap RAM: keep only last 5000 lines
-        qt_log_handler.new_record.connect(self.log_output.appendPlainText)
-        self.stacked_terminal_widget.addWidget(self.log_output)
-
         self.simplified_terminal = SimplifiedTerminalWidget(self)
-        self.stacked_terminal_widget.addWidget(self.simplified_terminal)
-
-        self.bottom_layout.addWidget(self.stacked_terminal_widget, 1)
+        self.bottom_layout.addWidget(self.simplified_terminal, 1)
 
         self.layout.addWidget(self.bottom_widget, 3)
         self.ui_state.queue_widget.setVisible(False)
 
-
-
     def update_nerd_mode(self, nerd: Optional[bool] = None) -> None:
-        """Update terminal widget display based on nerd mode setting."""
-        if nerd is None:
-            nerd = self.settings.value("nerd_mode", False, type=bool)
-        if self.stacked_terminal_widget:
-            if nerd:
-                self.stacked_terminal_widget.setCurrentIndex(0)
-            else:
-                self.stacked_terminal_widget.setCurrentIndex(1)
+        """Nerd mode has been permanently deprecated."""
+        pass
 
     def update_progress_bar_style(self) -> None:
         self._update_progress_bar_style()
@@ -1966,6 +1973,8 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
         dialog.exec()
+        self._check_network_connections_async()
+        self.refresh_hubcap_stats()
 
     def open_fetch_dialog(self) -> None:
         self.ui_state.fetch_dialog = FetchManifestDialog(self)
@@ -2204,9 +2213,15 @@ class MainWindow(QMainWindow):
         # 1. Update Hubcap connection label
         if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
             if hubcap_ok:
-                lbl = "Online"
-                if hubcap_mode in ("DoH", "Tor"):
-                    lbl = f"Online {hubcap_mode}"
+                lbl = f"Online ({hubcap_mode})" if hubcap_mode and hubcap_mode not in ("Online", "Direct") else "Online"
+                if hubcap_mode == "Tor":
+                    lbl = "Online (Tor)"
+                elif hubcap_mode == "Wire":
+                    lbl = "Online (Wire)"
+                elif hubcap_mode == "DoH":
+                    lbl = "Online (DoH)"
+                elif hubcap_mode == "Direct":
+                    lbl = "Online (Direct)"
                 self.hubcap_conn_value.setText(lbl)
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
             else:
@@ -2439,28 +2454,76 @@ class MainWindow(QMainWindow):
                         depots = parsed_data.get("depots")
                         selected_depots = None
                         val = settings.value(f"depot_selection/{appid}", "", type=str)
+                        should_prompt = True
+                        prev_selected = None
+
                         if val:
                             try:
                                 data = json.loads(val)
                                 cached_selected = data.get("selected", [])
                                 cached_all = data.get("all_available", [])
+                                prev_selected = cached_selected
                                 has_new_depot = any(d not in cached_all for d in depots)
                                 if has_new_depot:
                                     # New depot added since last selection — clear cache and force re-prompt
-                                    logger.info(f"Update All: new depot detected for {name} (appid={appid}), clearing cache")
+                                    logger.info(f"Update All: new depot detected for {name} (appid={appid}), prompting user")
                                     settings.remove(f"depot_selection/{appid}")
                                 else:
                                     selected_depots = [d for d in cached_selected if d in depots]
+                                    if selected_depots:
+                                        should_prompt = False
                             except Exception:
                                 pass
-                        if not selected_depots:
+
+                        if should_prompt:
                             auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
-                            if auto_skip or len(depots) == 1:
+                            if auto_skip and len(depots) == 1:
                                 selected_depots = list(depots.keys())
                             else:
-                                logger.info(f"Update All: skipping {name} — depot selection required (new depots or no saved selection)")
-                                skipped_names.append(name)
-                                continue
+                                # Depot dialog must run on the main thread
+                                from ui.dialogs.depotselection import DepotSelectionDialog
+                                result_holder = [None]
+                                done_event = threading.Event()
+
+                                def _show_depot_dialog():
+                                    try:
+                                        depot_dialog = DepotSelectionDialog(
+                                            appid,
+                                            parsed_data.get("game_name", name),
+                                            depots,
+                                            parsed_data.get("header_url"),
+                                            self,
+                                            selected_depots=prev_selected,
+                                        )
+                                        if depot_dialog.exec():
+                                            result_holder[0] = depot_dialog.get_selected_depots()
+                                    except Exception as err:
+                                        logger.error(f"Error displaying depot selection dialog in Update All: {err}")
+                                    finally:
+                                        done_event.set()
+
+                                self._main_thread_callable.emit(_show_depot_dialog)
+                                done_event.wait(timeout=300)
+                                selected_depots = result_holder[0]
+
+                        if not selected_depots:
+                            logger.info(f"Update All: skipping {name} — depot selection cancelled or no depots selected")
+                            skipped_names.append(name)
+                            continue
+
+                        # Persist confirmed selection
+                        try:
+                            settings.setValue(
+                                f"depot_selection/{appid}",
+                                json.dumps({
+                                    "selected": selected_depots,
+                                    "all_available": list(depots.keys()),
+                                    "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                                })
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache depot selection: {e}")
+
                         metadata["selected_depots_list"] = selected_depots
 
                     self.job_queue.add_job(local_path, metadata)
@@ -2501,6 +2564,14 @@ class MainWindow(QMainWindow):
                 )
 
         threading.Thread(target=_do_update_all, daemon=True).start()
+
+    @pyqtSlot(object)
+    def _run_on_main_thread(self, fn) -> None:
+        """Slot to execute a callable on the main thread (connected via _main_thread_callable signal)."""
+        try:
+            fn()
+        except Exception as e:
+            logger.error(f"Error executing on main thread: {e}", exc_info=True)
 
     def _set_update_all_btn_preparing(self, done: int, total: int) -> None:
         """Thread-safe: update the Update All button to show preparation progress."""
@@ -2706,32 +2777,31 @@ class MainWindow(QMainWindow):
         def _parse_version(v_str: str) -> tuple:
             import re as _re
             v_str = v_str.lstrip('v').strip()
-            parts = v_str.split('-')
-            main_part = parts[0]
-            main_numbers = []
-            for num in main_part.split('.'):
-                try:
-                    main_numbers.append(int(num))
-                except ValueError:
-                    main_numbers.append(0)
-            
-            while len(main_numbers) < 3:
-                main_numbers.append(0)
-                
-            pre_release_val = 0  # 0 means release version
-            pre_release_num = 0
-            
-            if len(parts) > 1:
-                pre_tag = parts[1].lower()
-                pre_release_val = -1
-                match = _re.search(r'\d+$', pre_tag)
-                if match:
-                    try:
-                        pre_release_num = int(match.group(0))
-                    except ValueError:
-                        pre_release_num = 0
-            
-            return tuple(main_numbers) + (pre_release_val, pre_release_num)
+            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc|hotfix)(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
+            if m:
+                major = int(m.group(1) or 0)
+                minor = int(m.group(2) or 0)
+                patch = int(m.group(3) or 0)
+                pre_type = m.group(4) or ""
+                pre_num_str = m.group(5) or ""
+                pre_extra = m.group(6) or ""
+                pre_weights = {"hotfix": 1, "rc": -1, "beta": -2, "alpha": -3, "dev": -4}
+                if pre_type:
+                    pre_val = pre_weights.get(pre_type.lower(), 1 if "hotfix" in pre_type.lower() else -4)
+                    pre_num = int(pre_num_str) if pre_num_str else 1
+                elif pre_extra:
+                    if "hotfix" in pre_extra.lower():
+                        hm = _re.search(r'\d+', pre_extra)
+                        pre_val = 1
+                        pre_num = int(hm.group(0)) if hm else 1
+                    else:
+                        pre_val = -4
+                        pre_num = 0
+                else:
+                    pre_val = 0
+                    pre_num = 0
+                return (major, minor, patch, pre_val, pre_num)
+            return (0, 0, 0, 0, 0)
 
         def _check_sync():
             status = "offline"

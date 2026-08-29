@@ -43,16 +43,20 @@ Options:
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
 import sys
 import textwrap
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Set
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────
 # Version
@@ -1085,7 +1089,6 @@ def run_boot_config_check() -> None:
             boot_status = "optimal"
     except Exception as e:
         boot_status = "failed"
-        boot_issues = [str(e)]
 
 
 def check_config_status(config_path: Optional[Path] = None, online: bool = True) -> Tuple[bool, str, List[str]]:
@@ -1094,6 +1097,7 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
     Returns:
         (needs_repair, summary_message, details_list)
     """
+    t0 = time.time()
     if config_path is None:
         try:
             from utils.yaml_config_manager import get_user_config_path
@@ -1101,12 +1105,16 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
         except Exception:
             config_path = DEFAULT_CONFIG_PATH
 
+    logger.info(f"Checking SLSsteam config status (path: {config_path}, online: {online})...")
+
     if not config_path.exists():
+        logger.warning(f"Config file not found at {config_path}")
         return False, f"Config file not found at {config_path}", [f"File does not exist: {config_path}"]
 
     try:
         config_text = config_path.read_text(encoding="utf-8")
     except Exception as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
         return True, f"Failed to read config: {e}", [str(e)]
 
     raw_hpp = ""
@@ -1115,22 +1123,27 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
 
     if online:
         try:
+            logger.debug(f"Fetching upstream template from {TEMPLATE_SOURCE_URL} (timeout {TEMPLATE_TIMEOUT}s)...")
             raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
             key_types = infer_key_types(raw_hpp)
             m_tmpl = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-            if m_tmpl:
-                template_yaml = m_tmpl.group(1)
-        except Exception:
-            pass
-
-    # Fallback to local template if online fetch failed or offline
-    if not template_yaml:
-        local_tmpl_path = Path("/home/aiwin/.local/share/ACCELA/SLSsteam/res/config.yaml")
+            if not m_tmpl:
+                raise ValueError("Could not extract default config from upstream C++ template.")
+            template_yaml = m_tmpl.group(1)
+            logger.debug(f"Upstream template fetched successfully ({len(template_yaml)} chars, {len(key_types)} key types inferred).")
+        except Exception as e:
+            logger.warning(f"Network fetch failed for upstream template: {e}")
+            return True, f"Network check failed: {e}", [f"Could not fetch template from {TEMPLATE_SOURCE_URL}: {e}"]
+    else:
+        # Fallback to local template if offline
+        from utils.helpers import get_base_path
+        local_tmpl_path = get_base_path() / "SLSsteam" / "res" / "config.yaml"
         if not local_tmpl_path.exists():
             local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
         if local_tmpl_path.exists():
             try:
                 template_yaml = local_tmpl_path.read_text(encoding="utf-8")
+                logger.debug(f"Using local template fallback from {local_tmpl_path}")
             except Exception:
                 pass
 
@@ -1138,6 +1151,7 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
     try:
         old_data = reader.parse(config_text)
     except Exception as parse_err:
+        logger.warning(f"Config YAML parse error: {parse_err}")
         return True, "Config has syntax/parse errors", [f"Parse error: {parse_err}"]
 
     issues = validate_config(config_path, key_types)
@@ -1156,12 +1170,15 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
     if issues:
         details.extend(issues)
 
+    elapsed = time.time() - t0
     if details:
         summary = f"Issues detected ({len(details)} item{'s' if len(details) != 1 else ''})"
         if new_keys and not issues:
             summary = f"{len(new_keys)} new upstream setting{'s' if len(new_keys) != 1 else ''} available"
+        logger.info(f"Config check completed in {elapsed:.2f}s: {summary} ({details})")
         return True, summary, details
     else:
+        logger.info(f"Config check completed in {elapsed:.2f}s: Config is up to date and healthy.")
         return False, "Config is up to date and healthy!", []
 
 
@@ -1193,7 +1210,8 @@ def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = Tr
                 pass
 
         if not template_yaml:
-            local_tmpl_path = Path("/home/aiwin/.local/share/ACCELA/SLSsteam/res/config.yaml")
+            from utils.helpers import get_base_path
+            local_tmpl_path = get_base_path() / "SLSsteam" / "res" / "config.yaml"
             if not local_tmpl_path.exists():
                 local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
             if local_tmpl_path.exists():

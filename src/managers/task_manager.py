@@ -248,6 +248,7 @@ class TaskManager(QObject):
         self.game_data = game_data
 
         if self.game_data and self.game_data.get("depots"):
+
             pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
             if pre_selected:
                 self.game_data["selected_depots_list"] = pre_selected
@@ -1305,6 +1306,7 @@ class TaskManager(QObject):
 
     def _create_steamless_task(self, progress_handler):
         self.steamless_task = SteamlessTask()
+        self.steamless_task.use_aio = True
         self.steamless_task.progress.connect(progress_handler)
         self.steamless_task.result.connect(self._on_steamless_complete)
         self.steamless_task.finished.connect(self._on_steamless_finished)
@@ -1313,10 +1315,12 @@ class TaskManager(QObject):
 
     def _reset_steamless_task(self):
         if self.steamless_task:
-            self.steamless_task.stop()
+            if self.steamless_task.isRunning():
+                self.steamless_task.stop()
+                self.steamless_task.wait(2000)
             self.steamless_task = None
 
-    def _start_steamless_processing(self, use_aio=False):
+    def _start_steamless_processing(self, use_aio=True):
         if not self.current_dest_path or not self.game_data:
             self._finalize_job_logic()
             return
@@ -1327,6 +1331,8 @@ class TaskManager(QObject):
             self._finalize_job_logic()
             return
 
+        self._reset_steamless_task()
+
         logger.info("\n" + "=" * 40)
         logger.info("Starting Steamless DRM Removal...")
 
@@ -1334,7 +1340,7 @@ class TaskManager(QObject):
             self.main_window.simplified_terminal.set_stage_status("steamless", "in_progress")
 
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
-        steamless_task.use_aio = use_aio
+        steamless_task.use_aio = True
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
 
@@ -1348,8 +1354,9 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless processing for: {exe_path}")
+        logger.info(f"Starting manual Steamless (.NET CLI) processing for: {exe_path}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
+        steamless_task.use_aio = False
         steamless_task.set_target_exe(exe_path)
         steamless_task.start()
 
@@ -1360,7 +1367,7 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless AIO processing for: {exe_path}")
+        logger.info(f"Starting manual Steamless (Python AIO) processing for: {exe_path}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
         steamless_task.use_aio = True
         steamless_task.set_target_exe(exe_path)
@@ -1373,8 +1380,9 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless processing for game: {game_name}")
+        logger.info(f"Starting manual Steamless (.NET CLI) processing for game: {game_name}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
+        steamless_task.use_aio = False
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
 
@@ -1548,6 +1556,72 @@ class TaskManager(QObject):
                 targets.add(root)
         return targets
 
+    @staticmethod
+    def _safe_remove(file_path: str) -> bool:
+        """Remove a file safely, making it writable first if read-only."""
+        import stat
+        if not os.path.exists(file_path):
+            return True
+        try:
+            os.chmod(file_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        except Exception:
+            pass
+        try:
+            os.remove(file_path)
+            return True
+        except Exception as e:
+            logger.warning(f"Could not remove file {file_path}: {e}")
+            return False
+
+    @staticmethod
+    def _safe_rmtree(dir_path: str) -> bool:
+        """Safely remove a directory tree, fixing read-only permissions if necessary."""
+        import stat
+
+        def _remove_readonly(func, p, excinfo):
+            try:
+                os.chmod(os.path.dirname(p), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
+            try:
+                os.chmod(p, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
+            try:
+                func(p)
+            except Exception as e:
+                logger.debug(f"_safe_rmtree handler failed on {p}: {e}")
+
+        if not os.path.exists(dir_path):
+            return True
+
+        # Pre-emptively make tree writable
+        try:
+            for root, dirs, files in os.walk(dir_path):
+                for d in dirs:
+                    try:
+                        os.chmod(os.path.join(root, d), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                    except Exception:
+                        pass
+                for f in files:
+                    try:
+                        os.chmod(os.path.join(root, f), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                    except Exception:
+                        pass
+            os.chmod(dir_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        except Exception:
+            pass
+
+        try:
+            try:
+                shutil.rmtree(dir_path, onexc=_remove_readonly)
+            except TypeError:
+                shutil.rmtree(dir_path, onerror=_remove_readonly)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove directory {dir_path}: {e}")
+            return False
+
     def _apply_goldberg_to_single_dir(
         self, target_dir: str, appid: str, goldberg_src: Path
     ):
@@ -1572,7 +1646,13 @@ class TaskManager(QObject):
             if os.path.exists(src):
                 dst = src + ".valve"
                 if not os.path.exists(dst):
-                    os.rename(src, dst)
+                    try:
+                        os.rename(src, dst)
+                        renamed.append(name)
+                    except Exception as e:
+                        logger.error(f"Failed to rename {src} to {dst}: {e}")
+                else:
+                    # .valve backup already exists (e.g. re-applying Goldberg)
                     renamed.append(name)
         return renamed
 
@@ -1580,11 +1660,20 @@ class TaskManager(QObject):
         self, target_dir: str, goldberg_src: Path, renamed_files: List[str]
     ):
         """For each renamed file, copy the Goldberg replacement from the goldberg deps folder."""
+        import stat
         for name in renamed_files:
+            dst_file = os.path.join(target_dir, name)
+            if os.path.exists(dst_file):
+                try:
+                    os.chmod(dst_file, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                except Exception:
+                    pass
+
             if name.endswith(".dll"):
                 src = goldberg_src / "windows" / name
                 if src.exists():
-                    shutil.copy2(str(src), os.path.join(target_dir, name))
+                    shutil.copy2(str(src), dst_file)
+                    logger.info(f"Copied Goldberg {name} to {target_dir}")
                 else:
                     logger.warning(f"Goldberg file not found: {src}")
 
@@ -1611,7 +1700,7 @@ class TaskManager(QObject):
 
                 src = goldberg_src / "linux" / src_filename
                 if src.exists():
-                    shutil.copy2(str(src), os.path.join(target_dir, name))
+                    shutil.copy2(str(src), dst_file)
                     logger.info(
                         f"Copied {src_filename} (detected {arch}-bit) to {name}"
                     )
@@ -1628,12 +1717,21 @@ class TaskManager(QObject):
         if src_settings.exists():
             dst_settings = os.path.join(target_dir, "steam_settings")
             if os.path.exists(dst_settings):
-                shutil.rmtree(dst_settings)
-            shutil.copytree(str(src_settings), dst_settings)
+                self._safe_rmtree(dst_settings)
+            try:
+                shutil.copytree(str(src_settings), dst_settings)
+            except Exception as e:
+                logger.error(f"Failed to copy steam_settings to {dst_settings}: {e}")
 
     def _write_appid_file(self, target_dir: str, appid: str):
         """Write steam_appid.txt"""
+        import stat
         appid_path = os.path.join(target_dir, "steam_appid.txt")
+        if os.path.exists(appid_path):
+            try:
+                os.chmod(appid_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            except Exception:
+                pass
         try:
             with open(appid_path, "w", encoding="utf-8") as f:
                 f.write(str(appid))
@@ -1665,6 +1763,8 @@ class TaskManager(QObject):
                     interfaces_dst = os.path.join(
                         steam_settings_dir, "steam_interfaces.txt"
                     )
+                    if os.path.exists(interfaces_dst):
+                        self._safe_remove(interfaces_dst)
                     shutil.move(interfaces_src, interfaces_dst)
                     logger.info(f"Moved steam_interfaces.txt to {steam_settings_dir}")
 
@@ -1726,12 +1826,12 @@ class TaskManager(QObject):
         # Remove steam_settings
         settings_path = os.path.join(target_dir, "steam_settings")
         if os.path.exists(settings_path):
-            shutil.rmtree(settings_path)
+            self._safe_rmtree(settings_path)
 
         # Remove steam_appid.txt
         appid_path = os.path.join(target_dir, "steam_appid.txt")
         if os.path.exists(appid_path):
-            os.remove(appid_path)
+            self._safe_remove(appid_path)
 
         # Remove any Goldberg DLLs/SOs that are not .valve
         for name in [
@@ -1742,7 +1842,7 @@ class TaskManager(QObject):
         ]:
             full = os.path.join(target_dir, name)
             if os.path.exists(full) and not os.path.exists(full + ".valve"):
-                os.remove(full)
+                self._safe_remove(full)
 
     def _restore_original_files(self, target_dir: str):
         """Rename .valve backups back to original names."""
@@ -1752,13 +1852,12 @@ class TaskManager(QObject):
             original = fname[:-6]  # remove .valve
             backup_path = os.path.join(target_dir, fname)
             original_path = os.path.join(target_dir, original)
-
-            # Delete current file if it exists (Goldberg copy)
             if os.path.exists(original_path):
-                os.remove(original_path)
-
-            # Restore backup
-            os.rename(backup_path, original_path)
+                self._safe_remove(original_path)
+            try:
+                os.rename(backup_path, original_path)
+            except Exception as e:
+                logger.error(f"Failed to restore {backup_path} to {original_path}: {e}")
 
     @staticmethod
     def _run_chmod_recursive(game_directory) -> int:
@@ -1835,6 +1934,7 @@ class TaskManager(QObject):
         else:
             logger.info("Steamless processing completed with warnings or no DRM found")
 
+
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("steamless", "completed" if success else "error")
 
@@ -1871,6 +1971,10 @@ class TaskManager(QObject):
         processed_count = 0
         had_error = self._steamless_error
 
+        # If a single file was targeted directly, default exe_count to at least 1
+        if self._steamless_game_name and self._steamless_game_name.lower().endswith(".exe"):
+            exe_count = 1
+
         for message in self._steamless_progress_log:
             if "Found " in message and "executable(s)" in message:
                 try:
@@ -1882,15 +1986,29 @@ class TaskManager(QObject):
                 except ValueError:
                     pass
 
-            if "Successfully processed:" in message:
+            if (
+                "Successfully processed:" in message
+                or "Successfully unpacked file!" in message
+                or "Unpacked with SteamStub" in message
+                or "[+] Unpacked with" in message
+            ):
                 processed_count += 1
-            if "Successfully unpacked file!" in message:
-                processed_count += 1
-                exe_count = max(exe_count, 1)
-            if "No Steam DRM detected" in message:
                 exe_count = max(exe_count, 1)
 
-        actual_success = processed_count > 0 and not had_error
+            if (
+                "No Steam DRM detected" in message
+                or "No variant matched" in message
+                or "[-] No Steam DRM" in message
+                or "[!] No variant matched" in message
+            ):
+                exe_count = max(exe_count, 1)
+
+        # Fallback if _last_steamless_success was True
+        if getattr(self, "_last_steamless_success", False) and not had_error:
+            processed_count = max(processed_count, 1)
+            exe_count = max(exe_count, 1)
+
+        actual_success = (processed_count > 0 or getattr(self, "_last_steamless_success", False)) and not had_error
 
         dialog = SteamlessResumeDialog(
             game_name=self._steamless_game_name,
@@ -2503,10 +2621,15 @@ class TaskManager(QObject):
         else:
             overall_color = accent_color
 
-        self.main_window.bottom_titlebar.update_colored_circle_button(
-            self.main_window.bottom_titlebar.status_button, overall_color
-        )
-        self.main_window.bottom_titlebar.no_previous_state = False
+        if (
+            self.main_window
+            and hasattr(self.main_window, "bottom_titlebar")
+            and self.main_window.bottom_titlebar
+        ):
+            self.main_window.bottom_titlebar.update_colored_circle_button(
+                self.main_window.bottom_titlebar.status_button, overall_color
+            )
+            self.main_window.bottom_titlebar.no_previous_state = False
 
     def toggle_pause(self):
         if not self.download_task:

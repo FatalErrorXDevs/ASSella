@@ -99,6 +99,7 @@ class SmartUpdateTask(QObject):
         logger.info(f"[SmartUpdate] Starting smart update for AppID {self.appid} ({self.game_name})")
         self.progress.emit(f"[Smart Update] Starting for {self.game_name} ({self.appid})...")
 
+
         try:
             self._execute()
         except Exception as e:

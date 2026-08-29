@@ -26,7 +26,7 @@ class SteamlessIntegration(QObject):
 
     def __init__(self, steamless_path: Optional[str] = None):
         super().__init__()
-        self.steamless_path = steamless_path or os.path.join(os.getcwd(), "Steamless")
+        self.steamless_path = steamless_path or str(Paths.deps("Steamless"))
         self.is_windows = sys.platform == "win32"
         self._current_process = None
         self._process_mutex = QMutex()
@@ -326,9 +326,11 @@ class SteamlessIntegration(QObject):
                     self.error.emit(f"Steamless directory not found: {self.steamless_path}")
                     return False
 
-                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI.dll")
                 if not os.path.exists(steamless_dll):
-                    self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
+                    steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                if not os.path.exists(steamless_dll):
+                    self.error.emit(f"Steamless.CLI.dll not found in {self.steamless_path}")
                     return False
 
             # Validate game_directory is actually a directory
@@ -425,9 +427,9 @@ class SteamlessIntegration(QObject):
                     self._last_exe_status = "error"
                     return False
 
-                # Use the tool's own venv Python
+                # Use the tool's own venv Python or current interpreter
                 from utils.helpers import get_venv_python
-                python_exe = get_venv_python()
+                python_exe = get_venv_python() or sys.executable
                 if not python_exe or not os.path.exists(python_exe):
                     self.error.emit(
                         "Cannot find the tool's Python interpreter. "
@@ -451,7 +453,9 @@ class SteamlessIntegration(QObject):
                     bufsize=0,
                 )
             else:
-                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI.dll")
+                if not os.path.exists(steamless_dll):
+                    steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
 
                 # Prepare command for dotnet
                 dotnet_cmd = self.dotnet_path or (
@@ -460,16 +464,15 @@ class SteamlessIntegration(QObject):
                 cmd = [
                     dotnet_cmd,
                     steamless_dll,
-                    "-f",
-                    target_path,
                     "--quiet",
                     "--realign",
+                    target_path,
                 ]
                 # Only add --recalcchecksum on Windows (imagehlp.dll is Windows-only)
                 if self.is_windows:
                     cmd.append("--recalcchecksum")
 
-                self.progress.emit(f"Running Steamless: {' '.join(cmd)}")
+                self.progress.emit(f"Running Steamless (.NET CLI): {os.path.basename(target_path)}")
 
                 # Run Steamless CLI
                 if self.is_windows:
@@ -677,6 +680,7 @@ class SteamlessTask(QThread):
         self.steamless_path = self._get_steamless_path()
         self.steamless_integration = None
         self._integration_mutex = QMutex()
+        self.use_aio = True
         self.dotnet_available = False
         self.process = None
 
@@ -688,43 +692,42 @@ class SteamlessTask(QThread):
 
     def _setup_steamless_integration(self):
         """Initialize Steamless integration and check prerequisites"""
-        if getattr(self, "use_aio", False):
-            self.progress.emit("Using Steamless AIO script...")
+        if getattr(self, "use_aio", True):
+            self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True
             return True
 
-        # Check if Steamless directory exists
+        # Check if Steamless directory exists (legacy fallback)
         if not self.steamless_path.exists():
-            error_msg = f"Steamless directory not found at {self.steamless_path}"
-            self.progress.emit(error_msg)
-            self.error.emit((Exception, error_msg, ""))
-            return False
+            logger.info("Legacy Steamless directory not found — falling back to Steamless AIO")
+            self.use_aio = True
+            self.progress.emit("Using Steamless AIO...")
+            self.dotnet_available = True
+            return True
 
-        # Check if Steamless.CLI.dll exists
-        steamless_dll = self.steamless_path / "Steamless.CLI"
+        # Check if Steamless.CLI.dll or Steamless.CLI exists
+        steamless_dll = self.steamless_path / "Steamless.CLI.dll"
         if not steamless_dll.exists():
-            error_msg = f"Steamless.CLI.dll not found at {steamless_dll}"
-            self.progress.emit(error_msg)
-            self.error.emit((Exception, error_msg, ""))
-            return False
+            steamless_dll = self.steamless_path / "Steamless.CLI"
+        if not steamless_dll.exists():
+            logger.info("Steamless.CLI.dll not found — falling back to Steamless AIO")
+            self.use_aio = True
+            self.progress.emit("Using Steamless AIO...")
+            self.dotnet_available = True
+            return True
 
         # Check and ensure dotnet availability (will attempt auto-install if missing)
         self.progress.emit("Checking .NET 9 runtime availability...")
         self.dotnet_available = ensure_dotnet_availability()
 
         if not self.dotnet_available:
-            error_msg = (
-                ".NET 9 runtime installation failed or was not completed. "
-                "Steamless requires .NET 9 to run.\n\n"
-                "Please install .NET 9 runtime manually from:\n"
-                "https://dotnet.microsoft.com/download/dotnet/9.0"
-            )
-            self.progress.emit(error_msg)
-            self.error.emit((Exception, error_msg, ""))
-            return False
+            logger.info(".NET 9 runtime not found — falling back to Steamless AIO")
+            self.use_aio = True
+            self.progress.emit("Using Steamless AIO...")
+            self.dotnet_available = True
+            return True
 
         self.progress.emit(".NET 9 runtime is available")
-
         self.progress.emit("Steamless integration initialized successfully")
         logger.info(f"Steamless initialized at: {self.steamless_path}")
         return True
@@ -781,7 +784,7 @@ class SteamlessTask(QThread):
                     self.steamless_integration = SteamlessIntegration(
                         steamless_path=str(self.steamless_path),
                     )
-                    if getattr(self, "use_aio", False):
+                    if getattr(self, "use_aio", True):
                         self.steamless_integration.use_aio = True
                     self.steamless_integration.progress.connect(self._handle_progress)
                     self.steamless_integration.error.connect(
@@ -800,13 +803,21 @@ class SteamlessTask(QThread):
 
                 if self._target_exe:
                     # Process only the specific exe
+                    exe_name = os.path.basename(self._target_exe)
                     logger.info(f"Processing specific executable: {self._target_exe}")
-                    self.progress.emit(
-                        f"Processing: {os.path.basename(self._target_exe)}"
-                    )
+                    self.progress.emit("Found 1 executable(s) to evaluate")
+                    self.progress.emit(f"Processing: {exe_name}")
                     success = self.steamless_integration.run_steamless_on_exe(
                         self._target_exe
                     )
+                    if success:
+                        self.progress.emit(f"Successfully processed: {exe_name}")
+                        self.progress.emit("Steamless processing completed successfully")
+                    else:
+                        if getattr(self.steamless_integration, "_last_exe_status", None) == "no_drm":
+                            self.progress.emit("No Steam DRM detected in executable")
+                        else:
+                            self.progress.emit("Steamless failed to process executable")
                 else:
                     # Scan directory for all executables
                     success = self.steamless_integration.process_game_with_steamless(
@@ -815,9 +826,8 @@ class SteamlessTask(QThread):
 
                 final_success = success
 
-                if self.isRunning():
-                    self.result.emit(final_success)
-                    self.completed.emit()
+                self.result.emit(final_success)
+                self.completed.emit()
                 self._thread_completed = True
 
             except Exception as e:
@@ -846,24 +856,19 @@ class SteamlessTask(QThread):
 
     def _handle_progress(self, message):
         """Handle progress messages from Steamless integration"""
-        if not self.isRunning() or not self._is_running:
-            logger.debug(
-                f"Ignoring progress message after thread exit: {message[:50]}..."
-            )
+        if not self._is_running:
             return
         self.progress.emit(message)
 
     def _handle_integration_error(self, message):
         """Handle error messages from SteamlessIntegration"""
-        if not self.isRunning() or not self._is_running:
-            logger.debug(f"Ignoring error message after thread exit: {message[:50]}...")
+        if not self._is_running:
             return
         logger.error(f"Steamless error: {message}")
 
     def _handle_integration_finished(self, success):
         """Handle completion signal from SteamlessIntegration"""
-        if not self.isRunning() or not self._is_running:
-            logger.debug("Ignoring finished callback after thread exit")
+        if not self._is_running:
             return
         if success:
             self.progress.emit("Steamless processing completed successfully")

@@ -76,6 +76,8 @@ class BottomTitleBar(QFrame):
 
         self._setup_ui()
         self._apply_style()
+        self._update_button_styles()
+        self._update_button_colors()
         logger.debug("CustomTitleBar initialized.")
 
     def _setup_ui(self) -> None:
@@ -208,6 +210,21 @@ class BottomTitleBar(QFrame):
             f"""
             QFrame {{
                 background-color: {bg_color};
+            }}
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 1px;
+                margin: 0px;
+                min-width: 20px;
+                max-width: 20px;
+                min-height: 20px;
+                max-height: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.15);
+                border: none;
             }}
             QToolTip {{
                 color: {accent_color};
@@ -357,6 +374,7 @@ class BottomTitleBar(QFrame):
             button.setIcon(QIcon(pixmap))
             button.setIconSize(pixmap.size())
             button.setFixedSize(20, 20)
+            button.setStyleSheet("background-color: transparent; border: none; padding: 1px; margin: 0px;")
 
             if on_click:
                 button.clicked.connect(on_click)

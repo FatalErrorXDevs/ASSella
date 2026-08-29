@@ -342,19 +342,25 @@ class GameItemWidget(QWidget):
         )
         right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
 
-        # Denuvo badge — populated lazily after the list is built
+        right_col.addStretch(1)
+
+        # Ratings row: Denuvo badge on LEFT, ProtonDB badge on RIGHT
+        ratings_row = QHBoxLayout()
+        ratings_row.setSpacing(6)
+        ratings_row.setContentsMargins(0, 0, 0, 0)
+        ratings_row.addStretch(1)
+
         self.denuvo_badge = QLabel()
         self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.denuvo_badge.hide()
-        right_col.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignRight)
+        ratings_row.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        right_col.addStretch(1)
-
-        # ProtonDB badge — populated lazily after the list is built
         self.proton_badge = QLabel()
         self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.proton_badge.hide()
-        right_col.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignRight)
+        ratings_row.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        right_col.addLayout(ratings_row)
 
         layout.addLayout(right_col)
 
@@ -463,23 +469,27 @@ class GameItemWidget(QWidget):
         if status == "cracked":
             text = "Denuvo Cracked"
             color = "#81C784"
-            bg_color = "rgba(129, 199, 132, 0.15)"
+            bg_color = "rgba(129, 199, 132, 0.12)"
+            border_color = "rgba(129, 199, 132, 0.25)"
         elif status == "hypervisor":
             text = "Denuvo Hypervisor"
             color = "#FFA726"
             bg_color = "rgba(255, 167, 38, 0.12)"
+            border_color = "rgba(255, 167, 38, 0.25)"
         else:  # uncracked
             text = "Denuvo Uncracked"
             color = "#E57373"
-            bg_color = "rgba(229, 115, 115, 0.15)"
+            bg_color = "rgba(229, 115, 115, 0.12)"
+            border_color = "rgba(229, 115, 115, 0.25)"
  
         self.denuvo_badge.setText(text)
         self.denuvo_badge.setStyleSheet(
             f"color: {color}; "
             f"background-color: {bg_color}; "
-            f"border-radius: 10px; "
-            f"padding: 3px 10px; "
-            f"font-size: 11px; "
+            f"border: 1px solid {border_color}; "
+            f"border-radius: 4px; "
+            f"padding: 1px 6px; "
+            f"font-size: 9px; "
             f"font-weight: bold;"
         )
         self.denuvo_badge.show()
@@ -503,9 +513,10 @@ class GameItemWidget(QWidget):
             self.proton_badge.setStyleSheet(
                 "color: #888888; "
                 "background-color: rgba(255, 255, 255, 0.05); "
-                "border-radius: 3px; "
-                "padding: 4px 12px; "
-                "font-size: 10px; "
+                "border: 1px solid rgba(255, 255, 255, 0.10); "
+                "border-radius: 4px; "
+                "padding: 1px 6px; "
+                "font-size: 9px; "
                 "font-weight: bold;"
             )
             self.proton_badge.show()
@@ -515,44 +526,31 @@ class GameItemWidget(QWidget):
             self.proton_badge.hide()
             return
 
-        if tier == "platinum":
-            text = "PLATINUM"
-            color = "#0d47a1"
-            bg_color = "#b3e5fc"
-        elif tier == "gold":
-            text = "GOLD"
-            color = "#5d4037"
-            bg_color = "#ffd54f"
-        elif tier == "silver":
-            text = "SILVER"
-            color = "#263238"
-            bg_color = "#cfd8dc"
-        elif tier == "bronze":
-            text = "BRONZE"
-            color = "#4e342e"
-            bg_color = "#ffab91"
-        elif tier == "borked":
-            text = "BORKED"
-            color = "#ffffff"
-            bg_color = "#ef5350"
-        elif tier == "native":
-            text = "NATIVE"
-            color = "#1b5e20"
-            bg_color = "#a5d6a7"
+        _tier_map = {
+            "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+            "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
+            "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
+            "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
+            "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
+            "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
+        }
+
+        if tier in _tier_map:
+            text, color, bg_color, border_color = _tier_map[tier]
+            self.proton_badge.setText(text)
+            self.proton_badge.setStyleSheet(
+                f"color: {color}; "
+                f"background-color: {bg_color}; "
+                f"border: 1px solid {border_color}; "
+                f"border-radius: 4px; "
+                f"padding: 1px 6px; "
+                f"font-size: 9px; "
+                f"font-weight: bold; "
+                f"letter-spacing: 0.5px;"
+            )
+            self.proton_badge.show()
         else:
             self.proton_badge.hide()
-            return
-
-        self.proton_badge.setText(text)
-        self.proton_badge.setStyleSheet(
-            f"color: {color}; "
-            f"background-color: {bg_color}; "
-            f"border-radius: 3px; "
-            f"padding: 4px 12px; "
-            f"font-size: 10px; "
-            f"font-weight: bold;"
-        )
-        self.proton_badge.show()
 
 
 
@@ -2964,8 +2962,8 @@ class GameLibraryDialog(QDialog):
 
         # 1. SLSsteam config cleanups (AdditionalApps, FakeAppIds, AppTokens)
         try:
-            from utils.paths import get_user_config_path
             from utils.yaml_config_manager import (
+                get_user_config_path,
                 remove_additional_app,
                 remove_fake_app_id,
                 remove_app_token,

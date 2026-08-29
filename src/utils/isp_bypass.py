@@ -37,13 +37,14 @@ _tor_lock = threading.Lock()
 
 
 class TorManager:
-    """Manages an optional background Tor process launched by ASSella."""
+    """Manages an optional background Tor process with native HTTP tunneling launched by ASSella."""
 
-    TOR_PORT = 9050
+    TOR_SOCKS_PORT = 9050
+    TOR_HTTP_PORT = 9080
 
     @classmethod
-    def is_proxy_active(cls, port: int = TOR_PORT) -> bool:
-        """Checks if a SOCKS or HTTP proxy is listening on local port."""
+    def is_proxy_active(cls, port: int = TOR_HTTP_PORT) -> bool:
+        """Checks if a proxy is listening on local port."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(1.0)
@@ -54,15 +55,28 @@ class TorManager:
             return False
 
     @classmethod
+    def get_tor_proxies(cls) -> Dict[str, str]:
+        """Returns proxy configuration for requests (HTTP tunnel or SOCKS5 fallback)."""
+        if cls.is_proxy_active(cls.TOR_HTTP_PORT):
+            return {
+                "http": f"http://127.0.0.1:{cls.TOR_HTTP_PORT}",
+                "https": f"http://127.0.0.1:{cls.TOR_HTTP_PORT}",
+            }
+        return {
+            "http": f"socks5h://127.0.0.1:{cls.TOR_SOCKS_PORT}",
+            "https": f"socks5h://127.0.0.1:{cls.TOR_SOCKS_PORT}",
+        }
+
+    @classmethod
     def start_tor_if_needed(cls) -> bool:
         """
-        Ensures a Tor listener is active on 127.0.0.1:9050.
+        Ensures a Tor listener is active on 127.0.0.1:9080 (HTTP Tunnel) or 127.0.0.1:9050.
         If no proxy is listening, attempts to launch a background Tor helper process.
         """
         global _tor_process
 
-        if cls.is_proxy_active(cls.TOR_PORT):
-            logger.debug(f"[ISPBypass] Active Tor/SOCKS proxy detected on 127.0.0.1:{cls.TOR_PORT}")
+        if cls.is_proxy_active(cls.TOR_HTTP_PORT) or cls.is_proxy_active(cls.TOR_SOCKS_PORT):
+            logger.debug(f"[ISPBypass] Active Tor proxy detected on 127.0.0.1")
             return True
 
         with _tor_lock:
@@ -76,14 +90,20 @@ class TorManager:
                 return False
 
             try:
-                tor_data_dir = Path("/tmp/assella_tor")
+                from utils.helpers import get_base_path
+                tor_data_dir = get_base_path() / "tor_data"
                 tor_data_dir.mkdir(parents=True, exist_ok=True)
+
+                pid_file = tor_data_dir / "tor.pid"
+                log_file = tor_data_dir / "tor.log"
 
                 cmd = [
                     tor_path,
-                    "--SocksPort", str(cls.TOR_PORT),
+                    "--SocksPort", str(cls.TOR_SOCKS_PORT),
+                    "--HTTPTunnelPort", f"127.0.0.1:{cls.TOR_HTTP_PORT}",
                     "--DataDirectory", str(tor_data_dir),
-                    "--Log", "notice file /tmp/assella_tor/tor.log"
+                    "--PidFile", str(pid_file),
+                    "--Log", f"notice file {log_file}"
                 ]
 
                 logger.info(f"[ISPBypass] Starting background Tor process: {' '.join(cmd)}")
@@ -94,14 +114,16 @@ class TorManager:
                     start_new_session=True
                 )
 
-                # Wait up to 5s for listener
-                for _ in range(10):
+                # Wait up to 6s for listener
+                for _ in range(12):
                     time.sleep(0.5)
-                    if cls.is_proxy_active(cls.TOR_PORT):
-                        logger.info(f"[ISPBypass] Background Tor process successfully listening on 127.0.0.1:{cls.TOR_PORT}")
+                    if cls.is_proxy_active(cls.TOR_HTTP_PORT) or cls.is_proxy_active(cls.TOR_SOCKS_PORT):
+                        logger.info(
+                            f"[ISPBypass] Background Tor process successfully listening on 127.0.0.1:{cls.TOR_HTTP_PORT}"
+                        )
                         return True
 
-                logger.warning("[ISPBypass] Tor process started but listener did not open on 9050 within timeout.")
+                logger.warning("[ISPBypass] Tor process started but listener did not open on 9080 within timeout.")
                 return False
 
             except Exception as e:
@@ -127,24 +149,189 @@ class TorManager:
                 finally:
                     _tor_process = None
 
+
     @classmethod
     def _find_tor_binary(cls) -> Optional[str]:
-        # Check inside AppImage squashfs or PATH
-        appimage_tor = Path("/tmp/assella_repack/squashfs-root/bin/tor")
-        if appimage_tor.exists() and os.access(appimage_tor, os.X_OK):
-            return str(appimage_tor)
+        """Searches for tor executable in AppImage bundle, local ACCELA bin, and system PATH."""
+        # 1. Check AppImage runtime environment
+        appdir = os.environ.get("APPDIR")
+        if appdir:
+            candidates = [
+                Path(appdir) / "bin" / "tor",
+                Path(appdir) / "usr" / "bin" / "tor",
+            ]
+            for c in candidates:
+                if c.exists() and os.access(c, os.X_OK):
+                    return str(c)
 
-        # Check system PATH
+        # 2. Check local ACCELA bin directory
+        try:
+            from utils.helpers import get_base_path
+            local_tor = get_base_path() / "bin" / "tor"
+            if local_tor.exists() and os.access(local_tor, os.X_OK):
+                return str(local_tor)
+        except Exception:
+            pass
+
+        # 3. Check system PATH
         import shutil
         sys_tor = shutil.which("tor")
         if sys_tor:
             return sys_tor
+
+        # 4. Standard Linux fallback paths
+        for p in ["/usr/bin/tor", "/usr/local/bin/tor"]:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                return p
 
         return None
 
 
 # Register cleanup at Python exit
 atexit.register(TorManager.stop_tor)
+
+
+# --------------------------
+# Wirecutter / Cloudflare Worker Proxy (Encrypted In-Memory)
+# --------------------------
+
+_WIRECUTTER_SECRET = "DJLftA68CqIusHL1zjsD3?2m*0df#fR{%CTApj2<6)P<VOjHyTG%FVuPXrt-9als`Z#Om*"
+_WIRECUTTER_SALT = b"ASSella_Hubcap_Bypass_v261"
+
+
+def get_wirecutter_endpoint() -> str:
+    """Decrypts and returns the internal Wirecutter Cloudflare Worker endpoint."""
+    try:
+        import base64
+        raw = base64.b85decode(_WIRECUTTER_SECRET.encode("ascii"))
+        return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
+    except Exception:
+        return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+
+
+def rewrite_url_for_wirecutter(url: str, worker_base: Optional[str] = None) -> str:
+    """Rewrites https://hubcapmanifest.com/api/v1/... to {worker_base}/..."""
+    base = (worker_base or get_wirecutter_endpoint()).rstrip("/")
+    if "hubcapmanifest.com/api/v1" in url:
+        return url.replace("https://hubcapmanifest.com/api/v1", base).replace("http://hubcapmanifest.com/api/v1", base)
+    if "hubcapmanifest.com" in url:
+        return url.replace("https://hubcapmanifest.com", base).replace("http://hubcapmanifest.com", base)
+    return url
+
+
+def categorize_error(e: Exception) -> str:
+    """Categorizes network exceptions into compact, informative status codes."""
+    if isinstance(e, requests.exceptions.HTTPError):
+        code = e.response.status_code if e.response is not None else 0
+        if code == 400: return "ERR: 400"
+        if code == 401: return "ERR: 401"
+        if code == 403: return "ERR: 403"
+        if code == 404: return "ERR: 404"
+        if code == 428: return "ERR: 428"
+        if code == 429: return "ERR: 429"
+        if code == 500: return "ERR: 500"
+        if code == 502: return "ERR: 502"
+        if code == 503: return "ERR: 503"
+        if code == 504: return "ERR: 504"
+        return f"ERR: {code}"
+    if isinstance(e, requests.exceptions.Timeout):
+        return "ERR: Timeout"
+    if isinstance(e, requests.exceptions.SSLError):
+        return "ERR: SSL"
+    if isinstance(e, requests.exceptions.ConnectionError):
+        msg = str(e).lower()
+        if "refused" in msg:
+            return "ERR: Refused"
+        if "name or service not known" in msg or "nodename" in msg or "dns" in msg:
+            return "ERR: DNS"
+        if "block" in msg or "html" in msg or "intercept" in msg:
+            return "ERR: Blocked"
+        return "ERR: Conn"
+    msg = str(e)
+    if "No Tor" in msg:
+        return "ERR: No Tor"
+    return "ERR: Failed"
+
+
+# --------------------------
+# Gateway Health Check API (for UI Buttons)
+# --------------------------
+
+def test_gateway_direct() -> Tuple[bool, str, int]:
+    """Tests Direct HTTPS gateway. Returns (success, display_status, latency_ms)."""
+    t0 = time.time()
+    try:
+        url = "https://hubcapmanifest.com/api/v1/health"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        resp.raise_for_status()
+        content = resp.content.strip()
+        if len(content) == 0 or content.startswith(b"<") or content.startswith(b"<!DOCTYPE") or content.startswith(b"<html"):
+            return False, "ERR: Blocked", int((time.time() - t0) * 1000)
+        latency = int((time.time() - t0) * 1000)
+        return True, f"OK ({latency}ms)", latency
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return False, categorize_error(e), latency
+
+
+def test_gateway_doh() -> Tuple[bool, str, int]:
+    """Tests DoH HTTPS gateway. Returns (success, display_status, latency_ms)."""
+    t0 = time.time()
+    try:
+        resolved_ip = resolve_doh(TARGET_DOMAIN)
+        if not resolved_ip:
+            return False, "ERR: DNS Fail", int((time.time() - t0) * 1000)
+        orig_getaddrinfo = socket.getaddrinfo
+        def doh_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if host == TARGET_DOMAIN:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (resolved_ip, port))]
+            return orig_getaddrinfo(host, port, family, type, proto, flags)
+
+        socket.getaddrinfo = doh_getaddrinfo
+        try:
+            url = "https://hubcapmanifest.com/api/v1/health"
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            resp.raise_for_status()
+            latency = int((time.time() - t0) * 1000)
+            return True, f"OK ({latency}ms)", latency
+        finally:
+            socket.getaddrinfo = orig_getaddrinfo
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return False, categorize_error(e), latency
+
+
+def test_gateway_tor() -> Tuple[bool, str, int]:
+    """Tests Tor gateway (127.0.0.1:9080). Returns (success, display_status, latency_ms)."""
+    t0 = time.time()
+    if not TorManager.start_tor_if_needed():
+        return False, "ERR: No Tor", int((time.time() - t0) * 1000)
+
+    try:
+        proxies = TorManager.get_tor_proxies()
+        url = "https://hubcapmanifest.com/api/v1/health"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=15)
+        resp.raise_for_status()
+        latency = int((time.time() - t0) * 1000)
+        return True, f"OK ({latency}ms)", latency
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return False, categorize_error(e), latency
+
+
+def test_gateway_wirecutter() -> Tuple[bool, str, int]:
+    """Tests internal Wirecutter Cloudflare Worker proxy. Returns (success, display_status, latency_ms)."""
+    t0 = time.time()
+    try:
+        worker_base = get_wirecutter_endpoint()
+        health_url = f"{worker_base}/health"
+        resp = requests.get(health_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        resp.raise_for_status()
+        latency = int((time.time() - t0) * 1000)
+        return True, f"OK ({latency}ms)", latency
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return False, categorize_error(e), latency
 
 
 def resolve_doh(domain: str = TARGET_DOMAIN) -> Optional[str]:
@@ -198,40 +385,91 @@ def execute_hubcap_request(
     stream: bool = False
 ) -> requests.Response:
     """
-    Executes a Hubcap request with ISP Bypass pipeline:
-    1. Direct Connection
-    2. DoH (DNS-over-HTTPS) Socket Override
-    3. Tor / SOCKS5 Proxy Fallback
+    Executes a Hubcap request with user-selected mode and smart 4-tier fallback:
+    Modes:
+      - 'auto'       : Direct -> DoH -> Tor -> Wirecutter
+      - 'direct'     : Direct HTTPS only
+      - 'doh'        : DoH only
+      - 'tor'        : Tor HTTP Tunnel only
+      - 'wirecutter' : Wirecutter Proxy only
+      - 'disabled'   : Direct HTTPS only
     """
     global connection_status, _direct_connection_failed, _last_direct_check_time
-    settings = get_settings()
-    isp_bypass_enabled = settings.value("isp_bypass_hubcap", False, type=bool) if settings else False
 
+    settings = get_settings()
+    mode = "auto"
+    if settings:
+        mode = settings.value("isp_bypass_mode", "auto", type=str)
+
+    # --- Mode: Explicit Single Gateway Selections ---
+    if mode == "direct" or mode == "disabled":
+        resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
+        resp.raise_for_status()
+        connection_status = "Direct"
+        return resp
+
+    if mode == "doh":
+        resolved_ip = resolve_doh(TARGET_DOMAIN)
+        if not resolved_ip:
+            raise requests.exceptions.ConnectionError("DoH resolution failed for hubcapmanifest.com")
+        orig_getaddrinfo = socket.getaddrinfo
+        def doh_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if host == TARGET_DOMAIN:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (resolved_ip, port))]
+            return orig_getaddrinfo(host, port, family, type, proto, flags)
+        socket.getaddrinfo = doh_getaddrinfo
+        try:
+            resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
+            resp.raise_for_status()
+            connection_status = "DoH"
+            return resp
+        finally:
+            socket.getaddrinfo = orig_getaddrinfo
+
+    if mode == "tor":
+        if not TorManager.start_tor_if_needed():
+            raise requests.exceptions.ConnectionError("Tor process is not available/listening.")
+        tor_proxies = TorManager.get_tor_proxies()
+        resp = session.request(method, url, headers=headers, params=params, proxies=tor_proxies, timeout=timeout + 5, stream=stream)
+        resp.raise_for_status()
+        connection_status = "Tor"
+        return resp
+
+    if mode == "wirecutter":
+        worker_url = rewrite_url_for_wirecutter(url)
+        resp = session.request(method, worker_url, headers=headers, params=params, timeout=timeout + 3, stream=stream)
+        resp.raise_for_status()
+        connection_status = "Wire"
+        return resp
+
+    # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline) ---
     now = time.time()
-    # Re-try direct connection once every 300 seconds (5 minutes)
     if _direct_connection_failed and now - _last_direct_check_time < 300:
         use_direct = False
     else:
         use_direct = True
 
-    # 1. Try direct connection first
+    # 1. Tier 1: Direct connection
     if use_direct:
         try:
             logger.debug(f"[ISPBypass] Trying direct request to {url}")
             resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
-            connection_status = "Online"
+
+            if not stream:
+                content_sample = resp.content.strip()
+                if len(content_sample) == 0 or content_sample.startswith(b"<") or content_sample.startswith(b"<!DOCTYPE") or content_sample.startswith(b"<html"):
+                    raise requests.exceptions.ConnectionError("Direct connection returned empty or HTML payload (ISP block detected).")
+
+            connection_status = "Direct"
             _direct_connection_failed = False
             return resp
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
             _direct_connection_failed = True
             _last_direct_check_time = now
-            if not isp_bypass_enabled:
-                connection_status = "Offline"
-                raise e
-            logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. ISP Bypass enabled — initiating DoH fallback...")
+            logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. Initiating automatic DoH fallback...")
 
-    # 2. Phase 2: DoH (DNS-over-HTTPS) resolution
+    # 2. Tier 2: DoH (DNS-over-HTTPS) resolution
     resolved_ip = resolve_doh(TARGET_DOMAIN)
     if resolved_ip:
         orig_getaddrinfo = socket.getaddrinfo
@@ -246,10 +484,20 @@ def execute_hubcap_request(
             logger.info(f"[ISPBypass] Attempting request via DoH IP override ({resolved_ip})...")
             doh_headers = dict(headers or {})
             if "User-Agent" not in doh_headers:
-                doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.3.2)"
+                try:
+                    from utils.version import app_version
+                    doh_headers["User-Agent"] = f"Mozilla/5.0 (X11; Linux x86_64; ASSella/{app_version})"
+                except Exception:
+                    doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.6.2)"
             
             resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
+
+            if not stream:
+                content_sample = resp.content.strip()
+                if len(content_sample) == 0 or content_sample.startswith(b"<") or content_sample.startswith(b"<!DOCTYPE") or content_sample.startswith(b"<html"):
+                    raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
+
             logger.info(f"[ISPBypass] DoH request to {url} SUCCESSFUL!")
             connection_status = "DoH"
             return resp
@@ -258,24 +506,35 @@ def execute_hubcap_request(
         finally:
             socket.getaddrinfo = orig_getaddrinfo
 
-    # 3. Phase 3: Tor / SOCKS5 Proxy Fallback
+    # 3. Tier 3: Tor HTTP Tunnel Proxy Fallback
     if TorManager.start_tor_if_needed():
         try:
-            tor_proxies = {
-                "http": "http://127.0.0.1:9050",
-                "https": "http://127.0.0.1:9050"
-            }
-            logger.info(f"[ISPBypass] Attempting request via Tor/Proxy (127.0.0.1:9050)...")
+            tor_proxies = TorManager.get_tor_proxies()
+            logger.info(f"[ISPBypass] Attempting request via Tor (127.0.0.1:{TorManager.TOR_HTTP_PORT})...")
             resp = session.request(
                 method, url, headers=headers, params=params, proxies=tor_proxies, timeout=timeout + 5, stream=stream
             )
             resp.raise_for_status()
-            logger.info(f"[ISPBypass] Tor/Proxy request to {url} SUCCESSFUL!")
+            logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
             connection_status = "Tor"
             return resp
         except Exception as tor_err:
-            logger.error(f"[ISPBypass] Tor request failed: {tor_err}")
+            logger.error(f"[ISPBypass] Tor request failed: {tor_err}. Checking Wirecutter proxy...")
 
-    # If all fallbacks failed, raise original direct error
+    # 4. Tier 4: Wirecutter Cloudflare Worker Proxy Fallback
+    try:
+        worker_url = rewrite_url_for_wirecutter(url)
+        logger.info(f"[ISPBypass] Attempting request via Wirecutter/Worker proxy: {worker_url}...")
+        resp = session.request(
+            method, worker_url, headers=headers, params=params, timeout=timeout + 3, stream=stream
+        )
+        resp.raise_for_status()
+        logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
+        connection_status = "Wire"
+        return resp
+    except Exception as wc_err:
+        logger.error(f"[ISPBypass] Wirecutter proxy request failed: {wc_err}")
+
+    # If all fallbacks failed, raise connection error
     connection_status = "Offline"
-    raise requests.exceptions.ConnectionError(f"ISP Bypass failed to connect to Hubcap API for {url}.")
+    raise requests.exceptions.ConnectionError(f"All ISP Bypass fallbacks (Direct, DoH, Tor, Wirecutter) failed for {url}.")

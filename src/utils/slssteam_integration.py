@@ -193,6 +193,135 @@ def is_steam_process_running() -> bool:
     return _proc_cache["steam_running"]
 
 
+_binary_version_cache: dict = {}
+_binary_version_cache_lock = threading.Lock()
+_BINARY_VERSION_CACHE_TTL = 120.0  # seconds
+
+
+def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
+    """Compare the local SLSsteam.so SHA256 against the upstream GitHub release binary.
+
+    Downloads ``SLSsteam-Any-release.7z`` (~5 MB), extracts only ``SLSsteam.so``
+    to a temp directory, computes its SHA256, and compares it with the local binary.
+    Cached for 120 seconds to prevent redundant downloads on rapid checks.
+
+    Returns a dict:
+        {
+            "status":       "up_to_date" | "outdated" | "no_local" | "error",
+            "local_hash":   str | None,
+            "remote_hash":  str | None,
+            "release_tag":  str | None,   # e.g. "20260820085507"
+            "error":        str | None,
+        }
+
+    This function is blocking and should be called from a background thread.
+    """
+    global _binary_version_cache
+    now = time.time()
+    if not force_refresh:
+        with _binary_version_cache_lock:
+            if _binary_version_cache and (now - _binary_version_cache.get("timestamp", 0) < _BINARY_VERSION_CACHE_TTL):
+                return dict(_binary_version_cache["data"])
+
+    import hashlib
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    import urllib.request
+
+    result: dict = {
+        "status": "error",
+        "local_hash": None,
+        "remote_hash": None,
+        "release_tag": None,
+        "error": None,
+    }
+
+    # ── 1. Find local .so ──────────────────────────────────────────────────
+    try:
+        from ui.dialogs.settings_sls import get_sls_paths
+        paths = get_sls_paths()
+        local_so = paths.get("so_path", "")
+    except Exception:
+        local_so = os.path.expanduser("~/.local/share/SLSsteam/SLSsteam.so")
+
+    if not local_so or not os.path.exists(local_so):
+        result["status"] = "no_local"
+        result["error"] = "SLSsteam.so not found locally"
+        return result
+
+    try:
+        local_hash = hashlib.sha256(Path(local_so).read_bytes()).hexdigest()
+        result["local_hash"] = local_hash
+    except Exception as exc:
+        result["error"] = f"Failed to hash local binary: {exc}"
+        return result
+
+    # ── 2. Fetch latest GitHub release metadata ────────────────────────────
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/AceSLS/SLSsteam/releases/latest",
+            headers={"User-Agent": "ASSella-SLS-Updater"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        release_tag = data.get("tag_name")
+        result["release_tag"] = release_tag
+
+        download_url = None
+        for asset in data.get("assets", []):
+            if asset.get("name") == "SLSsteam-Any-release.7z":
+                download_url = asset.get("browser_download_url")
+                break
+        if not download_url:
+            raise ValueError("SLSsteam-Any-release.7z not found in release assets")
+    except Exception as exc:
+        result["error"] = f"GitHub API error: {exc}"
+        return result
+
+    # ── 3. Download & extract just SLSsteam.so ────────────────────────────
+    tmp = tempfile.mkdtemp(prefix="assella_sls_check_")
+    try:
+        arch_path = os.path.join(tmp, "SLSsteam-Any-release.7z")
+        req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-SLS-Updater"})
+        with urllib.request.urlopen(req2, timeout=45) as resp, open(arch_path, "wb") as fout:
+            fout.write(resp.read())
+
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(out_dir)
+
+        # Try to extract bin/SLSsteam.so first, then plain SLSsteam.so
+        extracted = None
+        for inner_path in ("bin/SLSsteam.so", "SLSsteam.so"):
+            r = subprocess.run(
+                ["7z", "e", arch_path, f"-o{out_dir}", inner_path, "-y"],
+                capture_output=True, text=True
+            )
+            candidate = os.path.join(out_dir, "SLSsteam.so")
+            if os.path.exists(candidate):
+                extracted = candidate
+                break
+
+        if not extracted:
+            raise FileNotFoundError("SLSsteam.so not found inside the downloaded archive")
+
+        remote_hash = hashlib.sha256(Path(extracted).read_bytes()).hexdigest()
+        result["remote_hash"] = remote_hash
+        result["status"] = "up_to_date" if local_hash == remote_hash else "outdated"
+
+        with _binary_version_cache_lock:
+            _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
+
+    except Exception as exc:
+        result["error"] = f"Download/extract error: {exc}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return result
+
+
+
 def _slssteam_api_send(command: str) -> bool:
     """Send a raw command to SLSsteam via the named pipe.
 
@@ -504,7 +633,10 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
             logger.warning(f"Could not resolve library index, defaulting to 0: {e}")
 
     # 5. Send install to Steam (failure is non-fatal)
+    t_pipe_0 = time.time()
     sent = _slssteam_api_send(f"install|{appid}|{library_index}")
+    pipe_latency = (time.time() - t_pipe_0) * 1000.0
+
     if not sent:
         logger.warning(
             f"install_via_sls: pipe send failed for {appid} — "
@@ -514,6 +646,8 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "") -> 
 
     # 6. Verify ACF creation. If delayed, launch cancellable background retry worker
     acf_created = _verify_acf_created(appid)
+
+
     if not acf_created:
         logger.info(
             f"ACF creation delayed for {appid} — "

@@ -15,7 +15,7 @@ def run_connection_check() -> Tuple[bool, bool, str]:
     Performs connection checks for Steam and Hubcap API.
     Returns:
         (steam_ok: bool, hubcap_ok: bool, hubcap_mode: str)
-        where hubcap_mode is one of: "Online", "DoH", "Tor", "Offline"
+        where hubcap_mode is one of: "Direct", "DoH", "Tor", "Wire", "Offline"
     """
     # 1. Check Steam Status
     steam_ok = False
