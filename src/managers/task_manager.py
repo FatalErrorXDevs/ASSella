@@ -1315,7 +1315,9 @@ class TaskManager(QObject):
 
     def _reset_steamless_task(self):
         if self.steamless_task:
-            self.steamless_task.stop()
+            if self.steamless_task.isRunning():
+                self.steamless_task.stop()
+                self.steamless_task.wait(2000)
             self.steamless_task = None
 
     def _start_steamless_processing(self, use_aio=True):
@@ -1328,6 +1330,8 @@ class TaskManager(QObject):
         if not os.path.exists(game_directory):
             self._finalize_job_logic()
             return
+
+        self._reset_steamless_task()
 
         logger.info("\n" + "=" * 40)
         logger.info("Starting Steamless DRM Removal...")
@@ -2617,10 +2621,15 @@ class TaskManager(QObject):
         else:
             overall_color = accent_color
 
-        self.main_window.bottom_titlebar.update_colored_circle_button(
-            self.main_window.bottom_titlebar.status_button, overall_color
-        )
-        self.main_window.bottom_titlebar.no_previous_state = False
+        if (
+            self.main_window
+            and hasattr(self.main_window, "bottom_titlebar")
+            and self.main_window.bottom_titlebar
+        ):
+            self.main_window.bottom_titlebar.update_colored_circle_button(
+                self.main_window.bottom_titlebar.status_button, overall_color
+            )
+            self.main_window.bottom_titlebar.no_previous_state = False
 
     def toggle_pause(self):
         if not self.download_task:

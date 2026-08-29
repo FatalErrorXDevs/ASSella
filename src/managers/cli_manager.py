@@ -399,7 +399,9 @@ class CLITaskManager:
                 self._set_linux_permissions(game_directory)
 
         # Steamless processing
-        steamless_enabled = self.settings.value("use_steamless", False, type=bool)
+        steamless_enabled = self.settings.value(
+            "use_steamless", False, type=bool
+        ) or self.settings.value("use_steamless_aio", False, type=bool)
         appid = self.game_data.get("appid") if self.game_data else None
         is_dlc_only = False
         if appid:
