@@ -1498,12 +1498,19 @@ class SettingsDialog(QDialog):
         self.configure_achievements_btn.clicked.connect(self.run_schema_grabber_manually)
         tools_btn_row.addWidget(self.configure_achievements_btn)
 
-        self.steamless_py_btn = QPushButton("Steamless")
+        self.steamless_py_btn = QPushButton("Steamless (Python)")
         self.steamless_py_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.steamless_py_btn.setStyleSheet(tool_btn_style)
-        self.steamless_py_btn.setToolTip("Run Steamless DRM unpacker manually on a game .exe.")
+        self.steamless_py_btn.setToolTip("Run Steamless AIO (Python) manually on a game .exe.")
         self.steamless_py_btn.clicked.connect(self.run_steamless_aio_manually)
         tools_btn_row.addWidget(self.steamless_py_btn)
+
+        self.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
+        self.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steamless_legacy_btn.setStyleSheet(tool_btn_style)
+        self.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
+        self.steamless_legacy_btn.clicked.connect(self.run_steamless_manually)
+        tools_btn_row.addWidget(self.steamless_legacy_btn)
 
         tools_btn_row.addStretch()
         tools_layout.addLayout(tools_btn_row)

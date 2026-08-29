@@ -26,7 +26,7 @@ class SteamlessIntegration(QObject):
 
     def __init__(self, steamless_path: Optional[str] = None):
         super().__init__()
-        self.steamless_path = steamless_path or os.path.join(os.getcwd(), "Steamless")
+        self.steamless_path = steamless_path or str(Paths.deps("Steamless"))
         self.is_windows = sys.platform == "win32"
         self._current_process = None
         self._process_mutex = QMutex()
@@ -326,9 +326,11 @@ class SteamlessIntegration(QObject):
                     self.error.emit(f"Steamless directory not found: {self.steamless_path}")
                     return False
 
-                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI.dll")
                 if not os.path.exists(steamless_dll):
-                    self.error.emit(f"Steamless.CLI.dll not found: {steamless_dll}")
+                    steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                if not os.path.exists(steamless_dll):
+                    self.error.emit(f"Steamless.CLI.dll not found in {self.steamless_path}")
                     return False
 
             # Validate game_directory is actually a directory
@@ -451,7 +453,9 @@ class SteamlessIntegration(QObject):
                     bufsize=0,
                 )
             else:
-                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
+                steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI.dll")
+                if not os.path.exists(steamless_dll):
+                    steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
 
                 # Prepare command for dotnet
                 dotnet_cmd = self.dotnet_path or (
@@ -460,16 +464,15 @@ class SteamlessIntegration(QObject):
                 cmd = [
                     dotnet_cmd,
                     steamless_dll,
-                    "-f",
-                    target_path,
                     "--quiet",
                     "--realign",
+                    target_path,
                 ]
                 # Only add --recalcchecksum on Windows (imagehlp.dll is Windows-only)
                 if self.is_windows:
                     cmd.append("--recalcchecksum")
 
-                self.progress.emit(f"Running Steamless: {' '.join(cmd)}")
+                self.progress.emit(f"Running Steamless (.NET CLI): {os.path.basename(target_path)}")
 
                 # Run Steamless CLI
                 if self.is_windows:
@@ -702,10 +705,12 @@ class SteamlessTask(QThread):
             self.dotnet_available = True
             return True
 
-        # Check if Steamless.CLI.dll exists
-        steamless_dll = self.steamless_path / "Steamless.CLI"
+        # Check if Steamless.CLI.dll or Steamless.CLI exists
+        steamless_dll = self.steamless_path / "Steamless.CLI.dll"
         if not steamless_dll.exists():
-            logger.info("Steamless.CLI not found — falling back to Steamless AIO")
+            steamless_dll = self.steamless_path / "Steamless.CLI"
+        if not steamless_dll.exists():
+            logger.info("Steamless.CLI.dll not found — falling back to Steamless AIO")
             self.use_aio = True
             self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True

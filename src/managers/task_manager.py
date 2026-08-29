@@ -1354,9 +1354,9 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless processing for: {exe_path}")
+        logger.info(f"Starting manual Steamless (.NET CLI) processing for: {exe_path}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
-        steamless_task.use_aio = True
+        steamless_task.use_aio = False
         steamless_task.set_target_exe(exe_path)
         steamless_task.start()
 
@@ -1367,7 +1367,7 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless AIO processing for: {exe_path}")
+        logger.info(f"Starting manual Steamless (Python AIO) processing for: {exe_path}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
         steamless_task.use_aio = True
         steamless_task.set_target_exe(exe_path)
@@ -1380,9 +1380,9 @@ class TaskManager(QObject):
         self._steamless_progress_log = []
         self._steamless_manual_run = True
 
-        logger.info(f"Starting manual Steamless processing for game: {game_name}")
+        logger.info(f"Starting manual Steamless (.NET CLI) processing for game: {game_name}")
         steamless_task = self._create_steamless_task(self._on_steamless_progress)
-        steamless_task.use_aio = True
+        steamless_task.use_aio = False
         steamless_task.set_game_directory(game_directory)
         steamless_task.start()
 
